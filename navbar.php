@@ -1,5 +1,38 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
 $currentPage = basename($_SERVER['PHP_SELF']);
+
+// Session'dan kullanıcı bilgilerini al
+$firstName  = $_SESSION['FirstName']  ?? '';
+$lastName   = $_SESSION['LastName']   ?? '';
+$userName   = $_SESSION['UserName']   ?? '';
+$ownerCode  = $_SESSION['U_AS_OWNR']  ?? '';
+$branchDesc = $_SESSION['Branch2']['Description'] ?? '';
+
+// Görünecek isim: Önce Ad Soyad, yoksa username, o da yoksa 'Misafir'
+$displayName = trim($firstName . ' ' . $lastName);
+if ($displayName === '') {
+    $displayName = $userName ?: 'Misafir';
+}
+
+// Avatar içi: Önce OWN R (KT gibi). Yoksa ad-soyad baş harfleri.
+$avatarText = $ownerCode;
+if ($avatarText === '') {
+    $initials = '';
+    if ($firstName !== '') {
+        $initials .= mb_substr($firstName, 0, 1, 'UTF-8');
+    }
+    if ($lastName !== '') {
+        $initials .= mb_substr($lastName, 0, 1, 'UTF-8');
+    }
+    if ($initials === '' && $userName !== '') {
+        $initials = mb_strtoupper(mb_substr($userName, 0, 2, 'UTF-8'), 'UTF-8');
+    }
+    $avatarText = $initials ?: '?';
+}
 ?>
 
 <!-- Complete navbar redesign - top header bar with horizontal navigation -->
@@ -19,9 +52,9 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     .navbar-header {
         background: linear-gradient(135deg, #0052CC 0%, #003d99 100%);
         color: white;
-        padding: 12px 24px;
-        display: grid;
-        grid-template-columns: 1fr auto 1fr;
+        padding: 12px 0 12px 0;
+        display: flex;
+        justify-content: space-between;
         align-items: center;
         box-shadow: 0 2px 8px rgba(0, 82, 204, 0.15);
         position: fixed;
@@ -35,17 +68,16 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     .navbar-header-left {
         display: flex;
         justify-content: flex-start;
-    }
-
-    .navbar-header-center {
-        display: flex;
-        justify-content: center;
         align-items: center;
+        padding-left: 42px; /* 24px (navbar padding) + 18px (nav-item padding) */
     }
 
     .navbar-header-right {
         display: flex;
         justify-content: flex-end;
+        align-items: center;
+        gap: 12px;
+        padding-right: 24px;
     }
 
     .navbar-brand {
@@ -79,15 +111,64 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     .navbar-right {
         display: flex;
         align-items: center;
-        gap: 16px;
+        gap: 12px;
+    }
+
+    .navbar-logout-btn {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 16px;
+        background: rgba(255, 255, 255, 0.15);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        border-radius: 6px;
+        color: white;
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 500;
+        transition: all 0.3s ease;
+        cursor: pointer;
+        white-space: nowrap;
+    }
+
+    .navbar-logout-btn:hover {
+        background: rgba(255, 255, 255, 0.25);
+        border-color: rgba(255, 255, 255, 0.4);
+        transform: translateY(-1px);
+    }
+
+    .navbar-logout-btn:active {
+        transform: translateY(0);
+    }
+
+    .navbar-logout-icon {
+        font-size: 14px;
     }
 
     .navbar-user {
         display: flex;
+        flex-direction: row;
         align-items: center;
         gap: 8px;
         font-size: 13px;
         opacity: 0.95;
+    }
+
+    .navbar-user-name {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 2px;
+    }
+
+    .navbar-user-name-main {
+        font-size: 13px;
+        font-weight: 500;
+    }
+
+    .navbar-user-name-owner {
+        font-size: 11px;
+        opacity: 0.85;
     }
 
     .navbar-avatar {
@@ -101,6 +182,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
         justify-content: center;
         font-weight: 600;
         font-size: 14px;
+        flex-shrink: 0;
     }
 
     /* Fixed horizontal navigation bar styling for white background */
@@ -185,7 +267,15 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     @media (max-width: 768px) {
         .navbar-header {
             height: 56px;
-            padding: 10px 16px;
+            padding: 10px 0;
+        }
+
+        .navbar-header-left {
+            padding-left: 28px; /* 16px (navbar padding) + 12px (nav-item padding) */
+        }
+
+        .navbar-header-right {
+            padding-right: 16px;
         }
 
         .navbar-logo {
@@ -203,7 +293,20 @@ $currentPage = basename($_SERVER['PHP_SELF']);
 
         .navbar-user {
             font-size: 11px;
-            gap: 4px;
+            gap: 6px;
+        }
+
+        .navbar-user-name-main {
+            font-size: 11px;
+        }
+
+        .navbar-user-name-owner {
+            font-size: 10px;
+        }
+
+        .navbar-logout-btn {
+            padding: 6px 12px;
+            font-size: 11px;
         }
 
         .navbar-nav {
@@ -248,86 +351,80 @@ $currentPage = basename($_SERVER['PHP_SELF']);
             font-size: 10px;
             gap: 4px;
         }
-    } 
-
-
-  /* Desktop Logo Animasyon Stilleri */
-#writing-animation {
-    background-color: transparent;
-    display: flex;
-    justify-content: flex-start;
-    align-items: center;
-    height: auto;
-    padding: 0;
-}
-
-.logo-animation {
-    text-decoration: none;
-    display: block;
-    flex-shrink: 0;
-}
-
-.text {
-    font-size: 36px;
-    font-family: 'Dancing Script', cursive;
-    fill: transparent;
-    stroke: #4caf50;
-    stroke-width: 2;
-    stroke-dasharray: 800;
-    stroke-dashoffset: 800;
-    animation: draw 11s forwards;
-}
-
-@keyframes draw {
-    to {
-        stroke-dashoffset: 0;
-        fill: #4caf50;
     }
-}
 
-/* Mobil Logo Stili */
-.logo-mobile {
-    text-decoration: none;
-    display: block;
-    margin: 0 auto;
-}
-
-.mobile-logo-svg {
-    width: 200px;
-    height: 40px;
-}
-
-.mobile-logo-text {
-    font-size: 24px;
-    font-family: 'Dancing Script', cursive;
-    fill: transparent;
-    stroke: #ffffffff;
-    stroke-width: 2;
-    stroke-dasharray: 500;
-    stroke-dashoffset: 500;
-    animation: mobileDraw 11s forwards;
-}
-
-@keyframes mobileDraw {
-    to {
-        stroke-dashoffset: 0;
-        fill: #ffffffff;
+    /* Logo Animasyon Stilleri (mevcut bıraktım) */
+    #writing-animation {
+        background-color: transparent;
+        display: flex;
+        justify-content: flex-start;
+        align-items: center;
+        height: auto;
+        padding: 0;
     }
-}
 
+    .logo-animation {
+        text-decoration: none;
+        display: block;
+        flex-shrink: 0;
+    }
+
+    .text {
+        font-size: 36px;
+        font-family: 'Dancing Script', cursive;
+        fill: transparent;
+        stroke: #4caf50;
+        stroke-width: 2;
+        stroke-dasharray: 800;
+        stroke-dashoffset: 800;
+        animation: draw 11s forwards;
+    }
+
+    @keyframes draw {
+        to {
+            stroke-dashoffset: 0;
+            fill: #4caf50;
+        }
+    }
+
+    .logo-mobile {
+        text-decoration: none;
+        display: block;
+    }
+
+    .mobile-logo-svg {
+        width: 200px;
+        height: 40px;
+    }
+
+    .mobile-logo-text {
+        font-size: 24px;
+        font-family: 'Dancing Script', cursive;
+        fill: transparent;
+        stroke: #ffffffff;
+        stroke-width: 2;
+        stroke-dasharray: 500;
+        stroke-dashoffset: 500;
+        animation: mobileDraw 11s forwards;
+    }
+
+    @keyframes mobileDraw {
+        to {
+            stroke-dashoffset: 0;
+            fill: #ffffffff;
+        }
+    }
 </style>
 
 <!-- Top Header -->
 <div class="navbar-header">
-    <div class="navbar-header-left"></div>
-    
-    <div class="navbar-header-center">
+    <div class="navbar-header-left">
         <!-- Mobil Logo (SVG Animasyonlu) -->
         <a href="/" class="logo-mobile">
             <svg width="200" height="40" class="mobile-logo-svg">
-                <text x="0" y="50%" dominant-baseline="middle" text-anchor="start" class="mobile-logo-text"> 
+                <text x="0" y="50%" dominant-baseline="middle" text-anchor="start" class="mobile-logo-text">
                     MINOA
-                </text> 
+                </text>
             </svg>
         </a>
     </div>
@@ -335,9 +432,24 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     <div class="navbar-header-right">
         <div class="navbar-right">
             <div class="navbar-user">
-                <span>user@minoa.com</span>
-                <div class="navbar-avatar">K1</div>
+                <div class="navbar-user-name">
+                    <div class="navbar-user-name-main">
+                        <?= htmlspecialchars($displayName, ENT_QUOTES, 'UTF-8') ?>
+                    </div>
+                    <?php if ($ownerCode): ?>
+                        <div class="navbar-user-name-owner">
+                            <?= htmlspecialchars($ownerCode, ENT_QUOTES, 'UTF-8') ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+                <div class="navbar-avatar">
+                    <?= htmlspecialchars($avatarText, ENT_QUOTES, 'UTF-8') ?>
+                </div>
             </div>
+            <a href="config/logout.php" class="navbar-logout-btn">
+                <span class="navbar-logout-icon">🚪</span>
+                <span>Çıkış</span>
+            </a>
         </div>
     </div>
 </div>

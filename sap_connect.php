@@ -228,6 +228,8 @@ class SAPConnect {
             'success' => true,
             'userInfo' => $userInfo,
             'U_AS_OWNR' => $userInfo['U_AS_OWNR'] ?? null,
+            'FirstName' => $userInfo['FirstName'] ?? '',
+            'LastName' => $userInfo['LastName'] ?? '',
             'BranchCode' => $branchCode,
             'Branch2' => $branchData
         ];
