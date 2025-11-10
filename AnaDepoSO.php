@@ -300,6 +300,7 @@ body {
     border-radius: 12px;
     padding: 1.5rem;
     box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    margin-bottom: 0;
 }
 
 .alert {
@@ -663,24 +664,75 @@ body {
     color: #991b1b;
 }
 
-.sepet-container {
-    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-    border: 2px solid #3b82f6;
-    border-radius: 12px;
-    padding: 1.5rem;
-    margin-bottom: 1.5rem;
-    display: none;
+/* Sepet Badge */
+.sepet-badge {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    background: #ef4444;
+    color: white;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    border: 2px solid white;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
 }
 
-.sepet-container.show {
-    display: block;
+.sepet-btn {
+    position: relative;
 }
 
-.sepet-container h3 {
-    margin: 0 0 1.25rem 0;
-    color: #1e40af;
-    font-size: 1.25rem;
-    font-weight: 600;
+/* Ana Layout Container */
+.main-layout-container {
+    display: flex;
+    gap: 24px;
+    transition: all 0.3s ease;
+    padding: 0;
+}
+
+.main-content-left {
+    flex: 1;
+    transition: flex 0.3s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.main-layout-container.sepet-open .main-content-left {
+    flex: 1;
+}
+
+.main-content-right.sepet-panel {
+    flex: 1;
+    min-width: 400px;
+    max-width: 500px;
+    display: flex;
+    flex-direction: column;
+}
+
+.main-content-right.sepet-panel .card {
+    margin: 0;
+}
+
+/* Sepet Panel */
+.sepet-panel {
+    animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateX(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
 }
 
 .sepet-item {
@@ -794,7 +846,13 @@ body {
     <main class="main-content">
         <header class="page-header">
             <h2>Ana Depo Siparişi Oluştur</h2>
-            <button class="btn btn-secondary" onclick="window.location.href='config/logout.php'">Çıkış Yap →</button>
+            <div style="display: flex; gap: 12px; align-items: center;">
+                <button class="btn btn-primary sepet-btn" id="sepetToggleBtn" onclick="toggleSepet()" style="position: relative;">
+                    🛒 Sepet
+                    <span class="sepet-badge" id="sepetBadge" style="display: none;">0</span>
+                </button>
+                <button class="btn btn-secondary" onclick="window.location.href='config/logout.php'">Çıkış Yap →</button>
+            </div>
         </header>
 
         <div class="content-wrapper">
@@ -804,17 +862,12 @@ body {
                 </div>
             <?php endif; ?>
 
-            <!-- Sepet -->
-            <div class="sepet-container" id="sepetContainer">
-                <h3>🛒 Sepet</h3>
-                <div id="sepetList"></div>
-                <div style="margin-top: 1.25rem; text-align: right;">
-                    <button class="btn btn-primary" onclick="saveRequest()">✓ Sipariş Oluştur</button>
-                </div>
-            </div>
-
-            <!-- Filtreler -->
-            <section class="card">
+            <!-- Ana Container - Sepet açıkken ikiye bölünecek -->
+            <div class="main-layout-container" id="mainLayoutContainer">
+                <!-- Sol taraf: Filtreler ve Tablo -->
+                <div class="main-content-left" id="mainContentLeft">
+                    <!-- Filtreler -->
+                    <section class="card">
                 <div class="filter-section">
                     <div class="filter-group">
                         <label>Kalem Tanımı Filtresi</label>
@@ -914,6 +967,21 @@ body {
                     <button class="btn btn-secondary" id="nextBtn" onclick="changePage(1)" disabled>Sonraki →</button>
                 </div>
             </section>
+                </div>
+                <!-- Sağ taraf: Sepet (açıkken görünecek) -->
+                <div class="main-content-right sepet-panel" id="sepetPanel" style="display: none;">
+                    <section class="card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                            <h3 style="margin: 0; color: #1e40af; font-size: 1.25rem; font-weight: 600;">🛒 Sepet</h3>
+                            <button class="btn btn-secondary" onclick="toggleSepet()" style="padding: 0.5rem 1rem; font-size: 0.875rem;">✕ Kapat</button>
+                        </div>
+                        <div id="sepetList"></div>
+                        <div style="margin-top: 1.5rem; text-align: right; padding-top: 1.5rem; border-top: 1px solid #e5e7eb;">
+                            <button class="btn btn-primary" onclick="saveRequest()">✓ Sipariş Oluştur</button>
+                        </div>
+                    </section>
+                </div>
+            </div>
         </div>
     </main>
 
@@ -1250,16 +1318,40 @@ function updateQuantity(itemCode, quantity) {
     }
 }
 
-function updateSepet() {
-    const container = document.getElementById('sepetContainer');
-    const list = document.getElementById('sepetList');
+function toggleSepet() {
+    const panel = document.getElementById('sepetPanel');
+    const container = document.getElementById('mainLayoutContainer');
+    const isOpen = panel.style.display !== 'none';
     
-    if (Object.keys(selectedItems).length === 0) {
-        container.classList.remove('show');
+    if (isOpen) {
+        panel.style.display = 'none';
+        container.classList.remove('sepet-open');
+    } else {
+        panel.style.display = 'block';
+        container.classList.add('sepet-open');
+        updateSepet();
+    }
+}
+
+function updateSepet() {
+    const list = document.getElementById('sepetList');
+    const badge = document.getElementById('sepetBadge');
+    const itemCount = Object.keys(selectedItems).length;
+    
+    // Badge güncelle
+    if (itemCount > 0) {
+        badge.textContent = itemCount;
+        badge.style.display = 'flex';
+    } else {
+        badge.style.display = 'none';
+    }
+    
+    // Sepet listesi güncelle
+    if (itemCount === 0) {
+        list.innerHTML = '<div style="text-align: center; padding: 2rem; color: #9ca3af;">Sepetiniz boş</div>';
         return;
     }
     
-    container.classList.add('show');
     list.innerHTML = Object.values(selectedItems).map(item => `
         <div class="sepet-item">
             <div class="sepet-item-info">
@@ -1286,6 +1378,10 @@ function removeFromSepet(itemCode) {
         const input = document.getElementById('qty_' + itemCode);
         if (input) input.value = 0;
         updateSepet();
+        // Dönüşüm kolonunu güncellemek için tabloyu yeniden render et
+        if (itemsData && itemsData.length > 0) {
+            renderItems(itemsData);
+        }
     }
 }
 
