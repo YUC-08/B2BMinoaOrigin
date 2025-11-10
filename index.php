@@ -21,29 +21,14 @@ $data = $sap->get("SQLQueries('OWTQ_LIST')/List?value1='PROD'&value2='WhsCode'")
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="app-container">
-        <aside class="sidebar">
-            <div class="logo">
-                <h1>CREMMA<span>VERSE</span></h1>
-            </div>
-            <?php include 'navbar.php'; ?>
-            <div class="user-info">
-                <div class="user-avatar">K1</div>
-                <div class="user-details">
-                    <div class="user-name">Koşuyolu 1000 - Koşuyolu</div>
-                    <div class="version">v1.0.43</div>
-                </div>
-            </div>
-        </aside>
+    <?php include 'navbar.php'; ?>
 
-         Main Content 
-        <main class="main-content">
-            <header class="page-header">
-                <h2>Anasayfa</h2>
-                <a href="config/login.php"><button class="btn-exit">Çıkış Yap ↗</button></a>
-            </header>
+    <main class="main-content">
+        <header class="page-header">
+            <h2>Anasayfa</h2>
+        </header>
 
-            <div class="content-wrapper">
+        <div class="content-wrapper">
                  Sipariş ve İşlemler Section 
                 <section class="card">
                     <h3 class="section-title">Sipariş ve İşlemler</h3>
@@ -225,10 +210,7 @@ $data = $sap->get("SQLQueries('OWTQ_LIST')/List?value1='PROD'&value2='WhsCode'")
                         </tbody>
                     </table>
                 </section>
-            </div>
-        </main>
-    </div>
-
-    <script src="script.js"></script>
+        </div>
+    </main>
 </body>
 </html>

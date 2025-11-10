@@ -255,25 +255,28 @@ body {
     line-height: 1.6;
 }
 
-/* Main content now full width with top padding for fixed navbar */
+/* Main content - adjusted for sidebar */
 .main-content {
     width: 100%;
     background: whitesmoke;
-    padding-top: 116px; /* Space for fixed navbar (60px header + 56px nav) */
+    padding: 0;
+    min-height: 100vh;
 }
-
-
-
 
 .page-header {
     background: white;
-    padding: 1.5rem 2rem;
-    border-radius: 12px;
+    padding: 20px 2rem;
+    border-radius: 0 0 0 20px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 2rem;
+    margin: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    height: 80px;
+    box-sizing: border-box;
 }
 
 .page-header h2 {
@@ -283,7 +286,7 @@ body {
 }
 
 .content-wrapper {
-    padding: 32px;
+    padding: 24px 32px;
     max-width: 1400px;
     margin: 0 auto;
     display: flex;
@@ -761,8 +764,8 @@ body {
 }
 
 @media (max-width: 768px) {
-    .main-content {
-        padding: 116px 1rem 1rem 1rem;
+    .content-wrapper {
+        padding: 16px 20px;
     }
     
     .filter-section {
@@ -1145,9 +1148,28 @@ function renderItems(items) {
         const minQty = item.MinQty || 0;
         const uomCode = item.UomCode || item.UoMCode || '-'; // YENİ: UomCode view'den geliyor
         const baseQty = parseFloat(item.BaseQty || 1.0); // YENİ: BaseQty view'den geliyor
+        const uomConvert = parseFloat(item.UomConvert || item.UOMConvert || 1); // UomConvert view'den geliyor
         const isInSepet = selectedItems.hasOwnProperty(itemCode);
         const sepetQty = isInSepet ? selectedItems[itemCode].quantity : 0;
-        const conversionText = baseQty != 1.0 ? "1x" + baseQty.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ".") : '-';
+        
+        // Dönüşüm kolonu: Eğer sipariş miktarı varsa "miktar x UomConvert", yoksa sadece UomConvert
+        let conversionText = '-';
+        if (uomConvert && uomConvert !== 1) {
+            if (sepetQty > 0) {
+                // Sipariş miktarı × UomConvert formatında göster
+                conversionText = `${sepetQty.toFixed(0)}x${uomConvert.toFixed(0)}`;
+            } else {
+                // Sipariş miktarı yoksa sadece UomConvert göster
+                conversionText = uomConvert.toFixed(0);
+            }
+        } else if (uomConvert === 1) {
+            // Standart (1 adet) ise sadece miktarı göster veya boş bırak
+            if (sepetQty > 0) {
+                conversionText = sepetQty.toFixed(0);
+            } else {
+                conversionText = '-';
+            }
+        }
         
         return `
             <tr>
@@ -1222,6 +1244,10 @@ function updateQuantity(itemCode, quantity) {
     }
     
     updateSepet();
+    // Dönüşüm kolonunu güncellemek için tabloyu yeniden render et
+    if (itemsData && itemsData.length > 0) {
+        renderItems(itemsData);
+    }
 }
 
 function updateSepet() {

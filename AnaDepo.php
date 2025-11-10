@@ -197,22 +197,28 @@ body {
     line-height: 1.6;
 }
 
-/* Main content now full width with top padding for fixed navbar */
+/* Main content - adjusted for sidebar */
 .main-content {
     width: 100%;
     background: whitesmoke;
-    padding-top: 116px; /* Space for fixed navbar (60px header + 56px nav) */
+    padding: 0;
+    min-height: 100vh;
 }
 
 .page-header {
     background: white;
-    padding: 1.5rem 2rem;
-    border-radius: 12px;
+    padding: 20px 2rem;
+    border-radius: 0 0 0 20px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 2rem;
+    margin: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    height: 80px;
+    box-sizing: border-box;
 }
 
 .page-header h2 {
@@ -222,7 +228,7 @@ body {
 }
 
 .content-wrapper {
-    padding: 32px;
+    padding: 24px 32px;
     max-width: 1400px;
     margin: 0 auto;
 }
@@ -588,15 +594,13 @@ body {
 
 /* Responsive */
 @media (max-width: 768px) {
-    .main-content {
-        padding-top: 106px; /* Adjusted for mobile navbar height */
-    }
-    
     .content-wrapper {
-        padding: 20px;
+        padding: 16px 20px;
     }
     
     .page-header {
+        height: auto;
+        min-height: 80px;
         padding: 16px 20px;
         flex-direction: column;
         gap: 12px;
