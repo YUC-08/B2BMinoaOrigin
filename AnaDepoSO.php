@@ -893,11 +893,12 @@ body {
                             <th>Minimum Miktar</th>
                             <th>Sipariş Miktarı</th>
                             <th>Ölçü Birimi</th>
+                            <th>Dönüşüm</th>
                         </tr>
                     </thead>
                     <tbody id="itemsTableBody">
                         <tr>
-                            <td colspan="8" style="text-align:center;color:#888;padding:20px;">
+                            <td colspan="9" style="text-align:center;color:#888;padding:20px;">
                                 Filtre seçerek veya arama yaparak kalemleri görüntüleyin.
                             </td>
                         </tr>
@@ -1123,7 +1124,7 @@ function loadItems() {
         .catch(err => {
             console.error('Hata:', err);
             document.getElementById('itemsTableBody').innerHTML = 
-                '<tr><td colspan="8" style="text-align:center;color:#dc3545;">Veri yüklenirken hata oluştu.</td></tr>';
+                '<tr><td colspan="9" style="text-align:center;color:#dc3545;">Veri yüklenirken hata oluştu.</td></tr>';
         });
 }
 
@@ -1131,7 +1132,7 @@ function renderItems(items) {
     const tbody = document.getElementById('itemsTableBody');
     
     if (items.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
         return;
     }
     
@@ -1146,6 +1147,7 @@ function renderItems(items) {
         const baseQty = parseFloat(item.BaseQty || 1.0); // YENİ: BaseQty view'den geliyor
         const isInSepet = selectedItems.hasOwnProperty(itemCode);
         const sepetQty = isInSepet ? selectedItems[itemCode].quantity : 0;
+        const conversionText = baseQty != 1.0 ? "1x" + baseQty.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ".") : '-';
         
         return `
             <tr>
@@ -1170,6 +1172,7 @@ function renderItems(items) {
                     </div>
                 </td>
                 <td>${uomCode}</td>
+                <td style="text-align: center; font-weight: 600; color: #3b82f6;">${conversionText}</td>
             </tr>
         `;
     }).join('');
