@@ -572,13 +572,13 @@ if ($avatarText === '') {
             <span class="sidebar-text">Anasayfa</span>
         </a>
 
-        <a href="Dis-Tedarik.php" class="sidebar-item <?= ($currentPage == 'Dis-Tedarik.php') ? 'active' : '' ?>">
-            <span class="sidebar-icon">📦</span>
-            <span class="sidebar-text">Dış Tedarik</span>
+        <a href="DisTedarik.php" class="sidebar-item <?= ($currentPage == 'DisTedarik.php' || $currentPage == 'DisTedarikSO.php' || $currentPage == 'DisTedarik-Detay.php' || $currentPage == 'DisTedarik-TeslimAl.php') ? 'active' : '' ?>">
+            <span class="sidebar-icon">🛒</span>
+            <span class="sidebar-text">Dis Tedarik</span>
         </a>
 
-        <a href="AnaDepo.php" class="sidebar-item <?= ($currentPage == 'AnaDepo.php') ? 'active' : '' ?>">
-            <span class="sidebar-icon">🏪</span>
+        <a href="AnaDepo.php" class="sidebar-item <?= ($currentPage == 'AnaDepo.php' || $currentPage == 'AnaDepoSO.php' || $currentPage == 'AnaDepo-Detay.php' || $currentPage == 'anadepo_teslim_al.php') ? 'active' : '' ?>">
+            <span class="sidebar-icon">📦</span>
             <span class="sidebar-text">Ana Depo</span>
         </a>
 
