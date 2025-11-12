@@ -16,22 +16,45 @@ if (empty($uAsOwnr) || empty($branch)) {
 }
 
 // PurchaseRequestList sorgusu
-// NOT: View'den gelen verilerde U_AS_OWNR ve U_ASB2B_BRAN null olabiliyor
-// Bu yüzden filtreleme yapmadan tüm kayıtları çekiyoruz
-// URL encoding: boşluk ve özel karakterler encode edilmeli
-$query = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$orderby=' . urlencode('RequestNo desc') . '&$top=100';
+// Spec'e göre: Filtreleme direkt view'de yapılmalı
+// GET /b1s/v2/view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=U_AS_OWNR eq 'KT' and U_ASB2B_BRAN eq '100'
+$filter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}'";
+$query = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=' . urlencode($filter) . '&$orderby=' . urlencode('RequestNo desc') . '&$top=1000';
 
 $data = $sap->get($query);
 $allRows = $data['response']['value'] ?? [];
 
-// PHP tarafında null değerleri handle et (eğer gerekirse filtreleme yapılabilir)
-// Şimdilik tüm kayıtları gösteriyoruz çünkü view'de bu alanlar null geliyor
+// ✅ Talep tarihlerini PurchaseRequest'ten çek (RequriedDate için)
+// View'de RequriedDate olmayabilir, bu yüzden PurchaseRequest'ten çekiyoruz
+// Performans için sadece görünen ilk sayfa kayıtları için çekiyoruz (max 50)
+$requestDates = []; // RequestNo => RequriedDate mapping
+if (!empty($allRows)) {
+    // İlk 50 kayıt için RequriedDate çek (performans için)
+    $maxRequests = min(50, count($allRows));
+    for ($i = 0; $i < $maxRequests; $i++) {
+        $row = $allRows[$i];
+        $reqNo = $row['RequestNo'] ?? null;
+        if ($reqNo) {
+            $prQuery = "PurchaseRequests({$reqNo})?\$select=RequriedDate,DocDate";
+            $prData = $sap->get($prQuery);
+            if (($prData['status'] ?? 0) == 200 && isset($prData['response'])) {
+                $requriedDate = $prData['response']['RequriedDate'] ?? $prData['response']['RequiredDate'] ?? null;
+                // Eğer RequriedDate yoksa DocDate kullan
+                if (empty($requriedDate)) {
+                    $requriedDate = $prData['response']['DocDate'] ?? null;
+                }
+                $requestDates[$reqNo] = $requriedDate;
+            }
+        }
+    }
+}
 
 // Debug bilgileri
 $debugInfo = [];
 $debugInfo['session_uAsOwnr'] = $uAsOwnr;
 $debugInfo['session_branch'] = $branch;
-$debugInfo['note'] = 'Filter kaldırıldı - View\'de U_AS_OWNR ve U_ASB2B_BRAN null geliyor';
+$debugInfo['note'] = 'Filtreleme direkt view\'de yapılıyor (U_AS_OWNR ve U_ASB2B_BRAN)';
+$debugInfo['filter'] = $filter;
 $debugInfo['query'] = $query;
 $debugInfo['http_status'] = $data['status'] ?? 'NO STATUS';
 $debugInfo['response_keys'] = isset($data['response']) ? array_keys($data['response']) : [];
@@ -229,6 +252,141 @@ body {
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+/* Filter Section */
+.filter-section {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px;
+    padding: 24px;
+    background: #f8fafc;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.filter-group label {
+    font-weight: 600;
+    color: #1e3a8a;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Single Select Dropdown */
+.single-select-container {
+    position: relative;
+    width: 100%;
+}
+
+.single-select-input {
+    display: flex;
+    align-items: center;
+    padding: 10px 14px;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    background: white;
+    cursor: pointer;
+    min-height: 42px;
+    transition: all 0.2s ease;
+}
+
+.single-select-input:hover {
+    border-color: #3b82f6;
+}
+
+.single-select-input.active {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.single-select-input input {
+    border: none;
+    outline: none;
+    flex: 1;
+    background: transparent;
+    cursor: pointer;
+    font-size: 14px;
+    color: #2c3e50;
+}
+
+.dropdown-arrow {
+    transition: transform 0.2s;
+    color: #6b7280;
+    font-size: 12px;
+}
+
+.single-select-input.active .dropdown-arrow {
+    transform: rotate(180deg);
+}
+
+/* Increased z-index to 9999 to ensure dropdown appears above all elements */
+.single-select-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 2px solid #3b82f6;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    max-height: 240px;
+    overflow-y: auto;
+    z-index: 9999;
+    display: none;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    margin-top: -2px;
+}
+
+.single-select-dropdown.show {
+    display: block;
+}
+
+.single-select-option {
+    padding: 10px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid #f3f4f6;
+    font-size: 14px;
+    transition: background 0.15s ease;
+}
+
+.single-select-option:hover {
+    background: #f8fafc;
+}
+
+.single-select-option.selected {
+    background: #3b82f6;
+    color: white;
+    font-weight: 500;
+}
+
+.single-select-option:last-child {
+    border-bottom: none;
+}
+
+/* Date Input */
+.filter-group input[type="date"] {
+    padding: 10px 14px;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: all 0.2s ease;
+    background: white;
+}
+
+.filter-group input[type="date"]:hover {
+    border-color: #3b82f6;
+}
+
+.filter-group input[type="date"]:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
     </style>
 </head>
 <body>
@@ -241,6 +399,41 @@ body {
         </header>
 
         <div class="content-wrapper">
+            <?php
+            // Başarı/Hata mesajlarını göster
+            $successMsg = '';
+            $errorMsg = '';
+            
+            if (isset($_GET['msg'])) {
+                if ($_GET['msg'] === 'teslim_alindi') {
+                    $successMsg = '✅ Teslim alma işlemi başarıyla tamamlandı!';
+                    if (isset($_GET['status_warning']) && $_GET['status_warning'] == '1') {
+                        $errorMsg = '⚠️ Teslim alma başarılı ama durum güncellenemedi, lütfen manuel kontrol edin.';
+                        if (isset($_GET['error']) && !empty($_GET['error'])) {
+                            $errorMsg .= '<br><small style="color: #6b7280;">' . htmlspecialchars(urldecode($_GET['error'])) . '</small>';
+                        }
+                    }
+                } elseif ($_GET['msg'] === 'ok') {
+                    $successMsg = '✅ İşlem başarıyla tamamlandı!';
+                }
+            }
+            ?>
+            
+        <?php if (!empty($successMsg)): ?>
+            <div class="card" style="background: #dcfce7; border: 2px solid #16a34a; margin-bottom: 1.5rem;">
+                <p style="color: #166534; font-weight: 600; margin: 0;"><?= htmlspecialchars($successMsg) ?></p>
+                <?php if (!empty($pdnInfo)): ?>
+                    <?= $pdnInfo ?>
+                <?php endif; ?>
+            </div>
+        <?php endif; ?>
+            
+            <?php if (!empty($errorMsg)): ?>
+                <div class="card" style="background: #fee2e2; border: 2px solid #dc2626; margin-bottom: 1.5rem;">
+                    <p style="color: #991b1b; font-weight: 600; margin: 0;"><?= $errorMsg ?></p>
+                </div>
+            <?php endif; ?>
+            
             <?php if (empty($allRows) || $debugInfo['http_status'] != 200): ?>
                 <div class="card" style="background: #fef3c7; border: 2px solid #f59e0b; margin-bottom: 1.5rem;">
                     <h3 style="color: #92400e; margin-bottom: 1rem;">🔍 Debug Bilgileri</h3>
@@ -267,8 +460,38 @@ body {
                     </div>
                 </div>
             <?php endif; ?>
+            
+            <!-- ✅ Filtre Bölümü -->
+            <div class="filter-section">
+                <div class="filter-group">
+                    <label for="statusFilter">SİPARİŞ DURUMU</label>
+                    <select id="statusFilter" onchange="filterTable()">
+                        <option value="">Tümü</option>
+                        <option value="1">Onay bekleniyor</option>
+                        <option value="2">Hazırlanıyor</option>
+                        <option value="3">Sevk edildi</option>
+                        <option value="4">Tamamlandı</option>
+                        <option value="5">İptal edildi</option>
+                    </select>
+                </div>
+                
+                <div class="filter-group">
+                    <label for="startDate">BAŞLANGIÇ TARİHİ</label>
+                    <div class="date-input-wrapper">
+                        <input type="date" id="startDate" onchange="filterTable()" placeholder="gg.aa.yyyy">
+                    </div>
+                </div>
+                
+                <div class="filter-group">
+                    <label for="endDate">BİTİŞ TARİHİ</label>
+                    <div class="date-input-wrapper">
+                        <input type="date" id="endDate" onchange="filterTable()" placeholder="gg.aa.yyyy">
+                    </div>
+                </div>
+            </div>
+            
             <section class="card">
-                <table class="data-table">
+                <table class="data-table" id="ordersTable">
                     <thead>
                         <tr>
                             <th>Talep No</th>
@@ -281,7 +504,7 @@ body {
                     </thead>
                     <tbody>
                         <?php if (!empty($allRows)): ?>
-                            <?php foreach ($allRows as $row): 
+                            <?php foreach ($allRows as $row):
                                 $status = $row['U_ASB2B_STATUS'] ?? null;
                                 // Status null ise "Bilinmiyor" göster
                                 if ($status === null) {
@@ -293,19 +516,49 @@ body {
                                 }
                                 $requestNo = $row['RequestNo'] ?? '';
                                 $orderNo = $row['U_ASB2B_ORNO'] ?? null;
-                                $docDate = formatDate($row['DocDate'] ?? '');
-                                $orderDate = formatDate($row['OrderDate'] ?? '');
-                                // Status null veya '2' veya '3' ise Teslim Al aktif olabilir (null durumunda da göster)
-                                $canReceive = ($status === null || $status === '2' || $status === '3');
+                                
+                                // ✅ Talep Tarihi: PurchaseRequest.RequriedDate (kullanıcının talep ettiği teslimat tarihi)
+                                // Önce $requestDates mapping'inden al, yoksa view'den DocDate kullan
+                                $requestDate = $requestDates[$requestNo] ?? $row['RequriedDate'] ?? $row['RequiredDate'] ?? $row['RequestDate'] ?? $row['DocDate'] ?? '';
+                                $docDate = !empty($requestDate) ? formatDate($requestDate) : '-';
+                                
+                                // ✅ Sipariş Tarihi: PurchaseOrder.DocDate (U_ASB2B_ORDT) - boş olabilir
+                                $orderDateValue = $row['U_ASB2B_ORDT'] ?? null;
+                                $orderDate = (!empty($orderDateValue) && $orderDateValue !== null && $orderDateValue !== '') ? formatDate($orderDateValue) : '-';
+                                
+                                // Data attribute'ları ekle (filtreleme için)
+                                $statusValue = $status ?? '';
+                                // Tarih formatını ISO (YYYY-MM-DD) yap (JavaScript için)
+                                $requestDateForFilter = '';
+                                if (!empty($requestDate)) {
+                                    // Eğer tarih zaten ISO formatındaysa direkt kullan
+                                    if (preg_match('/^\d{4}-\d{2}-\d{2}/', $requestDate)) {
+                                        $requestDateForFilter = substr($requestDate, 0, 10);
+                                    } else {
+                                        // Değilse formatla
+                                        $requestDateForFilter = date('Y-m-d', strtotime($requestDate));
+                                    }
+                                }
+                                
+                                // Spec'e göre: Teslim Al aktif olması için:
+                                // - Status = 2 (Hazırlanıyor) veya 3 (Sevk edildi) OLMALI
+                                // - VE OrderNo dolu OLMALI
+                                $canReceive = false;
+                                if (!empty($orderNo) && $orderNo !== null && $orderNo !== '' && $orderNo !== '-') {
+                                    if ($status === '2' || $status === '3' || $status === 2 || $status === 3) {
+                                        $canReceive = true;
+                                    }
+                                }
                             ?>
-                                <tr>
+                                <tr data-status="<?= htmlspecialchars($statusValue) ?>" 
+                                    data-request-date="<?= htmlspecialchars($requestDateForFilter) ?>">
                                     <td><?= htmlspecialchars($requestNo) ?></td>
                                     <td><?= $orderNo ? htmlspecialchars($orderNo) : '-' ?></td>
                                     <td><?= $docDate ?></td>
                                     <td><?= $orderDate !== '-' ? $orderDate : '-' ?></td>
                                     <td><span class="status-badge <?= $statusClass ?>"><?= $statusText ?></span></td>
                                     <td>
-                                        <a href="DisTedarik-Detay.php?requestNo=<?= urlencode($requestNo) ?><?= $orderNo ? '&orderNo=' . urlencode($orderNo) : '' ?>&status=<?= urlencode($status) ?>">
+                                        <a href="DisTedarik-Detay.php?requestNo=<?= urlencode($requestNo) ?><?= $orderNo ? '&orderNo=' . urlencode($orderNo) : '' ?><?= $status !== null ? '&status=' . urlencode($status) : '' ?>">
                                             <button class="btn btn-view">👁️ Detay</button>
                                         </a>
                                         <?php if ($canReceive): ?>
@@ -328,5 +581,59 @@ body {
             </section>
         </div>
     </main>
+    
+    <script>
+    // ✅ Filtreleme Fonksiyonu (Client-side)
+    function filterTable() {
+        const statusFilter = document.getElementById('statusFilter').value;
+        const startDate = document.getElementById('startDate').value;
+        const endDate = document.getElementById('endDate').value;
+        
+        const table = document.getElementById('ordersTable');
+        const rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
+        
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const rowStatus = row.getAttribute('data-status') || '';
+            const rowRequestDate = row.getAttribute('data-request-date') || '';
+            
+            let showRow = true;
+            
+            // Status filtresi
+            if (statusFilter && rowStatus !== statusFilter) {
+                showRow = false;
+            }
+            
+            // Tarih filtresi
+            if (showRow && (startDate || endDate)) {
+                if (rowRequestDate) {
+                    const requestDate = new Date(rowRequestDate);
+                    
+                    if (startDate) {
+                        const start = new Date(startDate);
+                        if (requestDate < start) {
+                            showRow = false;
+                        }
+                    }
+                    
+                    if (showRow && endDate) {
+                        const end = new Date(endDate);
+                        end.setHours(23, 59, 59, 999); // Günün sonuna kadar
+                        if (requestDate > end) {
+                            showRow = false;
+                        }
+                    }
+                } else {
+                    // Tarih yoksa ve filtre varsa gizle
+                    if (startDate || endDate) {
+                        showRow = false;
+                    }
+                }
+            }
+            
+            row.style.display = showRow ? '' : 'none';
+        }
+    }
+    </script>
 </body>
 </html>

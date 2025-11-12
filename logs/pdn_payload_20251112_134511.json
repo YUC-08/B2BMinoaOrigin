@@ -1,0 +1,15 @@
+{
+    "CardCode": "S100124",
+    "U_ASB2B_NumAtCard": "Deneme 12",
+    "Comments": "Dış Tedarik Teslim Alma İşlemi",
+    "U_AS_OWNR": "KT",
+    "U_ASB2B_BRAN": "100",
+    "DocumentLines": [
+        {
+            "BaseType": 22,
+            "BaseEntry": 7671,
+            "BaseLine": 0,
+            "Quantity": 5
+        }
+    ]
+}

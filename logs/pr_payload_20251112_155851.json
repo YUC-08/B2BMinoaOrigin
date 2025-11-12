@@ -1,18 +1,16 @@
 {
-    "DocDate": "2025-11-11",
-    "DocDueDate": "2025-11-18",
-    "RequriedDate": "2025-11-18",
-    "Comments": "Satınalma talebi",
+    "DocDate": "2025-11-12",
+    "DocDueDate": "2025-11-19",
+    "RequriedDate": "2025-11-19",
+    "Comments": "Deneme 12 ",
     "U_ASB2B_BRAN": "100",
     "U_AS_OWNR": "KT",
     "U_ASB2B_STATUS": "1",
     "U_ASB2B_User": "turgay",
-    "DocCurrency": "USD",
-    "DocRate": 1,
     "DocumentLines": [
         {
             "ItemCode": "90228",
-            "Quantity": 2,
+            "Quantity": 5,
             "UoMCode": "AD",
             "WarehouseCode": "100-KT-1",
             "VendorNum": "P100001"

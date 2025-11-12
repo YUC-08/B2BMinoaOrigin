@@ -47,6 +47,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
     
+    // SAP'de PurchaseRequests için DocumentLines kullanılmalı (StockTransferLines değil!)
+    // Insomnia_Requests.md'de örnek: DocumentLines kullanılıyor
     $documentLines = [];
     foreach ($selectedItems as $item) {
         $userQuantity = floatval($item['quantity'] ?? 0);
@@ -55,11 +57,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // Miktar > 0 ve ItemCode boş değil olmalı
         if ($userQuantity > 0 && !empty($itemCode)) {
             $documentLines[] = [
-                'ItemCode' => $itemCode,
-                'Quantity' => $userQuantity,
-                'UoMCode' => $item['uomCode'] ?? '',
-                'WarehouseCode' => $toWarehouse,
-                'VendorNum' => $item['defaultVendor'] ?? ''
+                'ItemCode' => $itemCode, // Seçilen kalem
+                'Quantity' => $userQuantity, // İstenen miktar
+                'UoMCode' => $item['uomCode'] ?? '', // Birim
+                'WarehouseCode' => $toWarehouse, // Gideceği depo (talep eden depo)
+                'VendorNum' => $item['defaultVendor'] ?? '' // DefaultVendor (view'den)
             ];
         }
     }
@@ -69,18 +71,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
     
+    // Spec'e göre: POST /b1s/v2/PurchaseRequests
+    $requiredDate = $_POST['required_date'] ?? date('Y-m-d', strtotime('+7 days'));
+    $comments = $_POST['comments'] ?? 'Satınalma talebi';
+    $docDate = date('Y-m-d'); // Doküman tarihi
+    $docDueDate = $requiredDate; // Vade tarihi (RequriedDate ile aynı)
+    
     $payload = [
-        'DocDate' => date('Y-m-d'),
-        'DocDueDate' => date('Y-m-d', strtotime('+7 days')),
-        'RequriedDate' => date('Y-m-d', strtotime('+7 days')),
-        'Comments' => 'Satınalma talebi',
-        'U_ASB2B_BRAN' => $branch,
-        'U_AS_OWNR' => $uAsOwnr,
-        'U_ASB2B_STATUS' => '1',
-        'U_ASB2B_User' => $userName,
-        'DocCurrency' => 'USD',
-        'DocRate' => 1.0,
-        'DocumentLines' => $documentLines // ✅ Doğru field name
+        'DocDate' => $docDate, // Doküman tarihi
+        'DocDueDate' => $docDueDate, // Vade tarihi
+        'RequriedDate' => $requiredDate, // Teslimat istenen tarih (kullanıcıdan alınan)
+        'Comments' => $comments, // Ekrandaki açıklama
+        'U_ASB2B_BRAN' => $branch, // Login şubesi
+        'U_AS_OWNR' => $uAsOwnr, // Login kitabevi
+        'U_ASB2B_STATUS' => '1', // Her zaman 1 = Yeni/Onay bekleniyor
+        'U_ASB2B_User' => $userName, // Login kullanıcı adı
+        'DocumentLines' => $documentLines // ✅ SAP'de PurchaseRequests için DocumentLines kullanılmalı
     ];
     
     // Debug: Payload'ı logla
@@ -882,6 +888,16 @@ body {
                 <div class="alert alert-warning">
                     <strong>Uyarı:</strong> Hedef depo bilgisi bulunamadı! Lütfen SAP'de "U_ASB2B_MAIN=2" olarak tanımlanmış bir depo olduğundan emin olun.
                 </div>
+            <?php else: ?>
+                <!-- Spec'e göre: Gideceği depo (talep eden depo) bilgisi -->
+                <div class="card" style="background: #eff6ff; border: 2px solid #3b82f6; margin-bottom: 1.5rem;">
+                    <div style="display: flex; align-items: center; gap: 1rem;">
+                        <div>
+                            <div style="font-size: 0.75rem; font-weight: 600; color: #1e40af; text-transform: uppercase; margin-bottom: 0.25rem;">Gideceği Depo (Talep Edilen Depo)</div>
+                            <div style="font-size: 1.25rem; color: #1e3a8a; font-weight: 700;"><?= htmlspecialchars($toWarehouse) ?></div>
+                        </div>
+                    </div>
+                </div>
             <?php endif; ?>
 
             <!-- Ana Container - Sepet açıkken ikiye bölünecek -->
@@ -969,19 +985,18 @@ body {
                             <th>Kalem Kodu</th>
                             <th>Kalem Tanımı</th>
                             <th>Kalem Grubu</th>
-                            <th>Stokta</th>
-                            <th>Stoktaki Miktar</th>
+                            <th>Ana Depo Stok Durumu</th>
+                            <th>Şube Miktarı</th>
                             <th>Minimum Miktar</th>
                             <th>Sipariş Miktarı</th>
-                            <th>Ölçü Birimi</th>
-                            <th>Dönüşüm</th>
+                            <th>Birim</th>
                             <th>Ana Depo</th>
                             <th>Varsayılan Tedarikçi</th>
                         </tr>
                     </thead>
                     <tbody id="itemsTableBody">
                         <tr>
-                            <td colspan="11" style="text-align:center;color:#888;padding:20px;">
+                            <td colspan="10" style="text-align:center;color:#888;padding:20px;">
                                 Filtre seçerek veya arama yaparak kalemleri görüntüleyin.
                             </td>
                         </tr>
@@ -1003,8 +1018,24 @@ body {
                             <button class="btn btn-secondary" onclick="toggleSepet()" style="padding: 0.5rem 1rem; font-size: 0.875rem;">✕ Kapat</button>
                         </div>
                         <div id="sepetList"></div>
-                        <div style="margin-top: 1.5rem; text-align: right; padding-top: 1.5rem; border-top: 1px solid #e5e7eb;">
-                            <button class="btn btn-primary" onclick="saveRequest()">✓ Talep Oluştur</button>
+                        <div style="margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #e5e7eb;">
+                            <div style="margin-bottom: 1rem;">
+                                <label style="display: block; font-weight: 600; color: #374151; margin-bottom: 0.5rem;">Talep Tarihi (Teslimat İstenen Tarih) *</label>
+                                <input type="date" 
+                                       id="requiredDate" 
+                                       required
+                                       value="<?= date('Y-m-d', strtotime('+7 days')) ?>"
+                                       style="width: 100%; padding: 0.5rem; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 0.875rem;">
+                            </div>
+                            <div style="margin-bottom: 1rem;">
+                                <label style="display: block; font-weight: 600; color: #374151; margin-bottom: 0.5rem;">Açıklama</label>
+                                <textarea id="requestComments" 
+                                          placeholder="Talep ile ilgili açıklama giriniz..." 
+                                          style="width: 100%; padding: 0.5rem; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 0.875rem; min-height: 80px; resize: vertical;"></textarea>
+                            </div>
+                            <div style="text-align: right;">
+                                <button class="btn btn-primary" onclick="saveRequest()">✓ Talep Oluştur</button>
+                            </div>
                         </div>
                     </section>
                 </div>
@@ -1272,7 +1303,7 @@ function renderItems(items) {
     const tbody = document.getElementById('itemsTableBody');
     
     if (items.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
         return;
     }
     
@@ -1280,39 +1311,22 @@ function renderItems(items) {
         const itemCode = item.ItemCode || '';
         const itemName = item.ItemName || item.ItemDescription || '';
         const itemGroup = item.ItemGroup || '-';
-        const hasStock = item._hasStock || false;
-        const stockQty = item.MainQty || item._stock || 0;
+        const mainQty = item.MainQty || item._stock || 0; // Ana depo miktarı
+        const branQty = item.BranQty || 0; // Şube miktarı
         const minQty = item.MinQty || 0;
         const uomCode = item.UomCode || item.UoMCode || '-';
-        const uomConvert = parseFloat(item.UomConvert || item.UOMConvert || 1);
         const fromWhsName = item.FromWhsName || '-';
         const defaultVendor = item.DefaultVendor || '-';
         const isInSepet = selectedItems.hasOwnProperty(itemCode);
         const sepetQty = isInSepet ? selectedItems[itemCode].quantity : 0;
-        
-        // Dönüşüm kolonu: Eğer sipariş miktarı varsa "miktar x UomConvert", yoksa sadece UomConvert
-        let conversionText = '-';
-        if (uomConvert && uomConvert !== 1) {
-            if (sepetQty > 0) {
-                conversionText = `${sepetQty.toFixed(0)}x${uomConvert.toFixed(0)}`;
-            } else {
-                conversionText = uomConvert.toFixed(0);
-            }
-        } else if (uomConvert === 1) {
-            if (sepetQty > 0) {
-                conversionText = sepetQty.toFixed(0);
-            } else {
-                conversionText = '-';
-            }
-        }
         
         return `
             <tr>
                 <td>${itemCode}</td>
                 <td>${itemName}</td>
                 <td>${itemGroup}</td>
-                <td><span class="stock-badge ${hasStock ? 'stock-yes' : 'stock-no'}">${hasStock ? 'Var' : 'Yok'}</span></td>
-                <td>${stockQty.toFixed(2)}</td>
+                <td>${mainQty.toFixed(2)}</td>
+                <td>${branQty.toFixed(2)}</td>
                 <td>${minQty}</td>
                 <td>
                     <div class="quantity-controls">
@@ -1329,7 +1343,6 @@ function renderItems(items) {
                     </div>
                 </td>
                 <td>${uomCode}</td>
-                <td style="text-align: center; font-weight: 600; color: #3b82f6;">${conversionText}</td>
                 <td>${fromWhsName}</td>
                 <td>${defaultVendor}</td>
             </tr>
@@ -1444,7 +1457,7 @@ function updateSepet() {
 function removeFromSepet(itemCode) {
     if (selectedItems[itemCode]) {
         delete selectedItems[itemCode];
-        const input = document.getElementById('qty_' + itemCode);
+        const input = document.getElementById('qty_' + itemCode); 
         if (input) input.value = 0;
         updateSepet();
         // Dönüşüm kolonunu güncellemek için tabloyu yeniden render et
@@ -1474,9 +1487,19 @@ function saveRequest() {
         return;
     }
     
+    const comments = document.getElementById('requestComments')?.value || '';
+    const requiredDate = document.getElementById('requiredDate')?.value || '';
+    
+    if (!requiredDate) {
+        alert('Lütfen talep tarihini girin!');
+        return;
+    }
+    
     const formData = new FormData();
     formData.append('action', 'create_request');
     formData.append('items', JSON.stringify(items));
+    formData.append('comments', comments);
+    formData.append('required_date', requiredDate); 
     
     if (!confirm('Talebi oluşturmak istediğinize emin misiniz?')) {
         return;

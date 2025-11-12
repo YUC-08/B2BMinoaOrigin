@@ -24,8 +24,8 @@ $errorMsg = '';
 $debugInfo = [];
 
 if ($isPurchaseOrder) {
-    // Sipariş No dolu ise PurchaseOrders'tan çek
-    // Önce header bilgilerini çek ($expand çalışmıyor)
+    // Senaryo A: Sipariş No doluysa (Order Detay)
+    // Spec'e göre: GET /b1s/v2/PurchaseOrders(7671)
     $orderQuery = 'PurchaseOrders(' . intval($orderNo) . ')';
     $orderData = $sap->get($orderQuery);
     
@@ -38,18 +38,38 @@ if ($isPurchaseOrder) {
     if (($orderData['status'] ?? 0) == 200 && isset($orderData['response'])) {
         $detailData = $orderData['response'];
         
-        // Satırları ayrı endpoint'ten çek
-        $linesQuery = 'PurchaseOrders(' . intval($orderNo) . ')/DocumentLines';
+        // ✅ ÖNEMLİ: DocEntry ile çek (DocNum değil!)
+        $orderDocEntry = $detailData['DocEntry'] ?? intval($orderNo);
+        
+        // Spec'e göre: GET /b1s/v2/PurchaseOrders(7671)/DocumentLines
+        $linesQuery = "PurchaseOrders({$orderDocEntry})/DocumentLines";
         $linesData = $sap->get($linesQuery);
         
         $debugInfo['lines_query'] = $linesQuery;
         $debugInfo['lines_http_status'] = $linesData['status'] ?? 'NO STATUS';
         
         if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
-            if (isset($linesData['response']['value'])) {
-                $lines = $linesData['response']['value'];
-            } elseif (is_array($linesData['response'])) {
-                $lines = $linesData['response'];
+            $resp = $linesData['response'];
+            
+            // ✅ Robust parsing: Farklı response formatlarını destekle
+            if (isset($resp['value']) && is_array($resp['value'])) {
+                $lines = $resp['value'];
+            } elseif (isset($resp['DocumentLines']) && is_array($resp['DocumentLines'])) {
+                $lines = $resp['DocumentLines'];
+            } elseif (is_array($resp) && !isset($resp['@odata.context'])) {
+                // Direct array
+                $lines = $resp;
+            } elseif (isset($resp['DocumentLines@odata.navigationLink'])) {
+                // Navigation link
+                $navLink = $resp['DocumentLines@odata.navigationLink'];
+                $navRes = $sap->get($navLink);
+                if (($navRes['status'] ?? 0) == 200 && isset($navRes['response'])) {
+                    if (isset($navRes['response']['value']) && is_array($navRes['response']['value'])) {
+                        $lines = $navRes['response']['value'];
+                    } elseif (isset($navRes['response']['DocumentLines']) && is_array($navRes['response']['DocumentLines'])) {
+                        $lines = $navRes['response']['DocumentLines'];
+                    }
+                }
             }
         }
     } else {
@@ -59,8 +79,8 @@ if ($isPurchaseOrder) {
         }
     }
 } else {
-    // Sipariş No boş ise PurchaseRequests'ten çek
-    // Önce header bilgilerini çek ($expand çalışmıyor)
+    // Senaryo B: Sipariş No boşsa (Talep Detay)
+    // Spec'e göre: GET /b1s/v2/PurchaseRequests(53)
     $requestQuery = 'PurchaseRequests(' . intval($requestNo) . ')';
     $requestData = $sap->get($requestQuery);
     
@@ -73,18 +93,38 @@ if ($isPurchaseOrder) {
     if (($requestData['status'] ?? 0) == 200 && isset($requestData['response'])) {
         $detailData = $requestData['response'];
         
-        // Satırları ayrı endpoint'ten çek
-        $linesQuery = 'PurchaseRequests(' . intval($requestNo) . ')/PurchaseRequestLines';
+        // ✅ ÖNEMLİ: DocEntry ile çek
+        $requestDocEntry = $detailData['DocEntry'] ?? intval($requestNo);
+        
+        // Spec'e göre: GET /b1s/v2/PurchaseRequests(53)/DocumentLines (NOT PurchaseRequestLines!)
+        $linesQuery = "PurchaseRequests({$requestDocEntry})/DocumentLines";
         $linesData = $sap->get($linesQuery);
         
         $debugInfo['lines_query'] = $linesQuery;
         $debugInfo['lines_http_status'] = $linesData['status'] ?? 'NO STATUS';
         
         if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
-            if (isset($linesData['response']['value'])) {
-                $lines = $linesData['response']['value'];
-            } elseif (is_array($linesData['response'])) {
-                $lines = $linesData['response'];
+            $resp = $linesData['response'];
+            
+            // ✅ Robust parsing: Farklı response formatlarını destekle
+            if (isset($resp['value']) && is_array($resp['value'])) {
+                $lines = $resp['value'];
+            } elseif (isset($resp['DocumentLines']) && is_array($resp['DocumentLines'])) {
+                $lines = $resp['DocumentLines'];
+            } elseif (is_array($resp) && !isset($resp['@odata.context'])) {
+                // Direct array
+                $lines = $resp;
+            } elseif (isset($resp['DocumentLines@odata.navigationLink'])) {
+                // Navigation link
+                $navLink = $resp['DocumentLines@odata.navigationLink'];
+                $navRes = $sap->get($navLink);
+                if (($navRes['status'] ?? 0) == 200 && isset($navRes['response'])) {
+                    if (isset($navRes['response']['value']) && is_array($navRes['response']['value'])) {
+                        $lines = $navRes['response']['value'];
+                    } elseif (isset($navRes['response']['DocumentLines']) && is_array($navRes['response']['DocumentLines'])) {
+                        $lines = $navRes['response']['DocumentLines'];
+                    }
+                }
             }
         }
     } else {
@@ -339,9 +379,14 @@ body {
                                 <div class="detail-value"><?= htmlspecialchars($detailData['U_ASB2B_ORDSUM'] ?? '-') ?></div>
                             </div>
                         <?php else: ?>
+                            <!-- Senaryo B: Talep Detayı -->
                             <div class="detail-item">
                                 <div class="detail-label">Talep Tarihi</div>
                                 <div class="detail-value"><?= formatDate($detailData['DocDate'] ?? '') ?></div>
+                            </div>
+                            <div class="detail-item" style="grid-column: 1 / -1;">
+                                <div class="detail-label">Açıklama</div>
+                                <div class="detail-value"><?= htmlspecialchars($detailData['Comments'] ?? '-') ?></div>
                             </div>
                         <?php endif; ?>
                     </div>
@@ -385,3 +430,4 @@ body {
     </main>
 </body>
 </html>
+
