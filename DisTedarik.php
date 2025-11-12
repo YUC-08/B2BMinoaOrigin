@@ -15,10 +15,25 @@ if (empty($uAsOwnr) || empty($branch)) {
     die("Session bilgileri eksik. Lütfen tekrar giriş yapın.");
 }
 
+// Filtreler (GET parametrelerinden)
+$filterStatus = $_GET['status'] ?? '';
+$filterStartDate = $_GET['start_date'] ?? '';
+$filterEndDate = $_GET['end_date'] ?? '';
+
 // PurchaseRequestList sorgusu
 // Spec'e göre: Filtreleme direkt view'de yapılmalı
 // GET /b1s/v2/view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=U_AS_OWNR eq 'KT' and U_ASB2B_BRAN eq '100'
 $filter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}'";
+
+// Status filtresi
+if (!empty($filterStatus)) {
+    $filter .= " and U_ASB2B_STATUS eq '{$filterStatus}'";
+}
+
+// Tarih filtreleri (RequriedDate veya DocDate üzerinden)
+// Not: View'de tarih alanı olmayabilir, bu yüzden client-side filtreleme de yapılabilir
+// Şimdilik view'de filtreleme yapmıyoruz, client-side yapacağız
+
 $query = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=' . urlencode($filter) . '&$orderby=' . urlencode('RequestNo desc') . '&$top=1000';
 
 $data = $sap->get($query);
@@ -157,7 +172,7 @@ body {
     border-radius: 12px;
     padding: 1.5rem;
     box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    margin-bottom: 0;
+    margin-bottom: 1.5rem;
 }
 
 .data-table {
@@ -261,6 +276,13 @@ body {
     padding: 24px;
     background: #f8fafc;
     border-bottom: 1px solid #e5e7eb;
+    margin: 0;
+}
+
+/* Filter section içindeki card için padding'i kaldır */
+.card .filter-section {
+    padding: 24px;
+    margin: 0;
 }
 
 .filter-group {
@@ -462,36 +484,40 @@ body {
             <?php endif; ?>
             
             <!-- ✅ Filtre Bölümü -->
-            <div class="filter-section">
-                <div class="filter-group">
-                    <label for="statusFilter">SİPARİŞ DURUMU</label>
-                    <select id="statusFilter" onchange="filterTable()">
-                        <option value="">Tümü</option>
-                        <option value="1">Onay bekleniyor</option>
-                        <option value="2">Hazırlanıyor</option>
-                        <option value="3">Sevk edildi</option>
-                        <option value="4">Tamamlandı</option>
-                        <option value="5">İptal edildi</option>
-                    </select>
-                </div>
-                
-                <div class="filter-group">
-                    <label for="startDate">BAŞLANGIÇ TARİHİ</label>
-                    <div class="date-input-wrapper">
-                        <input type="date" id="startDate" onchange="filterTable()" placeholder="gg.aa.yyyy">
+            <section class="card">
+                <div class="filter-section">
+                    <div class="filter-group">
+                        <label>SİPARİŞ DURUMU</label>
+                        <div class="single-select-container">
+                            <div class="single-select-input" onclick="toggleDropdown('status')">
+                                <input type="text" id="filterStatus" value="<?= $filterStatus ? getStatusText($filterStatus) : 'Tümü' ?>" placeholder="Seçiniz..." readonly>
+                                <span class="dropdown-arrow">▼</span>
+                            </div>
+                            <div class="single-select-dropdown" id="statusDropdown">
+                                <div class="single-select-option <?= empty($filterStatus) ? 'selected' : '' ?>" data-value="" onclick="selectStatus('')">Tümü</div>
+                                <div class="single-select-option <?= $filterStatus === '1' ? 'selected' : '' ?>" data-value="1" onclick="selectStatus('1')">Onay bekleniyor</div>
+                                <div class="single-select-option <?= $filterStatus === '2' ? 'selected' : '' ?>" data-value="2" onclick="selectStatus('2')">Hazırlanıyor</div>
+                                <div class="single-select-option <?= $filterStatus === '3' ? 'selected' : '' ?>" data-value="3" onclick="selectStatus('3')">Sevk edildi</div>
+                                <div class="single-select-option <?= $filterStatus === '4' ? 'selected' : '' ?>" data-value="4" onclick="selectStatus('4')">Tamamlandı</div>
+                                <div class="single-select-option <?= $filterStatus === '5' ? 'selected' : '' ?>" data-value="5" onclick="selectStatus('5')">İptal edildi</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="filter-group">
+                        <label>BAŞLANGIÇ TARİHİ</label>
+                        <input type="date" id="start-date" value="<?= htmlspecialchars($filterStartDate) ?>" onblur="applyFilters()">
+                    </div>
+                    
+                    <div class="filter-group">
+                        <label>BİTİŞ TARİHİ</label>
+                        <input type="date" id="end-date" value="<?= htmlspecialchars($filterEndDate) ?>" onblur="applyFilters()">
                     </div>
                 </div>
-                
-                <div class="filter-group">
-                    <label for="endDate">BİTİŞ TARİHİ</label>
-                    <div class="date-input-wrapper">
-                        <input type="date" id="endDate" onchange="filterTable()" placeholder="gg.aa.yyyy">
-                    </div>
-                </div>
-            </div>
+            </section>
             
             <section class="card">
-                <table class="data-table" id="ordersTable">
+                <table class="data-table">
                     <thead>
                         <tr>
                             <th>Talep No</th>
@@ -526,20 +552,6 @@ body {
                                 $orderDateValue = $row['U_ASB2B_ORDT'] ?? null;
                                 $orderDate = (!empty($orderDateValue) && $orderDateValue !== null && $orderDateValue !== '') ? formatDate($orderDateValue) : '-';
                                 
-                                // Data attribute'ları ekle (filtreleme için)
-                                $statusValue = $status ?? '';
-                                // Tarih formatını ISO (YYYY-MM-DD) yap (JavaScript için)
-                                $requestDateForFilter = '';
-                                if (!empty($requestDate)) {
-                                    // Eğer tarih zaten ISO formatındaysa direkt kullan
-                                    if (preg_match('/^\d{4}-\d{2}-\d{2}/', $requestDate)) {
-                                        $requestDateForFilter = substr($requestDate, 0, 10);
-                                    } else {
-                                        // Değilse formatla
-                                        $requestDateForFilter = date('Y-m-d', strtotime($requestDate));
-                                    }
-                                }
-                                
                                 // Spec'e göre: Teslim Al aktif olması için:
                                 // - Status = 2 (Hazırlanıyor) veya 3 (Sevk edildi) OLMALI
                                 // - VE OrderNo dolu OLMALI
@@ -549,9 +561,43 @@ body {
                                         $canReceive = true;
                                     }
                                 }
+                                
+                                // Tarih filtresi için (client-side filtreleme gerekirse)
+                                $requestDateForFilter = '';
+                                if (!empty($requestDate)) {
+                                    if (preg_match('/^\d{4}-\d{2}-\d{2}/', $requestDate)) {
+                                        $requestDateForFilter = substr($requestDate, 0, 10);
+                                    } else {
+                                        $requestDateForFilter = date('Y-m-d', strtotime($requestDate));
+                                    }
+                                }
+                                
+                                // Tarih filtresi uygula (eğer view'de filtreleme yapılmadıysa)
+                                $showRow = true;
+                                if (!empty($filterStartDate) || !empty($filterEndDate)) {
+                                    if (!empty($requestDateForFilter)) {
+                                        $requestDateObj = new DateTime($requestDateForFilter);
+                                        if (!empty($filterStartDate)) {
+                                            $startDateObj = new DateTime($filterStartDate);
+                                            if ($requestDateObj < $startDateObj) {
+                                                $showRow = false;
+                                            }
+                                        }
+                                        if ($showRow && !empty($filterEndDate)) {
+                                            $endDateObj = new DateTime($filterEndDate);
+                                            $endDateObj->setTime(23, 59, 59);
+                                            if ($requestDateObj > $endDateObj) {
+                                                $showRow = false;
+                                            }
+                                        }
+                                    } else {
+                                        // Tarih yoksa ve filtre varsa gizle
+                                        $showRow = false;
+                                    }
+                                }
                             ?>
-                                <tr data-status="<?= htmlspecialchars($statusValue) ?>" 
-                                    data-request-date="<?= htmlspecialchars($requestDateForFilter) ?>">
+                                <?php if ($showRow): ?>
+                                <tr>
                                     <td><?= htmlspecialchars($requestNo) ?></td>
                                     <td><?= $orderNo ? htmlspecialchars($orderNo) : '-' ?></td>
                                     <td><?= $docDate ?></td>
@@ -570,6 +616,7 @@ body {
                                         <?php endif; ?>
                                     </td>
                                 </tr>
+                                <?php endif; ?>
                             <?php endforeach; ?>
                         <?php else: ?>
                             <tr>
@@ -583,57 +630,73 @@ body {
     </main>
     
     <script>
-    // ✅ Filtreleme Fonksiyonu (Client-side)
-    function filterTable() {
-        const statusFilter = document.getElementById('statusFilter').value;
-        const startDate = document.getElementById('startDate').value;
-        const endDate = document.getElementById('endDate').value;
+    let selectedStatus = '<?= htmlspecialchars($filterStatus) ?>';
+
+    function toggleDropdown(type) {
+        const dropdown = document.getElementById(type + 'Dropdown');
+        const input = document.querySelector(`#filter${type.charAt(0).toUpperCase() + type.slice(1)}`).parentElement;
+        const isOpen = dropdown.classList.contains('show');
         
-        const table = document.getElementById('ordersTable');
-        const rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
+        // Close all dropdowns
+        document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
+        document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
         
-        for (let i = 0; i < rows.length; i++) {
-            const row = rows[i];
-            const rowStatus = row.getAttribute('data-status') || '';
-            const rowRequestDate = row.getAttribute('data-request-date') || '';
-            
-            let showRow = true;
-            
-            // Status filtresi
-            if (statusFilter && rowStatus !== statusFilter) {
-                showRow = false;
-            }
-            
-            // Tarih filtresi
-            if (showRow && (startDate || endDate)) {
-                if (rowRequestDate) {
-                    const requestDate = new Date(rowRequestDate);
-                    
-                    if (startDate) {
-                        const start = new Date(startDate);
-                        if (requestDate < start) {
-                            showRow = false;
-                        }
-                    }
-                    
-                    if (showRow && endDate) {
-                        const end = new Date(endDate);
-                        end.setHours(23, 59, 59, 999); // Günün sonuna kadar
-                        if (requestDate > end) {
-                            showRow = false;
-                        }
-                    }
-                } else {
-                    // Tarih yoksa ve filtre varsa gizle
-                    if (startDate || endDate) {
-                        showRow = false;
-                    }
-                }
-            }
-            
-            row.style.display = showRow ? '' : 'none';
+        if (!isOpen) {
+            dropdown.classList.add('show');
+            input.classList.add('active');
         }
     }
+
+    function selectStatus(value) {
+        selectedStatus = value;
+        const statusText = document.querySelector(`#statusDropdown .single-select-option[data-value="${value}"]`).textContent;
+        document.getElementById('filterStatus').value = statusText;
+        document.querySelectorAll('#statusDropdown .single-select-option').forEach(opt => opt.classList.remove('selected'));
+        document.querySelector(`#statusDropdown .single-select-option[data-value="${value}"]`).classList.add('selected');
+        applyFilters();
+    }
+
+    function applyFilters() {
+        // Tarih input'larından önce değerleri al (input focus'ta olabilir)
+        const status = selectedStatus;
+        const startDateInput = document.getElementById('start-date');
+        const endDateInput = document.getElementById('end-date');
+        const startDate = startDateInput ? startDateInput.value : '';
+        const endDate = endDateInput ? endDateInput.value : '';
+        
+        const params = new URLSearchParams();
+        if (status) params.append('status', status);
+        if (startDate) params.append('start_date', startDate);
+        if (endDate) params.append('end_date', endDate);
+        
+        // Mevcut URL parametrelerini koru (msg gibi)
+        const currentParams = new URLSearchParams(window.location.search);
+        if (currentParams.has('msg')) {
+            params.append('msg', currentParams.get('msg'));
+        }
+        if (currentParams.has('status_warning')) {
+            params.append('status_warning', currentParams.get('status_warning'));
+        }
+        if (currentParams.has('error')) {
+            params.append('error', currentParams.get('error'));
+        }
+        if (currentParams.has('pdn_docentry')) {
+            params.append('pdn_docentry', currentParams.get('pdn_docentry'));
+        }
+        if (currentParams.has('pdn_docnum')) {
+            params.append('pdn_docnum', currentParams.get('pdn_docnum'));
+        }
+        
+        window.location.href = 'DisTedarik.php' + (params.toString() ? '?' + params.toString() : '');
+    }
+
+    // Close dropdowns when clicking outside
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('.single-select-container')) {
+            document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
+            document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
+        }
+    });
     </script>
 </body>
 </html>
