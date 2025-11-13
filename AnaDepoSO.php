@@ -124,12 +124,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
     $fromWhsNameEscaped = str_replace("'", "''", $fromWhsName);
     $filter = "FromWhsName eq '{$fromWhsNameEscaped}'";
     
-    // Kalem Tanımı filtresi (multi-select)
+    // Kalem Tanımı filtresi (multi-select) - ItemCode - ItemName formatından parse et
     if (!empty($itemNames) && is_array($itemNames)) {
         $itemNameConditions = [];
-        foreach ($itemNames as $itemName) {
-            $itemNameEscaped = str_replace("'", "''", $itemName);
-            $itemNameConditions[] = "ItemName eq '{$itemNameEscaped}'";
+        foreach ($itemNames as $itemDisplay) {
+            // ✅ Format: "ItemCode - ItemName" veya sadece "ItemName"
+            if (strpos($itemDisplay, ' - ') !== false) {
+                // ItemCode - ItemName formatı
+                list($itemCode, $itemName) = explode(' - ', $itemDisplay, 2);
+                $itemCodeEscaped = str_replace("'", "''", trim($itemCode));
+                $itemNameEscaped = str_replace("'", "''", trim($itemName));
+                // Hem ItemCode hem ItemName ile filtrele
+                $itemNameConditions[] = "(ItemCode eq '{$itemCodeEscaped}' or ItemName eq '{$itemNameEscaped}')";
+            } else {
+                // Sadece ItemName (eski format)
+                $itemNameEscaped = str_replace("'", "''", $itemDisplay);
+                $itemNameConditions[] = "ItemName eq '{$itemNameEscaped}'";
+            }
         }
         if (!empty($itemNameConditions)) {
             $filter .= " and (" . implode(" or ", $itemNameConditions) . ")";
@@ -203,7 +214,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
     }
     
     $fromWhsNameEscaped = str_replace("'", "''", $fromWhsName);
-    $itemsQuery = "view.svc/ASB2B_MainWhsItem_B1SLQuery?\$filter=FromWhsName eq '{$fromWhsNameEscaped}'&\$select=ItemName,ItemGroup&\$top=1000";
+    // ✅ ItemCode da dahil edildi (kalem kodları için)
+    $itemsQuery = "view.svc/ASB2B_MainWhsItem_B1SLQuery?\$filter=FromWhsName eq '{$fromWhsNameEscaped}'&\$select=ItemCode,ItemName,ItemGroup&\$top=1000";
     $itemsData = $sap->get($itemsQuery);
     $items = $itemsData['response']['value'] ?? [];
     
@@ -211,9 +223,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
     $itemGroups = [];
     
     foreach ($items as $item) {
-        if (isset($item['ItemName']) && !empty($item['ItemName'])) {
-            if (!in_array($item['ItemName'], $itemNames)) {
-                $itemNames[] = $item['ItemName'];
+        // ✅ Kalem Tanımı: ItemCode - ItemName formatında
+        if (isset($item['ItemCode']) && isset($item['ItemName']) && !empty($item['ItemName'])) {
+            $itemDisplay = $item['ItemCode'] . ' - ' . $item['ItemName'];
+            if (!in_array($itemDisplay, $itemNames)) {
+                $itemNames[] = $itemDisplay;
             }
         }
         
@@ -348,92 +362,94 @@ body {
     background: #e5e7eb;
 }
 
+/* Filtre bölümü */
 .filter-section {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 1.25rem;
-    padding: 1.5rem;
-    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-    border-radius: 12px;
-    margin-bottom: 0;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px;
+    margin-bottom: 20px;
+    padding: 20px;
+    background: #ffffff;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
 }
 
 .filter-group {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
 }
 
 .filter-group label {
     font-weight: 600;
-    color: #1e40af;
-    font-size: 0.9rem;
+    color: #333;
+    margin-bottom: 8px;
+    font-size: 14px;
 }
 
-.multi-select-container,
-.single-select-container {
+.filter-input, .filter-select {
+    padding: 10px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+    transition: border-color 0.3s;
+}
+
+.filter-input:focus, .filter-select:focus {
+    outline: none;
+    border-color: #ff5722;
+    box-shadow: 0 0 0 2px rgba(255, 87, 34, 0.1);
+}
+
+/* Multi-select stilleri */
+.multi-select-container {
     position: relative;
-    width: 100%;
 }
 
-.multi-select-input,
-.single-select-input {
+.multi-select-input {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    padding: 10px 12px;
-    border: 2px solid #e5e7eb;
-    border-radius: 8px;
-    background: white;
+    gap: 5px;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    min-height: 40px;
     cursor: pointer;
-    min-height: 42px;
-    transition: all 0.2s;
+    background: white;
 }
 
-.multi-select-input:hover,
-.single-select-input:hover {
-    border-color: #3b82f6;
+.multi-select-input:hover {
+    border-color: #ff5722;
 }
 
-.multi-select-input.active,
-.single-select-input.active {
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+.multi-select-input.active {
+    border-color: #ff5722;
+    box-shadow: 0 0 0 2px rgba(255, 87, 34, 0.1);
 }
 
-.multi-select-input input,
-.single-select-input input {
+.multi-select-input input {
     border: none;
     outline: none;
     flex: 1;
     background: transparent;
     min-width: 120px;
-    font-size: 0.95rem;
+    font-size: 14px;
+    cursor: pointer;
 }
 
 .multi-select-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    background: #ff5722;
     color: white;
-    padding: 4px 10px;
-    border-radius: 16px;
-    font-size: 0.85rem;
-    font-weight: 500;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
 }
 
 .multi-select-tag .remove {
     cursor: pointer;
     font-weight: bold;
-    font-size: 16px;
-    margin-left: 4px;
-    transition: opacity 0.2s;
-}
-
-.multi-select-tag .remove:hover {
-    opacity: 0.7;
 }
 
 .dropdown-arrow {
@@ -447,24 +463,23 @@ body {
     transform: rotate(180deg);
 }
 
-.multi-select-dropdown,
-.single-select-dropdown {
+.multi-select-dropdown {
     position: absolute;
-    top: calc(100% + 4px);
+    top: 100%;
     left: 0;
     right: 0;
     background: white;
-    border: 2px solid #e5e7eb;
-    border-radius: 8px;
-    max-height: 280px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    max-height: 200px;
     overflow-y: auto;
-    z-index: 9999;
+    z-index: 1000;
     display: none;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    margin-top: 4px;
 }
 
-.multi-select-dropdown.show,
-.single-select-dropdown.show {
+.multi-select-dropdown.show {
     display: block;
 }
 
@@ -870,50 +885,44 @@ body {
                     <section class="card">
                 <div class="filter-section">
                     <div class="filter-group">
-                        <label>Kalem Tanımı Filtresi</label>
+                        <label>Kalem Tanımı</label>
                         <div class="multi-select-container">
-                            <div class="multi-select-input" onclick="toggleMultiSelect('itemName')">
+                            <div class="multi-select-input" onclick="toggleDropdown('itemName')">
                                 <div id="itemNameTags"></div>
-                                <input type="text" id="filterItemName" placeholder="Seçiniz..." readonly>
-                                <span class="dropdown-arrow">▼</span>
+                                <input type="text" id="filterItemName" class="filter-input" placeholder="Seçiniz veya yazın..." onkeyup="handleFilterInput('itemName', this.value)" onfocus="openDropdownIfClosed('itemName')" onclick="event.stopPropagation();">
                             </div>
                             <div class="multi-select-dropdown" id="itemNameDropdown">
-                                <div class="multi-select-dropdown-search">
-                                    <input type="text" id="itemNameSearch" placeholder="Ara..." onkeyup="filterDropdown('itemName', this.value)">
-                                </div>
+                                <div class="multi-select-option" data-value="" onclick="selectOption('itemName', '', 'Tümü')">Tümü</div>
                                 <div id="itemNameOptions"></div>
                             </div>
                         </div>
                     </div>
                     
                     <div class="filter-group">
-                        <label>Kalem Grubu Filtresi</label>
+                        <label>Kalem Grubu</label>
                         <div class="multi-select-container">
-                            <div class="multi-select-input" onclick="toggleMultiSelect('itemGroup')">
+                            <div class="multi-select-input" onclick="toggleDropdown('itemGroup')">
                                 <div id="itemGroupTags"></div>
-                                <input type="text" id="filterItemGroup" placeholder="Seçiniz..." readonly>
-                                <span class="dropdown-arrow">▼</span>
+                                <input type="text" id="filterItemGroup" class="filter-input" placeholder="Seçiniz veya yazın..." onkeyup="handleFilterInput('itemGroup', this.value)" onfocus="openDropdownIfClosed('itemGroup')" onclick="event.stopPropagation();">
                             </div>
                             <div class="multi-select-dropdown" id="itemGroupDropdown">
-                                <div class="multi-select-dropdown-search">
-                                    <input type="text" id="itemGroupSearch" placeholder="Ara..." onkeyup="filterDropdown('itemGroup', this.value)">
-                                </div>
+                                <div class="multi-select-option" data-value="" onclick="selectOption('itemGroup', '', 'Tümü')">Tümü</div>
                                 <div id="itemGroupOptions"></div>
                             </div>
                         </div>
                     </div>
                     
                     <div class="filter-group">
-                        <label>Stokta Filtresi</label>
-                        <div class="single-select-container">
-                            <div class="single-select-input" onclick="toggleSingleSelect('stockStatus')">
-                                <input type="text" id="filterStockStatus" value="Tümü" placeholder="Seçiniz..." readonly>
-                                <span class="dropdown-arrow">▼</span>
+                        <label>Stok Durumu</label>
+                        <div class="multi-select-container">
+                            <div class="multi-select-input" onclick="toggleDropdown('stockStatus')">
+                                <div id="stockStatusTags"></div>
+                                <input type="text" id="filterStockStatus" class="filter-input" placeholder="Seçiniz..." readonly>
                             </div>
-                            <div class="single-select-dropdown" id="stockStatusDropdown">
-                                <div class="single-select-option selected" data-value="" onclick="selectStockStatus('')">Tümü</div>
-                                <div class="single-select-option" data-value="var" onclick="selectStockStatus('var')">Var</div>
-                                <div class="single-select-option" data-value="yok" onclick="selectStockStatus('yok')">Yok</div>
+                            <div class="multi-select-dropdown" id="stockStatusDropdown">
+                                <div class="multi-select-option" data-value="" onclick="selectOption('stockStatus', '', 'Tümü')">Tümü</div>
+                                <div class="multi-select-option" data-value="Var" onclick="selectOption('stockStatus', 'Var', 'Var')">Var</div>
+                                <div class="multi-select-option" data-value="Yok" onclick="selectOption('stockStatus', 'Yok', 'Yok')">Yok</div>
                             </div>
                         </div>
                     </div>
@@ -999,9 +1008,48 @@ let filteredItemNames = [];
 let filteredItemGroups = [];
 let itemsData = []; // YENİ: Items data'sını global scope'ta sakla (BaseQty ve UomCode için)
 
-// Sayfa yüklendiğinde filtre seçeneklerini yükle
+// Sayfa yüklendiğinde verileri getir (filtre seçenekleri dropdown açıldığında yüklenecek)
 document.addEventListener('DOMContentLoaded', function() {
-    loadFilterOptions();
+    // ✅ Sayfa yüklendiğinde otomatik olarak verileri getir
+    loadItems();
+    
+    // ✅ Input'tan focus çıktığında tag'ları tekrar göster
+    const filterItemName = document.getElementById('filterItemName');
+    const filterItemGroup = document.getElementById('filterItemGroup');
+    
+    if (filterItemName) {
+        filterItemName.addEventListener('blur', function() {
+            setTimeout(() => {
+                const tagsContainer = document.getElementById('itemNameTags');
+                // Eğer input boşsa ve tag'lar varsa, tag'ları göster
+                if (tagsContainer && this.value.trim() === '' && selectedItemNames.length > 0) {
+                    tagsContainer.style.display = '';
+                    updateFilterDisplay('itemName');
+                }
+                // Input boşsa ve seçili item yoksa, placeholder'ı göster
+                if (this.value.trim() === '' && selectedItemNames.length === 0) {
+                    this.placeholder = 'Seçiniz veya yazın...';
+                }
+            }, 200);
+        });
+    }
+    
+    if (filterItemGroup) {
+        filterItemGroup.addEventListener('blur', function() {
+            setTimeout(() => {
+                const tagsContainer = document.getElementById('itemGroupTags');
+                // Eğer input boşsa ve tag'lar varsa, tag'ları göster
+                if (tagsContainer && this.value.trim() === '' && selectedItemGroups.length > 0) {
+                    tagsContainer.style.display = '';
+                    updateFilterDisplay('itemGroup');
+                }
+                // Input boşsa ve seçili item yoksa, placeholder'ı göster
+                if (this.value.trim() === '' && selectedItemGroups.length === 0) {
+                    this.placeholder = 'Seçiniz veya yazın...';
+                }
+            }, 200);
+        });
+    }
 });
 
 function loadFilterOptions() {
@@ -1019,64 +1067,226 @@ function loadFilterOptions() {
         });
 }
 
-function populateDropdowns() {
-    // ItemNames dropdown
-    const itemNameOptions = document.getElementById('itemNameOptions');
-    itemNameOptions.innerHTML = allItemNames.map(name => {
-        const isSelected = selectedItemNames.includes(name);
-        return `<div class="multi-select-option ${isSelected ? 'selected' : ''}" data-value="${name.replace(/"/g, '&quot;')}" onclick="toggleItemName('${name.replace(/'/g, "\\'")}')">${name}</div>`;
-    }).join('');
-    
-    // ItemGroups dropdown
-    const itemGroupOptions = document.getElementById('itemGroupOptions');
-    itemGroupOptions.innerHTML = allItemGroups.map(group => {
-        const isSelected = selectedItemGroups.includes(group);
-        return `<div class="multi-select-option ${isSelected ? 'selected' : ''}" data-value="${group.replace(/"/g, '&quot;')}" onclick="toggleItemGroup('${group.replace(/'/g, "\\'")}')">${group}</div>`;
-    }).join('');
+// ✅ Türkçe karakter desteği ile büyük/küçük harf duyarsız karşılaştırma
+function normalizeForSearch(text) {
+    if (!text) return '';
+    // Önce Türkçe karakterleri normalize et, sonra küçük harfe çevir
+    return text
+        .replace(/İ/g, 'i')  // Büyük İ → i
+        .replace(/I/g, 'i')  // Büyük I → i (İngilizce I)
+        .replace(/ı/g, 'i')   // Küçük ı → i
+        .replace(/Ğ/g, 'g')  // Büyük Ğ → g
+        .replace(/ğ/g, 'g')   // Küçük ğ → g
+        .replace(/Ü/g, 'u')   // Büyük Ü → u
+        .replace(/ü/g, 'u')   // Küçük ü → u
+        .replace(/Ş/g, 's')   // Büyük Ş → s
+        .replace(/ş/g, 's')   // Küçük ş → s
+        .replace(/Ö/g, 'o')   // Büyük Ö → o
+        .replace(/ö/g, 'o')   // Küçük ö → o
+        .replace(/Ç/g, 'c')   // Büyük Ç → c
+        .replace(/ç/g, 'c')   // Küçük ç → c
+        .toLowerCase()        // Son olarak tüm harfleri küçük harfe çevir
+        .trim();
 }
 
-function filterDropdown(type, searchTerm) {
-    const options = type === 'itemName' ? allItemNames : allItemGroups;
-    const filtered = options.filter(item => 
-        item.toLowerCase().includes(searchTerm.toLowerCase())
-    );
+function populateDropdowns() {
+    // ItemNames dropdown - Filtrelenmiş verileri göster
+    const itemNameOptions = document.getElementById('itemNameOptions');
+    const filterItemNameInput = document.getElementById('filterItemName');
+    const searchText = filterItemNameInput ? normalizeForSearch(filterItemNameInput.value) : '';
     
-    if (type === 'itemName') {
-        filteredItemNames = filtered;
-        const itemNameOptions = document.getElementById('itemNameOptions');
+    if (itemNameOptions) {
+        // ✅ Filtreleme: Büyük/küçük harf ve Türkçe karakter duyarsız
+        const filtered = searchText 
+            ? filteredItemNames.filter(name => normalizeForSearch(name).includes(searchText))
+            : filteredItemNames;
+        
         itemNameOptions.innerHTML = filtered.map(name => {
             const isSelected = selectedItemNames.includes(name);
-            return `<div class="multi-select-option ${isSelected ? 'selected' : ''}" data-value="${name.replace(/"/g, '&quot;')}" onclick="toggleItemName('${name.replace(/'/g, "\\'")}')">${name}</div>`;
+            const escapedName = name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            return `<div class="multi-select-option ${isSelected ? 'selected' : ''}" data-value="${escapedName}" onclick="selectOption('itemName', '${escapedName}', '${escapedName}')">${name}</div>`;
         }).join('');
-    } else {
-        filteredItemGroups = filtered;
-        const itemGroupOptions = document.getElementById('itemGroupOptions');
+    }
+    
+    // ItemGroups dropdown - Filtrelenmiş verileri göster
+    const itemGroupOptions = document.getElementById('itemGroupOptions');
+    const filterItemGroupInput = document.getElementById('filterItemGroup');
+    const searchTextGroup = filterItemGroupInput ? normalizeForSearch(filterItemGroupInput.value) : '';
+    
+    if (itemGroupOptions) {
+        // ✅ Filtreleme: Büyük/küçük harf ve Türkçe karakter duyarsız
+        const filtered = searchTextGroup 
+            ? filteredItemGroups.filter(group => normalizeForSearch(group).includes(searchTextGroup))
+            : filteredItemGroups;
+        
         itemGroupOptions.innerHTML = filtered.map(group => {
             const isSelected = selectedItemGroups.includes(group);
-            return `<div class="multi-select-option ${isSelected ? 'selected' : ''}" data-value="${group.replace(/"/g, '&quot;')}" onclick="toggleItemGroup('${group.replace(/'/g, "\\'")}')">${group}</div>`;
+            const escapedGroup = group.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            return `<div class="multi-select-option ${isSelected ? 'selected' : ''}" data-value="${escapedGroup}" onclick="selectOption('itemGroup', '${escapedGroup}', '${escapedGroup}')">${group}</div>`;
         }).join('');
     }
 }
 
-function toggleMultiSelect(type) {
+// ✅ Dropdown'ı aç (eğer kapalıysa)
+function openDropdownIfClosed(type) {
     const dropdown = document.getElementById(type + 'Dropdown');
-    const input = dropdown.parentElement.querySelector('.multi-select-input');
+    if (dropdown && !dropdown.classList.contains('show')) {
+        toggleDropdown(type);
+    }
+}
+
+// ✅ Input'a yazı yazıldığında dropdown'ı filtrele
+function handleFilterInput(type, value) {
+    // Dropdown'ı aç (kapalıysa)
+    openDropdownIfClosed(type);
+    
+    // Tag'ları geçici olarak gizle (yazı yazarken)
+    const tagsContainer = document.getElementById(type === 'itemName' ? 'itemNameTags' : 'itemGroupTags');
+    if (tagsContainer && value.trim() !== '') {
+        tagsContainer.style.display = 'none';
+    } else if (tagsContainer && value.trim() === '') {
+        // Input boşsa ve seçili item'lar varsa tag'ları göster
+        const selected = type === 'itemName' ? selectedItemNames : selectedItemGroups;
+        if (selected.length > 0) {
+            tagsContainer.style.display = '';
+        }
+    }
+    
+    // Dropdown'ı güncelle (filtrelenmiş verilerle)
+    populateDropdowns();
+}
+
+// ✅ AnaDepo.php'deki gibi toggleDropdown fonksiyonu - Dropdown açıldığında SAP'den veri çek
+function toggleDropdown(type) {
+    const dropdown = document.getElementById(type + 'Dropdown');
+    const input = document.querySelector(`#filter${type.charAt(0).toUpperCase() + type.slice(1)}`).parentElement;
     const isOpen = dropdown.classList.contains('show');
     
+    // Close all dropdowns
     document.querySelectorAll('.multi-select-dropdown').forEach(d => d.classList.remove('show'));
     document.querySelectorAll('.multi-select-input').forEach(d => d.classList.remove('active'));
     
     if (!isOpen) {
         dropdown.classList.add('show');
         input.classList.add('active');
-        // Search input'u temizle ve focus et
-        const searchInput = dropdown.querySelector('input');
-        if (searchInput) {
-            searchInput.value = '';
-            searchInput.focus();
+        
+        // ✅ Dropdown açıldığında SAP'den veri çek
+        if (type === 'itemName' || type === 'itemGroup') {
+            loadFilterOptionsForType(type);
         }
     }
 }
+
+// ✅ Dropdown açıldığında SAP'den filtre seçeneklerini yükle
+function loadFilterOptionsForType(type) {
+    // ✅ Önce tablodaki mevcut verilerden dropdown'ları doldur (hızlı görünüm için)
+    updateDropdownsFromTable();
+    populateDropdowns(); // Tablodaki verilerle hemen göster
+    
+    // ✅ Sonra SAP'den tüm verileri çek (güncel veriler için)
+    fetch('AnaDepoSO.PHP?ajax=filter_options')
+        .then(res => res.json())
+        .then(data => {
+            const sapItemNames = data.itemNames || [];
+            const sapItemGroups = data.itemGroups || [];
+            
+            // ✅ Mevcut verilerle birleştir (duplicate'leri kaldır)
+            const existingItemNames = new Set(allItemNames);
+            const existingItemGroups = new Set(allItemGroups);
+            
+            sapItemNames.forEach(name => existingItemNames.add(name));
+            sapItemGroups.forEach(group => existingItemGroups.add(group));
+            
+            allItemNames = Array.from(existingItemNames).sort();
+            allItemGroups = Array.from(existingItemGroups).sort();
+            filteredItemNames = allItemNames;
+            filteredItemGroups = allItemGroups;
+            
+            // ✅ Güncellenmiş verilerle dropdown'ları yeniden doldur
+            populateDropdowns();
+        })
+        .catch(err => {
+            console.error('Filtre seçenekleri yüklenirken hata:', err);
+            // Hata olsa bile tablodaki verilerle dropdown'ı doldur
+            populateDropdowns();
+        });
+}
+
+// ✅ Tablodaki mevcut verilerden dropdown'ları güncelle
+function updateDropdownsFromTable() {
+    if (!itemsData || itemsData.length === 0) return;
+    
+    itemsData.forEach(item => {
+        const itemCode = item.ItemCode || '';
+        const itemName = item.ItemName || item.ItemDescription || '';
+        const itemGroup = item.ItemGroup || '';
+        
+        // ✅ Kalem Tanımı: ItemCode - ItemName formatında ekle
+        if (itemCode && itemName) {
+            const itemDisplay = itemCode + ' - ' + itemName;
+            if (!allItemNames.includes(itemDisplay)) {
+                allItemNames.push(itemDisplay);
+            }
+        }
+        
+        // ✅ Kalem Grubu ekle
+        if (itemGroup && !allItemGroups.includes(itemGroup)) {
+            allItemGroups.push(itemGroup);
+        }
+    });
+    
+    // Sırala
+    allItemNames.sort();
+    allItemGroups.sort();
+}
+
+// ✅ AnaDepo.php'deki gibi selectOption fonksiyonu (multi-select için)
+function selectOption(type, value, text) {
+    let selectedArray;
+    
+    if (type === 'itemName') {
+        selectedArray = selectedItemNames;
+    } else if (type === 'itemGroup') {
+        selectedArray = selectedItemGroups;
+    } else if (type === 'stockStatus') {
+        // StockStatus için tek seçim (multi-select değil)
+        if (value === '') {
+            selectedStockStatus = '';
+        } else {
+            selectedStockStatus = value.toLowerCase();
+        }
+        updateFilterDisplay('stockStatus');
+        currentPage = 0;
+        loadItems();
+        return;
+    } else {
+        return;
+    }
+    
+    // Multi-select için toggle mantığı
+    if (value === '') {
+        // Tümü seçildiğinde tüm seçimleri temizle
+        selectedArray.length = 0;
+    } else {
+        const index = selectedArray.indexOf(value);
+        if (index > -1) {
+            selectedArray.splice(index, 1);
+        } else {
+            selectedArray.push(value);
+        }
+    }
+    
+    // ✅ Seçim yapıldıktan sonra input'u temizle
+    const input = type === 'itemName' ? document.getElementById('filterItemName') : document.getElementById('filterItemGroup');
+    if (input) {
+        input.value = '';
+    }
+    
+    updateFilterDisplay(type);
+    currentPage = 0;
+    loadItems();
+}
+
 
 function toggleSingleSelect(type) {
     const dropdown = document.getElementById(type + 'Dropdown');
@@ -1092,69 +1302,92 @@ function toggleSingleSelect(type) {
     }
 }
 
-function toggleItemName(name) {
-    const index = selectedItemNames.indexOf(name);
-    if (index > -1) {
-        selectedItemNames.splice(index, 1);
-    } else {
-        selectedItemNames.push(name);
-    }
-    updateFilterDisplay('itemName');
-    currentPage = 0;
-    loadItems();
-}
-
-function toggleItemGroup(group) {
-    const index = selectedItemGroups.indexOf(group);
-    if (index > -1) {
-        selectedItemGroups.splice(index, 1);
-    } else {
-        selectedItemGroups.push(group);
-    }
-    updateFilterDisplay('itemGroup');
-    currentPage = 0;
-    loadItems();
-}
-
-function selectStockStatus(value) {
-    selectedStockStatus = value;
-    const text = value === 'var' ? 'Var' : (value === 'yok' ? 'Yok' : 'Tümü');
-    document.getElementById('filterStockStatus').value = text;
-    document.querySelectorAll('#stockStatusDropdown .single-select-option').forEach(opt => opt.classList.remove('selected'));
-    document.querySelector(`#stockStatusDropdown .single-select-option[data-value="${value}"]`).classList.add('selected');
-    currentPage = 0;
-    loadItems();
-}
+// toggleItemName ve toggleItemGroup artık selectOption kullanıyor, bu fonksiyonlar kaldırıldı
+// selectStockStatus artık selectOption içinde handle ediliyor
 
 function updateFilterDisplay(type) {
-    const tagsContainer = document.getElementById(type + 'Tags');
-    const input = document.getElementById('filter' + type.charAt(0).toUpperCase() + type.slice(1));
-    const selected = type === 'itemName' ? selectedItemNames : selectedItemGroups;
+    let tagsContainer;
+    let input;
+    let selected;
     
+    if (type === 'itemName') {
+        tagsContainer = document.getElementById('itemNameTags');
+        input = document.getElementById('filterItemName');
+        selected = selectedItemNames;
+    } else if (type === 'itemGroup') {
+        tagsContainer = document.getElementById('itemGroupTags');
+        input = document.getElementById('filterItemGroup');
+        selected = selectedItemGroups;
+    } else if (type === 'stockStatus') {
+        tagsContainer = document.getElementById('stockStatusTags');
+        input = document.getElementById('filterStockStatus');
+        // StockStatus için tek değer
+        if (selectedStockStatus === '') {
+            input.value = 'Tümü';
+            if (tagsContainer) tagsContainer.innerHTML = '';
+        } else {
+            const text = selectedStockStatus === 'var' ? 'Var' : 'Yok';
+            input.value = text;
+            if (tagsContainer) {
+                tagsContainer.innerHTML = `<span class="multi-select-tag">${text} <span class="remove" onclick="selectOption('stockStatus', '', 'Tümü')">×</span></span>`;
+            }
+        }
+        // Dropdown'daki seçili durumları güncelle
+        const dropdown = document.getElementById('stockStatusDropdown');
+        if (dropdown) {
+            dropdown.querySelectorAll('.multi-select-option').forEach(opt => {
+                const value = opt.getAttribute('data-value');
+                if ((selectedStockStatus === '' && value === '') || (selectedStockStatus === value.toLowerCase())) {
+                    opt.classList.add('selected');
+                } else {
+                    opt.classList.remove('selected');
+                }
+            });
+        }
+        return;
+    } else {
+        return;
+    }
+    
+    if (!tagsContainer || !input) return;
+    
+    // ✅ Eğer input'ta yazı varsa tag'ları gizle
+    if (input.value.trim() !== '') {
+        tagsContainer.style.display = 'none';
+        return;
+    }
+    
+    // Tag container'ı göster
+    tagsContainer.style.display = '';
     tagsContainer.innerHTML = '';
     
     if (selected.length === 0) {
-        input.placeholder = 'Seçiniz...';
+        input.placeholder = 'Seçiniz veya yazın...';
+        input.value = '';
     } else {
         input.placeholder = '';
+        input.value = '';
         selected.forEach(value => {
             const tag = document.createElement('span');
             tag.className = 'multi-select-tag';
-            tag.innerHTML = `${value} <span class="remove" onclick="removeFilter('${type}', '${value.replace(/'/g, "\\'")}')">×</span>`;
+            const escapedValue = value.replace(/'/g, "\\'");
+            tag.innerHTML = `${value} <span class="remove" onclick="selectOption('${type}', '${escapedValue}', '${escapedValue}')">×</span>`;
             tagsContainer.appendChild(tag);
         });
     }
     
     // Dropdown'daki seçili durumları güncelle
     const dropdown = document.getElementById(type + 'Dropdown');
-    dropdown.querySelectorAll('.multi-select-option').forEach(opt => {
-        const value = opt.getAttribute('data-value');
-        if (selected.includes(value)) {
-            opt.classList.add('selected');
-        } else {
-            opt.classList.remove('selected');
-        }
-    });
+    if (dropdown) {
+        dropdown.querySelectorAll('.multi-select-option').forEach(opt => {
+            const value = opt.getAttribute('data-value');
+            if (selected.includes(value)) {
+                opt.classList.add('selected');
+            } else {
+                opt.classList.remove('selected');
+            }
+        });
+    }
 }
 
 function removeFilter(type, value) {
@@ -1189,6 +1422,10 @@ function loadItems() {
         .then(data => {
             hasMore = data.hasMore || false;
             itemsData = data.data || []; // YENİ: Items data'sını global scope'ta sakla
+            
+            // ✅ Tablodaki verilerden dropdown'ları güncelle
+            updateDropdownsFromTable();
+            
             renderItems(itemsData);
             updatePagination();
         })
@@ -1434,11 +1671,9 @@ function saveRequest() {
 
 // Close dropdowns when clicking outside
 document.addEventListener('click', function(e) {
-    if (!e.target.closest('.multi-select-container') && !e.target.closest('.single-select-container')) {
+    if (!e.target.closest('.multi-select-container')) {
         document.querySelectorAll('.multi-select-dropdown').forEach(d => d.classList.remove('show'));
         document.querySelectorAll('.multi-select-input').forEach(d => d.classList.remove('active'));
-        document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
-        document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
     }
 });
     </script>

@@ -39,30 +39,10 @@ $query = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=' . urlencode($fi
 $data = $sap->get($query);
 $allRows = $data['response']['value'] ?? [];
 
-// ✅ Talep tarihlerini PurchaseRequest'ten çek (RequriedDate için)
-// View'de RequriedDate olmayabilir, bu yüzden PurchaseRequest'ten çekiyoruz
-// Performans için sadece görünen ilk sayfa kayıtları için çekiyoruz (max 50)
-$requestDates = []; // RequestNo => RequriedDate mapping
-if (!empty($allRows)) {
-    // İlk 50 kayıt için RequriedDate çek (performans için)
-    $maxRequests = min(50, count($allRows));
-    for ($i = 0; $i < $maxRequests; $i++) {
-        $row = $allRows[$i];
-        $reqNo = $row['RequestNo'] ?? null;
-        if ($reqNo) {
-            $prQuery = "PurchaseRequests({$reqNo})?\$select=RequriedDate,DocDate";
-            $prData = $sap->get($prQuery);
-            if (($prData['status'] ?? 0) == 200 && isset($prData['response'])) {
-                $requriedDate = $prData['response']['RequriedDate'] ?? $prData['response']['RequiredDate'] ?? null;
-                // Eğer RequriedDate yoksa DocDate kullan
-                if (empty($requriedDate)) {
-                    $requriedDate = $prData['response']['DocDate'] ?? null;
-                }
-                $requestDates[$reqNo] = $requriedDate;
-            }
-        }
-    }
-}
+// ✅ PERFORMANS İYİLEŞTİRMESİ: Her satır için ayrı API çağrısı yapmak yerine
+// View'den gelen DocDate'i kullanıyoruz. RequriedDate için ayrı API çağrısı yapmıyoruz.
+// Eğer RequriedDate gerekirse, view'e eklenmeli veya lazy loading yapılmalı.
+$requestDates = []; // Boş bırakıyoruz, view'den gelen DocDate kullanılacak
 
 // Debug bilgileri
 $debugInfo = [];
@@ -450,38 +430,9 @@ body {
             </div>
         <?php endif; ?>
             
-            <?php if (!empty($errorMsg)): ?>
-                <div class="card" style="background: #fee2e2; border: 2px solid #dc2626; margin-bottom: 1.5rem;">
-                    <p style="color: #991b1b; font-weight: 600; margin: 0;"><?= $errorMsg ?></p>
-                </div>
-            <?php endif; ?>
+         
             
-            <?php if (empty($allRows) || $debugInfo['http_status'] != 200): ?>
-                <div class="card" style="background: #fef3c7; border: 2px solid #f59e0b; margin-bottom: 1.5rem;">
-                    <h3 style="color: #92400e; margin-bottom: 1rem;">🔍 Debug Bilgileri</h3>
-                    <div style="font-family: monospace; font-size: 0.85rem; color: #78350f;">
-                        <p><strong>Session U_AS_OWNR:</strong> <?= htmlspecialchars($debugInfo['session_uAsOwnr']) ?></p>
-                        <p><strong>Session Branch:</strong> <?= htmlspecialchars($debugInfo['session_branch']) ?></p>
-                        <?php if (isset($debugInfo['note'])): ?>
-                            <p><strong>Not:</strong> <?= htmlspecialchars($debugInfo['note']) ?></p>
-                        <?php endif; ?>
-                        <p><strong>Query URL:</strong> <?= htmlspecialchars($debugInfo['query']) ?></p>
-                        <p><strong>HTTP Status:</strong> <?= htmlspecialchars($debugInfo['http_status']) ?></p>
-                        <p><strong>Response Keys:</strong> <?= htmlspecialchars(implode(', ', $debugInfo['response_keys'])) ?></p>
-                        <p><strong>Has 'value' key:</strong> <?= $debugInfo['has_value'] ? 'Evet' : 'Hayır' ?></p>
-                        <p><strong>Row Count:</strong> <?= $debugInfo['row_count'] ?></p>
-                        <?php if ($debugInfo['error']): ?>
-                            <p style="color: #dc2626;"><strong>Error:</strong> <?= htmlspecialchars(json_encode($debugInfo['error'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></p>
-                        <?php endif; ?>
-                        <?php if ($debugInfo['response_error']): ?>
-                            <p style="color: #dc2626;"><strong>Response Error:</strong> <?= htmlspecialchars(json_encode($debugInfo['response_error'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></p>
-                        <?php endif; ?>
-                        <?php if (isset($data['response']) && !isset($data['response']['value'])): ?>
-                            <p style="color: #dc2626;"><strong>Full Response:</strong> <pre style="background: white; padding: 1rem; border-radius: 6px; overflow-x: auto;"><?= htmlspecialchars(json_encode($data['response'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre></p>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            <?php endif; ?>
+            
             
             <!-- ✅ Filtre Bölümü -->
             <section class="card">
@@ -543,9 +494,9 @@ body {
                                 $requestNo = $row['RequestNo'] ?? '';
                                 $orderNo = $row['U_ASB2B_ORNO'] ?? null;
                                 
-                                // ✅ Talep Tarihi: PurchaseRequest.RequriedDate (kullanıcının talep ettiği teslimat tarihi)
-                                // Önce $requestDates mapping'inden al, yoksa view'den DocDate kullan
-                                $requestDate = $requestDates[$requestNo] ?? $row['RequriedDate'] ?? $row['RequiredDate'] ?? $row['RequestDate'] ?? $row['DocDate'] ?? '';
+                                // ✅ Talep Tarihi: View'den gelen DocDate kullanılıyor (performans için)
+                                // RequriedDate için ayrı API çağrısı yapılmıyor
+                                $requestDate = $row['DocDate'] ?? $row['RequriedDate'] ?? $row['RequiredDate'] ?? $row['RequestDate'] ?? '';
                                 $docDate = !empty($requestDate) ? formatDate($requestDate) : '-';
                                 
                                 // ✅ Sipariş Tarihi: PurchaseOrder.DocDate (U_ASB2B_ORDT) - boş olabilir

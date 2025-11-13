@@ -24,8 +24,7 @@ $errorMsg = '';
 $debugInfo = [];
 
 if ($isPurchaseOrder) {
-    // Senaryo A: Sipariş No doluysa (Order Detay)
-    // Spec'e göre: GET /b1s/v2/PurchaseOrders(7671)
+   
     $orderQuery = 'PurchaseOrders(' . intval($orderNo) . ')';
     $orderData = $sap->get($orderQuery);
     
@@ -41,7 +40,7 @@ if ($isPurchaseOrder) {
         // ✅ ÖNEMLİ: DocEntry ile çek (DocNum değil!)
         $orderDocEntry = $detailData['DocEntry'] ?? intval($orderNo);
         
-        // Spec'e göre: GET /b1s/v2/PurchaseOrders(7671)/DocumentLines
+        
         $linesQuery = "PurchaseOrders({$orderDocEntry})/DocumentLines";
         $linesData = $sap->get($linesQuery);
         
@@ -80,7 +79,7 @@ if ($isPurchaseOrder) {
     }
 } else {
     // Senaryo B: Sipariş No boşsa (Talep Detay)
-    // Spec'e göre: GET /b1s/v2/PurchaseRequests(53)
+    
     $requestQuery = 'PurchaseRequests(' . intval($requestNo) . ')';
     $requestData = $sap->get($requestQuery);
     
