@@ -29,41 +29,143 @@ $query = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=' . urlencode($fi
 $data = $sap->get($query);
 $allRows = $data['response']['value'] ?? [];
 
+$statusPriorityMap = [
+    '4' => 5,
+    '3' => 4,
+    '2' => 3,
+    '1' => 2,
+    '5' => 1
+];
+
+function getStatusPriority($status) {
+    global $statusPriorityMap;
+    $key = trim((string)$status);
+    return $statusPriorityMap[$key] ?? 0;
+}
+
+function normalizeDateForFilter($date) {
+    if (empty($date)) return '';
+    if (preg_match('/^\d{4}-\d{2}-\d{2}/', $date)) {
+        return substr($date, 0, 10);
+    }
+    return date('Y-m-d', strtotime($date));
+}
+
+function extractDocDateFromRow($row) {
+    return $row['DocDate'] ?? $row['RequriedDate'] ?? $row['RequiredDate'] ?? $row['RequestDate'] ?? '';
+}
+
 $groupedRows = [];
 foreach ($allRows as $row) {
     $requestNo = $row['RequestNo'] ?? '';
     if (empty($requestNo)) continue;
     
+    $status = isset($row['U_ASB2B_STATUS']) ? (string)$row['U_ASB2B_STATUS'] : null;
+    $statusPriority = getStatusPriority($status);
+    $docDateValue = extractDocDateFromRow($row);
+    
     if (!isset($groupedRows[$requestNo])) {
         $groupedRows[$requestNo] = [
             'RequestNo' => $requestNo,
-            'OrderNos' => [],
-            'Statuses' => [],
-            'OrderDates' => [],
-            'DocDate' => $row['DocDate'] ?? $row['RequriedDate'] ?? $row['RequiredDate'] ?? $row['RequestDate'] ?? ''
+            'DocDate' => $docDateValue,
+            'StatusValue' => $status,
+            'StatusPriority' => $statusPriority,
+            'Orders' => []
         ];
-    }
-    
-    $orderNo = $row['U_ASB2B_ORNO'] ?? null;
-    if (!empty($orderNo) && $orderNo !== null && $orderNo !== '' && $orderNo !== '-') {
-        if (!in_array($orderNo, $groupedRows[$requestNo]['OrderNos'])) {
-            $groupedRows[$requestNo]['OrderNos'][] = $orderNo;
+    } else {
+        if (empty($groupedRows[$requestNo]['DocDate']) && !empty($docDateValue)) {
+            $groupedRows[$requestNo]['DocDate'] = $docDateValue;
+        }
+        if ($statusPriority > ($groupedRows[$requestNo]['StatusPriority'] ?? 0) && $status !== null) {
+            $groupedRows[$requestNo]['StatusValue'] = $status;
+            $groupedRows[$requestNo]['StatusPriority'] = $statusPriority;
         }
     }
     
-    $status = $row['U_ASB2B_STATUS'] ?? null;
-    if ($status !== null) {
-        if (!in_array($status, $groupedRows[$requestNo]['Statuses'])) {
-            $groupedRows[$requestNo]['Statuses'][] = $status;
-        }
-    }
+    $orderNo = trim($row['U_ASB2B_ORNO'] ?? '');
+    $orderDateValue = $row['U_ASB2B_ORDT'] ?? '';
     
-    $orderDateValue = $row['U_ASB2B_ORDT'] ?? null;
-    if (!empty($orderDateValue) && $orderDateValue !== null && $orderDateValue !== '') {
-        if (!in_array($orderDateValue, $groupedRows[$requestNo]['OrderDates'])) {
-            $groupedRows[$requestNo]['OrderDates'][] = $orderDateValue;
+    if ($orderNo !== '' && $orderNo !== '-') {
+        if (!isset($groupedRows[$requestNo]['Orders'][$orderNo])) {
+            $groupedRows[$requestNo]['Orders'][$orderNo] = [
+                'OrderNo' => $orderNo,
+                'OrderDate' => $orderDateValue,
+                'Status' => $status,
+                'StatusPriority' => $statusPriority,
+                'DocDate' => $groupedRows[$requestNo]['DocDate']
+            ];
+        } else {
+            $orderEntry =& $groupedRows[$requestNo]['Orders'][$orderNo];
+            if (empty($orderEntry['OrderDate']) && !empty($orderDateValue)) {
+                $orderEntry['OrderDate'] = $orderDateValue;
+            }
+            if ($statusPriority > ($orderEntry['StatusPriority'] ?? 0) && $status !== null) {
+                $orderEntry['Status'] = $status;
+                $orderEntry['StatusPriority'] = $statusPriority;
+            }
         }
     }
+}
+
+$displayRows = [];
+
+if (!empty($groupedRows)) {
+    uksort($groupedRows, function($a, $b) {
+        return intval($b) <=> intval($a);
+    });
+    
+    foreach ($groupedRows as $requestNo => $group) {
+        if (!empty($group['Orders'])) {
+            uksort($group['Orders'], function($a, $b) {
+                return intval($a) <=> intval($b);
+            });
+            
+            foreach ($group['Orders'] as $orderData) {
+                $displayRows[] = [
+                    'RequestNo' => $requestNo,
+                    'OrderNo' => $orderData['OrderNo'],
+                    'DocDate' => $orderData['DocDate'] ?? $group['DocDate'] ?? '',
+                    'OrderDate' => $orderData['OrderDate'] ?? '',
+                    'Status' => $orderData['Status'] ?? null,
+                    'HasOrder' => true
+                ];
+            }
+        } else {
+            $displayRows[] = [
+                'RequestNo' => $requestNo,
+                'OrderNo' => '-',
+                'DocDate' => $group['DocDate'] ?? '',
+                'OrderDate' => '',
+                'Status' => $group['StatusValue'] ?? null,
+                'HasOrder' => false
+            ];
+        }
+    }
+}
+
+if (!empty($filterStartDate) || !empty($filterEndDate)) {
+    $filteredRows = [];
+    foreach ($displayRows as $row) {
+        $requestDateForFilter = normalizeDateForFilter($row['DocDate'] ?? '');
+        $showRow = true;
+        
+        if (!empty($filterStartDate)) {
+            if (empty($requestDateForFilter) || $requestDateForFilter < $filterStartDate) {
+                $showRow = false;
+            }
+        }
+        
+        if ($showRow && !empty($filterEndDate)) {
+            if (empty($requestDateForFilter) || $requestDateForFilter > $filterEndDate) {
+                $showRow = false;
+            }
+        }
+        
+        if ($showRow) {
+            $filteredRows[] = $row;
+        }
+    }
+    $displayRows = $filteredRows;
 }
 
 function getStatusText($status) {
@@ -99,6 +201,17 @@ function formatDate($date) {
         return date('d.m.Y', strtotime(substr($date, 0, 10)));
     }
     return date('d.m.Y', strtotime($date));
+}
+
+function buildSearchData(...$parts) {
+    $textParts = [];
+    foreach ($parts as $part) {
+        if (!empty($part) && $part !== '-') {
+            $textParts[] = $part;
+        }
+    }
+    $text = implode(' ', $textParts);
+    return mb_strtolower($text ?? '', 'UTF-8');
 }
 ?>
 <!DOCTYPE html>
@@ -334,6 +447,50 @@ body {
     outline: none;
     border-color: #3b82f6;
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.filter-actions {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    padding: 0 24px 24px 24px;
+}
+
+.filter-actions .filter-input {
+    flex: 1;
+    padding: 12px 14px;
+    border: 2px solid #e5e7eb;
+    border-radius: 12px;
+    background: #eef2ff;
+    font-size: 0.95rem;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.filter-actions .filter-input:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+    background: #fff;
+}
+
+.filter-actions .btn {
+    border: none;
+    border-radius: 10px;
+    padding: 10px 18px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.filter-actions .btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 12px 20px rgba(37, 99, 235, 0.15);
+}
+
+.filter-actions .btn-reset {
+    background: #fff;
+    color: #2563eb;
+    border: 1px solid #2563eb;
 }
 
 .table-controls {
@@ -623,7 +780,17 @@ body {
                         <label>Bitiş Tarihi</label>
                         <input type="date" id="end-date" value="<?= htmlspecialchars($filterEndDate) ?>" onblur="applyFilters()">
                     </div>
-                </div>
+                </div> 
+
+
+                <div class="filter-actions">
+                            <input type="text"
+                                   id="searchInput"
+                                   class="filter-input"
+                                   placeholder="Ara... (örnek: transfer no, kalem, şube)">
+                            <button type="button" class="btn btn-reset" id="resetBtn">Sıfırla</button>
+                            <button type="button" class="btn btn-reset" onclick="location.reload()">🔄 Yenile</button>
+                        </div>
             </section>
             
             <section class="card">
@@ -638,100 +805,45 @@ body {
                             <th>İşlemler</th>
                         </tr>
                     </thead>
-                    <tbody>
-                        <?php if (!empty($groupedRows)): ?>
-                            <?php 
-                            uksort($groupedRows, function($a, $b) {
-                                return intval($b) - intval($a);
-                            });
-                            
-                            foreach ($groupedRows as $requestNo => $group):
-                                $statuses = $group['Statuses'];
-                                $status = null;
-                                if (!empty($statuses)) {
-                                    $priority = ['4' => 5, '3' => 4, '2' => 3, '1' => 2, '5' => 1];
-                                    $highestPriority = 0;
-                                    foreach ($statuses as $s) {
-                                        $sStr = (string)$s;
-                                        $p = $priority[$sStr] ?? 0;
-                                        if ($p > $highestPriority) {
-                                            $highestPriority = $p;
-                                            $status = $s;
-                                        }
+                    <tbody id="requestTableBody">
+                        <?php if (!empty($displayRows)): ?>
+                            <?php foreach ($displayRows as $rowData): ?>
+                                <?php
+                                    $requestNo = $rowData['RequestNo'];
+                                    $orderNoDisplay = $rowData['OrderNo'] ?? '-';
+                                    $docDateValue = $rowData['DocDate'] ?? '';
+                                    $orderDateValue = $rowData['OrderDate'] ?? '';
+                                    $statusValue = $rowData['Status'] ?? null;
+                                    $statusText = $statusValue !== null ? getStatusText($statusValue) : 'Bilinmiyor';
+                                    $statusClass = $statusValue !== null ? getStatusClass($statusValue) : 'status-unknown';
+                                    $hasOrder = !empty($rowData['HasOrder']);
+                                    $docDate = !empty($docDateValue) ? formatDate($docDateValue) : '-';
+                                    $orderDate = !empty($orderDateValue) ? formatDate($orderDateValue) : '-';
+                                    $detailUrl = 'DisTedarik-Detay.php?requestNo=' . urlencode($requestNo);
+                                    if ($hasOrder && $orderNoDisplay !== '-' && $orderNoDisplay !== '') {
+                                        $detailUrl .= '&orderNo=' . urlencode($orderNoDisplay);
                                     }
-                                }
-                                
-                                $statusText = $status !== null ? getStatusText($status) : 'Bilinmiyor';
-                                $statusClass = $status !== null ? getStatusClass($status) : 'status-unknown';
-                                
-                                $orderNos = $group['OrderNos'];
-                                $orderNoDisplay = !empty($orderNos) ? implode(', ', $orderNos) : '-';
-                                
-                                $requestDate = $group['DocDate'] ?? '';
-                                $docDate = !empty($requestDate) ? formatDate($requestDate) : '-';
-                                
-                                $orderDates = $group['OrderDates'];
-                                $orderDate = !empty($orderDates) ? formatDate($orderDates[0]) : '-';
-                                
-                                $requestDateForFilter = '';
-                                if (!empty($requestDate)) {
-                                    if (preg_match('/^\d{4}-\d{2}-\d{2}/', $requestDate)) {
-                                        $requestDateForFilter = substr($requestDate, 0, 10);
-                                    } else {
-                                        $requestDateForFilter = date('Y-m-d', strtotime($requestDate));
-                                    }
-                                }
-                                
-                                $showRow = true;
-                                if (!empty($filterStartDate) || !empty($filterEndDate)) {
-                                    if (!empty($requestDateForFilter)) {
-                                        $requestDateObj = new DateTime($requestDateForFilter);
-                                        if (!empty($filterStartDate)) {
-                                            $startDateObj = new DateTime($filterStartDate);
-                                            if ($requestDateObj < $startDateObj) {
-                                                $showRow = false;
-                                            }
-                                        }
-                                        if ($showRow && !empty($filterEndDate)) {
-                                            $endDateObj = new DateTime($filterEndDate);
-                                            $endDateObj->setTime(23, 59, 59);
-                                            if ($requestDateObj > $endDateObj) {
-                                                $showRow = false;
-                                            }
-                                        }
-                                    } else {
-                                        $showRow = false;
-                                    }
-                                }
-                            ?>
-                                <?php if ($showRow): ?>
-                                <tr>
+                                ?>
+                                <?php
+                                    $searchData = buildSearchData($requestNo, $orderNoDisplay, $docDate, $orderDate, $statusText);
+                                ?>
+                                <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>">
                                     <td><?= htmlspecialchars($requestNo) ?></td>
                                     <td><?= htmlspecialchars($orderNoDisplay) ?></td>
                                     <td><?= $docDate ?></td>
                                     <td><?= $orderDate ?></td>
                                     <td><span class="status-badge <?= $statusClass ?>"><?= $statusText ?></span></td>
                                     <td>
-                                        <a href="DisTedarik-Detay.php?requestNo=<?= urlencode($requestNo) ?>">
+                                        <a href="<?= $detailUrl ?>">
                                             <button class="btn-icon btn-view">👁️ Detay</button>
                                         </a>
-                                        <?php
-                                            // Tek veya çoklu siparişli taleplerde, durumu 2 veya 3 olan siparişler varsa "Teslim Al" butonu göster
-                                            $hasReceivableOrders = isReceivableStatus($status);
-                                            
-                                            if ($hasReceivableOrders && !empty($orderNos)) {
-                                                // Çoklu siparişli taleplerde tüm sipariş numaralarını virgülle ayırarak gönder
-                                                $orderNosParam = implode(',', $orderNos);
-                                        ?>
-                                            <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?>&orderNos=<?= urlencode($orderNosParam) ?>">
+                                        <?php if ($hasOrder && isReceivableStatus($statusValue)): ?>
+                                            <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?>&orderNos=<?= urlencode($orderNoDisplay) ?>">
                                                 <button class="btn-icon btn-success">✓ Teslim Al</button>
                                             </a>
-                                        <?php
-                                            }
-                                        ?>
+                                        <?php endif; ?>
                                     </td>
                                 </tr>
-                                <?php endif; ?>
                             <?php endforeach; ?>
                         <?php else: ?>
                             <tr>
@@ -804,6 +916,43 @@ document.addEventListener('click', function(e) {
         document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
     }
 });
+    </script>
+    <script>
+(function() {
+    const searchInput = document.getElementById('searchInput');
+    const tableBody = document.getElementById('requestTableBody');
+    if (!searchInput || !tableBody) return;
+
+    const getDataRows = () => tableBody.querySelectorAll('tr[data-row]');
+    if (!getDataRows().length) return;
+
+    const noResultRow = document.createElement('tr');
+    noResultRow.id = 'noSearchResultRow';
+    noResultRow.style.display = 'none';
+    noResultRow.innerHTML = '<td colspan="6" style="text-align:center;padding:2rem;color:#9ca3af;">Sonuç bulunamadı.</td>';
+    tableBody.appendChild(noResultRow);
+
+    const normalize = (text) => text.toLocaleLowerCase('tr-TR');
+
+    searchInput.addEventListener('input', function() {
+        const term = normalize(searchInput.value.trim());
+        if (term === '') {
+            getDataRows().forEach(row => row.style.display = '');
+            noResultRow.style.display = 'none';
+            return;
+        }
+
+        let visibleCount = 0;
+        getDataRows().forEach(row => {
+            const haystack = row.getAttribute('data-search') || '';
+            const match = haystack.includes(term);
+            row.style.display = match ? '' : 'none';
+            if (match) visibleCount++;
+        });
+
+        noResultRow.style.display = visibleCount === 0 ? '' : 'none';
+    });
+})();
     </script>
 </body>
 </html>
