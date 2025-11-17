@@ -191,6 +191,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
     
     $itemsData = $sap->get($itemsQuery);
     $items = $itemsData['response']['value'] ?? [];
+
+    // Aynı kalemin (ItemCode + ItemName) birden fazla şube / kayıt nedeniyle tekrar etmesini önle
+    // Örn: Insomnia'da 100 ve 105 için aynı kalem 2 satır dönüyorsa, burada tekilleştiriyoruz.
+    $uniqueItems = [];
+    $seenKeys = [];
+    foreach ($items as $item) {
+        $code = trim($item['ItemCode'] ?? '');
+        $name = trim($item['ItemName'] ?? '');
+        $key = $code . '|' . $name;
+        if (isset($seenKeys[$key])) {
+            continue;
+        }
+        $seenKeys[$key] = true;
+        $uniqueItems[] = $item;
+    }
+    $items = $uniqueItems;
     
     // Her item için stok bilgisini ekle (MainQty kullanılıyor)
     foreach ($items as &$item) {
@@ -273,7 +289,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dis Tedarik Talebi Oluştur</title>
+    <title>Dış Tedarik Talebi Oluştur</title>
     <link rel="stylesheet" href="styles.css">
     <style>
 /* Modern mavi-beyaz tema ve layout düzenlemeleri */
@@ -880,7 +896,7 @@ body {
 
     <main class="main-content">
         <header class="page-header">
-            <h2>Dis Tedarik Talebi Oluştur</h2>
+            <h2>Dış Tedarik Talebi Oluştur</h2>
             <div style="display: flex; gap: 12px; align-items: center;">
                 <button class="btn btn-primary sepet-btn" id="sepetToggleBtn" onclick="toggleSepet()" style="position: relative;">
                     🛒 Sepet
@@ -915,11 +931,11 @@ body {
             <section class="card">
                 <div class="filter-section">
                     <div class="filter-group">
-                        <label>KALEM TANIMI</label>
+                        
                         <div class="multi-select-container">
                             <div class="multi-select-input" onclick="toggleDropdown('itemName')">
                                 <div id="itemNameTags"></div>
-                                <input type="text" id="filterItemName" class="filter-input" placeholder="Seçiniz veya yazın..." onkeyup="handleFilterInput('itemName', this.value)" onfocus="openDropdownIfClosed('itemName')" onclick="event.stopPropagation();">
+                                <input type="text" id="filterItemName" class="filter-input" placeholder="KALEM TANIMI" onkeyup="handleFilterInput('itemName', this.value)" onfocus="openDropdownIfClosed('itemName')" onclick="event.stopPropagation();">
                             </div>
                             <div class="multi-select-dropdown" id="itemNameDropdown">
                                 <div class="multi-select-option" data-value="" onclick="selectOption('itemName', '', 'Tümü')">Tümü</div>
@@ -929,11 +945,11 @@ body {
                     </div>
                     
                     <div class="filter-group">
-                        <label>KALEM GRUBU</label>
+                        
                         <div class="multi-select-container">
                             <div class="multi-select-input" onclick="toggleDropdown('itemGroup')">
                                 <div id="itemGroupTags"></div>
-                                <input type="text" id="filterItemGroup" class="filter-input" placeholder="Seçiniz veya yazın..." onkeyup="handleFilterInput('itemGroup', this.value)" onfocus="openDropdownIfClosed('itemGroup')" onclick="event.stopPropagation();">
+                                <input type="text" id="filterItemGroup" class="filter-input" placeholder="KALEM GRUBU" onkeyup="handleFilterInput('itemGroup', this.value)" onfocus="openDropdownIfClosed('itemGroup')" onclick="event.stopPropagation();">
                             </div>
                             <div class="multi-select-dropdown" id="itemGroupDropdown">
                                 <div class="multi-select-option" data-value="" onclick="selectOption('itemGroup', '', 'Tümü')">Tümü</div>
@@ -943,16 +959,16 @@ body {
                     </div>
                     
                     <div class="filter-group">
-                        <label>STOK DURUMU</label>
-                        <div class="single-select-container">
-                            <div class="single-select-input" onclick="toggleSingleSelect('stockStatus')">
-                                <input type="text" id="filterStockStatus" value="Tümü" placeholder="Seçiniz..." readonly>
-                                <span class="dropdown-arrow">▼</span>
+                        
+                        <div class="multi-select-container">
+                            <div class="multi-select-input" onclick="toggleDropdown('stockStatus')">
+                                <div id="stockStatusTags"></div>
+                                <input type="text" id="filterStockStatus" class="filter-input" placeholder="STOK DURUMU" readonly>
                             </div>
-                            <div class="single-select-dropdown" id="stockStatusDropdown">
-                                <div class="single-select-option selected" data-value="" onclick="selectOption('stockStatus', '', 'Tümü')">Tümü</div>
-                                <div class="single-select-option" data-value="var" onclick="selectOption('stockStatus', 'var', 'Var')">Var</div>
-                                <div class="single-select-option" data-value="yok" onclick="selectOption('stockStatus', 'yok', 'Yok')">Yok</div>
+                            <div class="multi-select-dropdown" id="stockStatusDropdown">
+                                <div class="multi-select-option" data-value="" onclick="selectOption('stockStatus', '', 'Tümü')">Tümü</div>
+                                <div class="multi-select-option" data-value="Var" onclick="selectOption('stockStatus', 'Var', 'Var')">Var</div>
+                                <div class="multi-select-option" data-value="Yok" onclick="selectOption('stockStatus', 'Yok', 'Yok')">Yok</div>
                             </div>
                         </div>
                     </div>
@@ -1113,7 +1129,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     updateFilterDisplay('itemName');
                 }
                 if (this.value.trim() === '' && selectedItemNames.length === 0) {
-                    this.placeholder = 'Seçiniz veya yazın...';
+                    this.placeholder = 'KALEM TANIMI';
                 }
             }, 200);
         });
@@ -1128,7 +1144,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     updateFilterDisplay('itemGroup');
                 }
                 if (this.value.trim() === '' && selectedItemGroups.length === 0) {
-                    this.placeholder = 'Seçiniz veya yazın...';
+                    this.placeholder = 'KALEM GRUBU';
                 }
             }, 200);
         });
@@ -1436,7 +1452,7 @@ function updateFilterDisplay(type) {
     tagsContainer.innerHTML = '';
     
     if (selected.length === 0) {
-        input.placeholder = 'Seçiniz veya yazın...';
+        input.placeholder = 'DURUMU';
         input.value = '';
     } else {
         input.placeholder = '';
@@ -1626,8 +1642,8 @@ function updateQuantity(itemCode, quantity) {
             };
         } else {
             selectedItems[itemCode].quantity = qty;
-        }
-    } else {
+    }
+} else {
         // Sepetten çıkar
         if (selectedItems[itemCode]) {
             delete selectedItems[itemCode];

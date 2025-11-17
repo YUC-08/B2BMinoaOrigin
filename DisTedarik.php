@@ -7,7 +7,6 @@ if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
 include 'sap_connect.php';
 $sap = new SAPConnect();
 
-// Session'dan bilgileri al
 $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
 $branch = $_SESSION["Branch2"]["Name"] ?? $_SESSION["WhsCode"] ?? '';
 
@@ -15,50 +14,58 @@ if (empty($uAsOwnr) || empty($branch)) {
     die("Session bilgileri eksik. Lütfen tekrar giriş yapın.");
 }
 
-// Filtreler (GET parametrelerinden)
+// Filtreler
 $filterStatus = $_GET['status'] ?? '';
 $filterStartDate = $_GET['start_date'] ?? '';
 $filterEndDate = $_GET['end_date'] ?? '';
 
-// PurchaseRequestList sorgusu
-// Spec'e göre: Filtreleme direkt view'de yapılmalı
-// GET /b1s/v2/view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=U_AS_OWNR eq 'KT' and U_ASB2B_BRAN eq '100'
+// View'den veri çek
 $filter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}'";
-
-// Status filtresi
 if (!empty($filterStatus)) {
     $filter .= " and U_ASB2B_STATUS eq '{$filterStatus}'";
 }
 
-// Tarih filtreleri (RequriedDate veya DocDate üzerinden)
-// Not: View'de tarih alanı olmayabilir, bu yüzden client-side filtreleme de yapılabilir
-// Şimdilik view'de filtreleme yapmıyoruz, client-side yapacağız
-
 $query = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=' . urlencode($filter) . '&$orderby=' . urlencode('RequestNo desc') . '&$top=1000';
-
 $data = $sap->get($query);
 $allRows = $data['response']['value'] ?? [];
 
-// ✅ PERFORMANS İYİLEŞTİRMESİ: Her satır için ayrı API çağrısı yapmak yerine
-// View'den gelen DocDate'i kullanıyoruz. RequriedDate için ayrı API çağrısı yapmıyoruz.
-// Eğer RequriedDate gerekirse, view'e eklenmeli veya lazy loading yapılmalı.
-$requestDates = []; // Boş bırakıyoruz, view'den gelen DocDate kullanılacak
+$groupedRows = [];
+foreach ($allRows as $row) {
+    $requestNo = $row['RequestNo'] ?? '';
+    if (empty($requestNo)) continue;
+    
+    if (!isset($groupedRows[$requestNo])) {
+        $groupedRows[$requestNo] = [
+            'RequestNo' => $requestNo,
+            'OrderNos' => [],
+            'Statuses' => [],
+            'OrderDates' => [],
+            'DocDate' => $row['DocDate'] ?? $row['RequriedDate'] ?? $row['RequiredDate'] ?? $row['RequestDate'] ?? ''
+        ];
+    }
+    
+    $orderNo = $row['U_ASB2B_ORNO'] ?? null;
+    if (!empty($orderNo) && $orderNo !== null && $orderNo !== '' && $orderNo !== '-') {
+        if (!in_array($orderNo, $groupedRows[$requestNo]['OrderNos'])) {
+            $groupedRows[$requestNo]['OrderNos'][] = $orderNo;
+        }
+    }
+    
+    $status = $row['U_ASB2B_STATUS'] ?? null;
+    if ($status !== null) {
+        if (!in_array($status, $groupedRows[$requestNo]['Statuses'])) {
+            $groupedRows[$requestNo]['Statuses'][] = $status;
+        }
+    }
+    
+    $orderDateValue = $row['U_ASB2B_ORDT'] ?? null;
+    if (!empty($orderDateValue) && $orderDateValue !== null && $orderDateValue !== '') {
+        if (!in_array($orderDateValue, $groupedRows[$requestNo]['OrderDates'])) {
+            $groupedRows[$requestNo]['OrderDates'][] = $orderDateValue;
+        }
+    }
+}
 
-// Debug bilgileri
-$debugInfo = [];
-$debugInfo['session_uAsOwnr'] = $uAsOwnr;
-$debugInfo['session_branch'] = $branch;
-$debugInfo['note'] = 'Filtreleme direkt view\'de yapılıyor (U_AS_OWNR ve U_ASB2B_BRAN)';
-$debugInfo['filter'] = $filter;
-$debugInfo['query'] = $query;
-$debugInfo['http_status'] = $data['status'] ?? 'NO STATUS';
-$debugInfo['response_keys'] = isset($data['response']) ? array_keys($data['response']) : [];
-$debugInfo['has_value'] = isset($data['response']['value']);
-$debugInfo['row_count'] = count($allRows);
-$debugInfo['error'] = $data['error'] ?? null;
-$debugInfo['response_error'] = $data['response']['error'] ?? null;
-
-// Status mapping
 function getStatusText($status) {
     $statusMap = [
         '1' => 'Onay bekleniyor',
@@ -81,7 +88,11 @@ function getStatusClass($status) {
     return $classMap[$status] ?? 'status-unknown';
 }
 
-// Tarih formatlama
+function isReceivableStatus($status) {
+    $s = trim((string)$status);
+    return in_array($s, ['2', '3'], true);
+}
+
 function formatDate($date) {
     if (empty($date)) return '-';
     if (strpos($date, 'T') !== false) {
@@ -90,13 +101,13 @@ function formatDate($date) {
     return date('d.m.Y', strtotime($date));
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dis Tedarik Siparişleri - MINOA</title>
+    <title>Dış Tedarik - MINOA</title>
+    <link rel="stylesheet" href="styles.css">
     <style>
 * {
     margin: 0;
@@ -111,11 +122,16 @@ body {
     line-height: 1.6;
 }
 
+/* Main content - adjusted for sidebar */
 .main-content {
     width: 100%;
     background: whitesmoke;
     padding: 0;
     min-height: 100vh;
+}
+
+.sidebar.expanded ~ .main-content {
+    margin-left: 260px;
 }
 
 .page-header {
@@ -138,11 +154,10 @@ body {
     color: #1e40af;
     font-size: 1.75rem;
     font-weight: 600;
-    margin: 0;
 }
 
 .content-wrapper {
-    padding: 24px 32px;
+    padding: 32px;
     max-width: 1400px;
     margin: 0 auto;
 }
@@ -150,105 +165,50 @@ body {
 .card {
     background: white;
     border-radius: 12px;
-    padding: 1.5rem;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    margin-bottom: 1.5rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    margin-bottom: 24px;
+    overflow: visible;
 }
 
-.data-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.875rem;
+.alert {
+    padding: 16px 20px;
+    border-radius: 8px;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    position: relative;
 }
 
-.data-table th {
-    background: #f9fafb;
-    padding: 12px;
-    text-align: left;
-    font-weight: 600;
-    color: #374151;
-    border-bottom: 2px solid #e5e7eb;
-}
-
-.data-table td {
-    padding: 12px;
-    border-bottom: 1px solid #e5e7eb;
-}
-
-.status-badge {
-    display: inline-block;
-    padding: 4px 12px;
-    border-radius: 12px;
-    font-size: 0.75rem;
-    font-weight: 600;
-}
-
-.status-pending {
-    background: #fef3c7;
-    color: #92400e;
-}
-
-.status-processing {
-    background: #dbeafe;
-    color: #1e40af;
-}
-
-.status-shipped {
-    background: #e0e7ff;
-    color: #4338ca;
-}
-
-.status-completed {
+.alert-success {
     background: #d1fae5;
+    border: 1px solid #10b981;
     color: #065f46;
 }
 
-.status-cancelled {
+.alert-warning {
+    background: #fef3c7;
+    border: 1px solid #fbbf24;
+    color: #92400e;
+}
+
+.alert-danger {
     background: #fee2e2;
+    border: 1px solid #ef4444;
     color: #991b1b;
 }
 
-.status-unknown {
-    background: #f3f4f6;
-    color: #6b7280;
+.alert ul {
+    margin-top: 0.5rem;
+    margin-left: 1.5rem;
 }
 
-.btn {
-    padding: 0.5rem 1rem;
-    border: none;
-    border-radius: 6px;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    text-decoration: none;
-    display: inline-block;
-    margin-right: 0.5rem;
+.alert li {
+    margin-top: 0.25rem;
 }
 
-.btn-primary {
-    background: #3b82f6;
-    color: white;
-}
-
-.btn-primary:hover {
-    background: #2563eb;
-}
-
-.btn-view {
-    background: #e0e7ff;
-    color: #4338ca;
-}
-
-.btn-view:hover {
-    background: #c7d2fe;
-}
-
-.btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-/* Filter Section */
 .filter-section {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -256,13 +216,6 @@ body {
     padding: 24px;
     background: #f8fafc;
     border-bottom: 1px solid #e5e7eb;
-    margin: 0;
-}
-
-/* Filter section içindeki card için padding'i kaldır */
-.card .filter-section {
-    padding: 24px;
-    margin: 0;
 }
 
 .filter-group {
@@ -279,7 +232,6 @@ body {
     letter-spacing: 0.5px;
 }
 
-/* Single Select Dropdown */
 .single-select-container {
     position: relative;
     width: 100%;
@@ -326,7 +278,6 @@ body {
     transform: rotate(180deg);
 }
 
-/* Increased z-index to 9999 to ensure dropdown appears above all elements */
 .single-select-dropdown {
     position: absolute;
     top: 100%;
@@ -366,11 +317,6 @@ body {
     font-weight: 500;
 }
 
-.single-select-option:last-child {
-    border-bottom: none;
-}
-
-/* Date Input */
 .filter-group input[type="date"] {
     padding: 10px 14px;
     border: 2px solid #e5e7eb;
@@ -389,6 +335,215 @@ body {
     border-color: #3b82f6;
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
+
+.table-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 24px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.show-entries {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #6b7280;
+}
+
+.entries-select {
+    padding: 8px 12px;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.entries-select:hover {
+    border-color: #3b82f6;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.data-table thead {
+    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+}
+
+.data-table th {
+    padding: 16px 20px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 13px;
+    color: #1e3a8a;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 2px solid #e5e7eb;
+}
+
+.data-table td {
+    padding: 16px 20px;
+    border-bottom: 1px solid #f3f4f6;
+    font-size: 14px;
+    color: #374151;
+}
+
+.data-table tbody tr {
+    transition: background 0.15s ease;
+}
+
+.data-table tbody tr:hover {
+    background: #f8fafc;
+}
+
+.status-badge {
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    display: inline-block;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.status-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.status-processing {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.status-shipped {
+    background: #bfdbfe;
+    color: #1e3a8a;
+}
+
+.status-completed {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.status-cancelled {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.status-unknown {
+    background: #f3f4f6;
+    color: #6b7280;
+}
+
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+.btn-primary:hover {
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+    transform: translateY(-1px);
+}
+
+.btn-secondary {
+    background: white;
+    color: #3b82f6;
+    border: 2px solid #3b82f6;
+}
+
+.btn-secondary:hover {
+    background: #f0f9ff;
+}
+
+.btn-secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-icon {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-view {
+    background: #f0f9ff;
+    color: #1e40af;
+    border: 1px solid #bfdbfe;
+}
+
+.btn-view:hover {
+    background: #dbeafe;
+}
+
+.btn-success {
+    background: #d1fae5;
+    color: #065f46;
+    border: 1px solid #10b981;
+}
+
+.btn-success:hover {
+    background: #a7f3d0;
+}
+
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    padding: 24px;
+    font-size: 14px;
+    color: #6b7280;
+}
+
+@media (max-width: 768px) {
+    .main-content {
+        margin-left: 60px;
+    }
+    
+    .sidebar.expanded ~ .main-content {
+        margin-left: 220px;
+    }
+    
+    .content-wrapper {
+        padding: 20px;
+    }
+    
+    .page-header {
+        padding: 16px 20px;
+        flex-direction: column;
+        gap: 12px;
+        align-items: flex-start;
+    }
+    
+    .filter-section {
+        grid-template-columns: 1fr;
+    }
+}
     </style>
 </head>
 <body>
@@ -396,49 +551,53 @@ body {
 
     <main class="main-content">
         <header class="page-header">
-            <h2>Dis Tedarik Siparişleri</h2>
+            <h2>Dış Tedarik Talepleri</h2>
             <button class="btn btn-primary" onclick="window.location.href='DisTedarikSO.php'">+ Yeni Talep Oluştur</button>
         </header>
 
         <div class="content-wrapper">
             <?php
-            // Başarı/Hata mesajlarını göster
-            $successMsg = '';
-            $errorMsg = '';
-            
-            if (isset($_GET['msg'])) {
-                if ($_GET['msg'] === 'teslim_alindi') {
-                    $successMsg = '✅ Teslim alma işlemi başarıyla tamamlandı!';
-                    if (isset($_GET['status_warning']) && $_GET['status_warning'] == '1') {
-                        $errorMsg = '⚠️ Teslim alma başarılı ama durum güncellenemedi, lütfen manuel kontrol edin.';
-                        if (isset($_GET['error']) && !empty($_GET['error'])) {
-                            $errorMsg .= '<br><small style="color: #6b7280;">' . htmlspecialchars(urldecode($_GET['error'])) . '</small>';
-                        }
+            // Session'dan bildirim mesajlarını göster ve temizle
+            if (isset($_SESSION['success_message'])) {
+                echo '<div class="alert alert-success" id="successAlert">✅ ' . htmlspecialchars($_SESSION['success_message']) . '</div>';
+                unset($_SESSION['success_message']);
+            }
+            if (isset($_SESSION['warning_message'])) {
+                echo '<div class="alert alert-warning" id="warningAlert">⚠️ ' . htmlspecialchars($_SESSION['warning_message']);
+                if (isset($_SESSION['error_details']) && is_array($_SESSION['error_details'])) {
+                    echo '<ul style="margin-top: 0.5rem; margin-left: 1.5rem;">';
+                    foreach ($_SESSION['error_details'] as $error) {
+                        echo '<li>' . htmlspecialchars($error) . '</li>';
                     }
-                } elseif ($_GET['msg'] === 'ok') {
-                    $successMsg = '✅ İşlem başarıyla tamamlandı!';
+                    echo '</ul>';
+                    unset($_SESSION['error_details']);
                 }
+                echo '</div>';
+                unset($_SESSION['warning_message']);
+            }
+            if (isset($_SESSION['error_message'])) {
+                echo '<div class="alert alert-danger" id="errorAlert">❌ ' . htmlspecialchars($_SESSION['error_message']);
+                if (isset($_SESSION['error_details']) && is_array($_SESSION['error_details'])) {
+                    echo '<ul style="margin-top: 0.5rem; margin-left: 1.5rem;">';
+                    foreach ($_SESSION['error_details'] as $error) {
+                        echo '<li>' . htmlspecialchars($error) . '</li>';
+                    }
+                    echo '</ul>';
+                    unset($_SESSION['error_details']);
+                }
+                echo '</div>';
+                unset($_SESSION['error_message']);
+            }
+            // Eski GET parametresi desteği (geriye dönük uyumluluk)
+            if (isset($_GET['msg']) && $_GET['msg'] === 'teslim_alindi') {
+                echo '<div class="alert alert-success">✅ Teslim alma işlemi başarıyla tamamlandı!</div>';
             }
             ?>
-            
-        <?php if (!empty($successMsg)): ?>
-            <div class="card" style="background: #dcfce7; border: 2px solid #16a34a; margin-bottom: 1.5rem;">
-                <p style="color: #166534; font-weight: 600; margin: 0;"><?= htmlspecialchars($successMsg) ?></p>
-                <?php if (!empty($pdnInfo)): ?>
-                    <?= $pdnInfo ?>
-                <?php endif; ?>
-            </div>
-        <?php endif; ?>
-            
-         
-            
-            
-            
-            <!-- ✅ Filtre Bölümü -->
+
             <section class="card">
                 <div class="filter-section">
                     <div class="filter-group">
-                        <label>SİPARİŞ DURUMU</label>
+                        <label>Durum</label>
                         <div class="single-select-container">
                             <div class="single-select-input" onclick="toggleDropdown('status')">
                                 <input type="text" id="filterStatus" value="<?= $filterStatus ? getStatusText($filterStatus) : 'Tümü' ?>" placeholder="Seçiniz..." readonly>
@@ -456,12 +615,12 @@ body {
                     </div>
                     
                     <div class="filter-group">
-                        <label>BAŞLANGIÇ TARİHİ</label>
+                        <label>Başlangıç Tarihi</label>
                         <input type="date" id="start-date" value="<?= htmlspecialchars($filterStartDate) ?>" onblur="applyFilters()">
                     </div>
                     
                     <div class="filter-group">
-                        <label>BİTİŞ TARİHİ</label>
+                        <label>Bitiş Tarihi</label>
                         <input type="date" id="end-date" value="<?= htmlspecialchars($filterEndDate) ?>" onblur="applyFilters()">
                     </div>
                 </div>
@@ -480,40 +639,40 @@ body {
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (!empty($allRows)): ?>
-                            <?php foreach ($allRows as $row):
-                                $status = $row['U_ASB2B_STATUS'] ?? null;
-                                // Status null ise "Bilinmiyor" göster
-                                if ($status === null) {
-                                    $statusText = 'Bilinmiyor';
-                                    $statusClass = 'status-unknown';
-                                } else {
-                                    $statusText = getStatusText($status);
-                                    $statusClass = getStatusClass($status);
-                                }
-                                $requestNo = $row['RequestNo'] ?? '';
-                                $orderNo = $row['U_ASB2B_ORNO'] ?? null;
-                                
-                                // ✅ Talep Tarihi: View'den gelen DocDate kullanılıyor (performans için)
-                                // RequriedDate için ayrı API çağrısı yapılmıyor
-                                $requestDate = $row['DocDate'] ?? $row['RequriedDate'] ?? $row['RequiredDate'] ?? $row['RequestDate'] ?? '';
-                                $docDate = !empty($requestDate) ? formatDate($requestDate) : '-';
-                                
-                                // ✅ Sipariş Tarihi: PurchaseOrder.DocDate (U_ASB2B_ORDT) - boş olabilir
-                                $orderDateValue = $row['U_ASB2B_ORDT'] ?? null;
-                                $orderDate = (!empty($orderDateValue) && $orderDateValue !== null && $orderDateValue !== '') ? formatDate($orderDateValue) : '-';
-                                
-                                // Spec'e göre: Teslim Al aktif olması için:
-                                // - Status = 2 (Hazırlanıyor) veya 3 (Sevk edildi) OLMALI
-                                // - VE OrderNo dolu OLMALI
-                                $canReceive = false;
-                                if (!empty($orderNo) && $orderNo !== null && $orderNo !== '' && $orderNo !== '-') {
-                                    if ($status === '2' || $status === '3' || $status === 2 || $status === 3) {
-                                        $canReceive = true;
+                        <?php if (!empty($groupedRows)): ?>
+                            <?php 
+                            uksort($groupedRows, function($a, $b) {
+                                return intval($b) - intval($a);
+                            });
+                            
+                            foreach ($groupedRows as $requestNo => $group):
+                                $statuses = $group['Statuses'];
+                                $status = null;
+                                if (!empty($statuses)) {
+                                    $priority = ['4' => 5, '3' => 4, '2' => 3, '1' => 2, '5' => 1];
+                                    $highestPriority = 0;
+                                    foreach ($statuses as $s) {
+                                        $sStr = (string)$s;
+                                        $p = $priority[$sStr] ?? 0;
+                                        if ($p > $highestPriority) {
+                                            $highestPriority = $p;
+                                            $status = $s;
+                                        }
                                     }
                                 }
                                 
-                                // Tarih filtresi için (client-side filtreleme gerekirse)
+                                $statusText = $status !== null ? getStatusText($status) : 'Bilinmiyor';
+                                $statusClass = $status !== null ? getStatusClass($status) : 'status-unknown';
+                                
+                                $orderNos = $group['OrderNos'];
+                                $orderNoDisplay = !empty($orderNos) ? implode(', ', $orderNos) : '-';
+                                
+                                $requestDate = $group['DocDate'] ?? '';
+                                $docDate = !empty($requestDate) ? formatDate($requestDate) : '-';
+                                
+                                $orderDates = $group['OrderDates'];
+                                $orderDate = !empty($orderDates) ? formatDate($orderDates[0]) : '-';
+                                
                                 $requestDateForFilter = '';
                                 if (!empty($requestDate)) {
                                     if (preg_match('/^\d{4}-\d{2}-\d{2}/', $requestDate)) {
@@ -523,7 +682,6 @@ body {
                                     }
                                 }
                                 
-                                // Tarih filtresi uygula (eğer view'de filtreleme yapılmadıysa)
                                 $showRow = true;
                                 if (!empty($filterStartDate) || !empty($filterEndDate)) {
                                     if (!empty($requestDateForFilter)) {
@@ -542,7 +700,6 @@ body {
                                             }
                                         }
                                     } else {
-                                        // Tarih yoksa ve filtre varsa gizle
                                         $showRow = false;
                                     }
                                 }
@@ -550,21 +707,28 @@ body {
                                 <?php if ($showRow): ?>
                                 <tr>
                                     <td><?= htmlspecialchars($requestNo) ?></td>
-                                    <td><?= $orderNo ? htmlspecialchars($orderNo) : '-' ?></td>
+                                    <td><?= htmlspecialchars($orderNoDisplay) ?></td>
                                     <td><?= $docDate ?></td>
-                                    <td><?= $orderDate !== '-' ? $orderDate : '-' ?></td>
+                                    <td><?= $orderDate ?></td>
                                     <td><span class="status-badge <?= $statusClass ?>"><?= $statusText ?></span></td>
                                     <td>
-                                        <a href="DisTedarik-Detay.php?requestNo=<?= urlencode($requestNo) ?><?= $orderNo ? '&orderNo=' . urlencode($orderNo) : '' ?><?= $status !== null ? '&status=' . urlencode($status) : '' ?>">
-                                            <button class="btn btn-view">👁️ Detay</button>
+                                        <a href="DisTedarik-Detay.php?requestNo=<?= urlencode($requestNo) ?>">
+                                            <button class="btn-icon btn-view">👁️ Detay</button>
                                         </a>
-                                        <?php if ($canReceive): ?>
-                                            <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?><?= $orderNo ? '&orderNo=' . urlencode($orderNo) : '' ?>">
-                                                <button class="btn btn-primary">✓ Teslim Al</button>
+                                        <?php
+                                            // Tek veya çoklu siparişli taleplerde, durumu 2 veya 3 olan siparişler varsa "Teslim Al" butonu göster
+                                            $hasReceivableOrders = isReceivableStatus($status);
+                                            
+                                            if ($hasReceivableOrders && !empty($orderNos)) {
+                                                // Çoklu siparişli taleplerde tüm sipariş numaralarını virgülle ayırarak gönder
+                                                $orderNosParam = implode(',', $orderNos);
+                                        ?>
+                                            <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?>&orderNos=<?= urlencode($orderNosParam) ?>">
+                                                <button class="btn-icon btn-success">✓ Teslim Al</button>
                                             </a>
-                                        <?php else: ?>
-                                            <button class="btn btn-primary" disabled>✓ Teslim Al</button>
-                                        <?php endif; ?>
+                                        <?php
+                                            }
+                                        ?>
                                     </td>
                                 </tr>
                                 <?php endif; ?>
@@ -581,73 +745,65 @@ body {
     </main>
     
     <script>
-    let selectedStatus = '<?= htmlspecialchars($filterStatus) ?>';
+        // Bildirimlerin otomatik kapanması
+        document.addEventListener('DOMContentLoaded', function() {
+            const alerts = document.querySelectorAll('.alert');
+            alerts.forEach(function(alert) {
+                setTimeout(function() {
+                    alert.style.transition = 'opacity 0.5s ease-out';
+                    alert.style.opacity = '0';
+                    setTimeout(function() {
+                        alert.style.display = 'none';
+                    }, 500);
+                }, 5000); // 5 saniye sonra kapan
+            });
+        });
+    </script>
+    <script>
+let selectedStatus = '<?= htmlspecialchars($filterStatus) ?>';
 
-    function toggleDropdown(type) {
-        const dropdown = document.getElementById(type + 'Dropdown');
-        const input = document.querySelector(`#filter${type.charAt(0).toUpperCase() + type.slice(1)}`).parentElement;
-        const isOpen = dropdown.classList.contains('show');
-        
-        // Close all dropdowns
+function toggleDropdown(type) {
+    const dropdown = document.getElementById(type + 'Dropdown');
+    const input = document.querySelector(`#filter${type.charAt(0).toUpperCase() + type.slice(1)}`).parentElement;
+    const isOpen = dropdown.classList.contains('show');
+    
+    document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
+    document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
+    
+    if (!isOpen) {
+        dropdown.classList.add('show');
+        input.classList.add('active');
+    }
+}
+
+function selectStatus(value) {
+    selectedStatus = value;
+    const statusText = document.querySelector(`#statusDropdown .single-select-option[data-value="${value}"]`).textContent;
+    document.getElementById('filterStatus').value = statusText;
+    document.querySelectorAll('#statusDropdown .single-select-option').forEach(opt => opt.classList.remove('selected'));
+    document.querySelector(`#statusDropdown .single-select-option[data-value="${value}"]`).classList.add('selected');
+    applyFilters();
+}
+
+function applyFilters() {
+    const status = selectedStatus;
+    const startDate = document.getElementById('start-date').value;
+    const endDate = document.getElementById('end-date').value;
+    
+    const params = new URLSearchParams();
+    if (status) params.append('status', status);
+    if (startDate) params.append('start_date', startDate);
+    if (endDate) params.append('end_date', endDate);
+    
+    window.location.href = 'DisTedarik.php' + (params.toString() ? '?' + params.toString() : '');
+}
+
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('.single-select-container')) {
         document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
         document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
-        
-        if (!isOpen) {
-            dropdown.classList.add('show');
-            input.classList.add('active');
-        }
     }
-
-    function selectStatus(value) {
-        selectedStatus = value;
-        const statusText = document.querySelector(`#statusDropdown .single-select-option[data-value="${value}"]`).textContent;
-        document.getElementById('filterStatus').value = statusText;
-        document.querySelectorAll('#statusDropdown .single-select-option').forEach(opt => opt.classList.remove('selected'));
-        document.querySelector(`#statusDropdown .single-select-option[data-value="${value}"]`).classList.add('selected');
-        applyFilters();
-    }
-
-    function applyFilters() {
-        // Tarih input'larından önce değerleri al (input focus'ta olabilir)
-        const status = selectedStatus;
-        const startDateInput = document.getElementById('start-date');
-        const endDateInput = document.getElementById('end-date');
-        const startDate = startDateInput ? startDateInput.value : '';
-        const endDate = endDateInput ? endDateInput.value : '';
-        
-        const params = new URLSearchParams();
-        if (status) params.append('status', status);
-        if (startDate) params.append('start_date', startDate);
-        if (endDate) params.append('end_date', endDate);
-        
-        // Mevcut URL parametrelerini koru (msg gibi)
-        const currentParams = new URLSearchParams(window.location.search);
-        if (currentParams.has('msg')) {
-            params.append('msg', currentParams.get('msg'));
-        }
-        if (currentParams.has('status_warning')) {
-            params.append('status_warning', currentParams.get('status_warning'));
-        }
-        if (currentParams.has('error')) {
-            params.append('error', currentParams.get('error'));
-        }
-        if (currentParams.has('pdn_docentry')) {
-            params.append('pdn_docentry', currentParams.get('pdn_docentry'));
-        }
-        if (currentParams.has('pdn_docnum')) {
-            params.append('pdn_docnum', currentParams.get('pdn_docnum'));
-        }
-        
-        window.location.href = 'DisTedarik.php' + (params.toString() ? '?' + params.toString() : '');
-    }
-
-    // Close dropdowns when clicking outside
-    document.addEventListener('click', function(e) {
-        if (!e.target.closest('.single-select-container')) {
-            document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
-            document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
-        }
-    });
+});
     </script>
 </body>
 </html>

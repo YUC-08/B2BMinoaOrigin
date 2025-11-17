@@ -186,7 +186,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
     
     $items = $itemsData['response']['value'] ?? [];
     
-    error_log('[ANADEPOSO] Items count: ' . count($items));
+    error_log('[ANADEPOSO] Items count (raw): ' . count($items));
+
+    // Aynı kalemin (ItemCode + ItemName) birden fazla şube / kayıt nedeniyle tekrar etmesini önle
+    // Örn: ASB2B_MainWhsItem_B1SLQuery view'inde 100 ve 105 gibi farklı şubeler için aynı kalem iki kez dönüyorsa, burada tekilleştiriyoruz.
+    $uniqueItems = [];
+    $seenKeys = [];
+    foreach ($items as $item) {
+        $code = trim($item['ItemCode'] ?? '');
+        $name = trim($item['ItemName'] ?? '');
+        $key = $code . '|' . $name;
+        if (isset($seenKeys[$key])) {
+            continue;
+        }
+        $seenKeys[$key] = true;
+        $uniqueItems[] = $item;
+    }
+    $items = $uniqueItems;
+
+    error_log('[ANADEPOSO] Items count (unique): ' . count($items));
     
     // Her item için stok bilgisini ekle (MainQty kullanılıyor)
     foreach ($items as &$item) {
@@ -369,7 +387,7 @@ body {
     gap: 20px;
     margin-bottom: 20px;
     padding: 20px;
-    background: #ffffff;
+    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
     border-radius: 8px;
     border: 1px solid #e0e0e0;
 }
@@ -381,9 +399,8 @@ body {
 
 .filter-group label {
     font-weight: 600;
-    color: #333;
-    margin-bottom: 8px;
-    font-size: 14px;
+    color: #1e40af;
+    font-size: 0.9rem;
 }
 
 .filter-input, .filter-select {
@@ -396,7 +413,7 @@ body {
 
 .filter-input:focus, .filter-select:focus {
     outline: none;
-    border-color: #ff5722;
+    border-color: #1e40af;
     box-shadow: 0 0 0 2px rgba(255, 87, 34, 0.1);
 }
 
@@ -418,11 +435,11 @@ body {
 }
 
 .multi-select-input:hover {
-    border-color: #ff5722;
+    border-color: #1e40af;
 }
 
 .multi-select-input.active {
-    border-color: #ff5722;
+    border-color: #1e40af;
     box-shadow: 0 0 0 2px rgba(255, 87, 34, 0.1);
 }
 
@@ -437,14 +454,15 @@ body {
 }
 
 .multi-select-tag {
-    background: #ff5722;
-    color: white;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+    padding: 4px 10px;
+    border-radius: 16px;
+    font-size: 0.85rem;
+    font-weight: 500;
 }
 
 .multi-select-tag .remove {
@@ -885,11 +903,11 @@ body {
                     <section class="card">
                 <div class="filter-section">
                     <div class="filter-group">
-                        <label>Kalem Tanımı</label>
+                        
                         <div class="multi-select-container">
                             <div class="multi-select-input" onclick="toggleDropdown('itemName')">
                                 <div id="itemNameTags"></div>
-                                <input type="text" id="filterItemName" class="filter-input" placeholder="Seçiniz veya yazın..." onkeyup="handleFilterInput('itemName', this.value)" onfocus="openDropdownIfClosed('itemName')" onclick="event.stopPropagation();">
+                                <input type="text" id="filterItemName" class="filter-input" placeholder="KALEM TANIMI" onkeyup="handleFilterInput('itemName', this.value)" onfocus="openDropdownIfClosed('itemName')" onclick="event.stopPropagation();">
                             </div>
                             <div class="multi-select-dropdown" id="itemNameDropdown">
                                 <div class="multi-select-option" data-value="" onclick="selectOption('itemName', '', 'Tümü')">Tümü</div>
@@ -899,11 +917,11 @@ body {
                     </div>
                     
                     <div class="filter-group">
-                        <label>Kalem Grubu</label>
+                        
                         <div class="multi-select-container">
                             <div class="multi-select-input" onclick="toggleDropdown('itemGroup')">
                                 <div id="itemGroupTags"></div>
-                                <input type="text" id="filterItemGroup" class="filter-input" placeholder="Seçiniz veya yazın..." onkeyup="handleFilterInput('itemGroup', this.value)" onfocus="openDropdownIfClosed('itemGroup')" onclick="event.stopPropagation();">
+                                <input type="text" id="filterItemGroup" class="filter-input" placeholder="KALEM GRUBU" onkeyup="handleFilterInput('itemGroup', this.value)" onfocus="openDropdownIfClosed('itemGroup')" onclick="event.stopPropagation();">
                             </div>
                             <div class="multi-select-dropdown" id="itemGroupDropdown">
                                 <div class="multi-select-option" data-value="" onclick="selectOption('itemGroup', '', 'Tümü')">Tümü</div>
@@ -913,11 +931,11 @@ body {
                     </div>
                     
                     <div class="filter-group">
-                        <label>Stok Durumu</label>
+                        
                         <div class="multi-select-container">
                             <div class="multi-select-input" onclick="toggleDropdown('stockStatus')">
                                 <div id="stockStatusTags"></div>
-                                <input type="text" id="filterStockStatus" class="filter-input" placeholder="Seçiniz..." readonly>
+                                <input type="text" id="filterStockStatus" class="filter-input" placeholder="STOK DURUMU" readonly>
                             </div>
                             <div class="multi-select-dropdown" id="stockStatusDropdown">
                                 <div class="multi-select-option" data-value="" onclick="selectOption('stockStatus', '', 'Tümü')">Tümü</div>
@@ -1028,7 +1046,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 // Input boşsa ve seçili item yoksa, placeholder'ı göster
                 if (this.value.trim() === '' && selectedItemNames.length === 0) {
-                    this.placeholder = 'Seçiniz veya yazın...';
+                    this.placeholder = 'KALEM TANIMI';
                 }
             }, 200);
         });
@@ -1045,7 +1063,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 // Input boşsa ve seçili item yoksa, placeholder'ı göster
                 if (this.value.trim() === '' && selectedItemGroups.length === 0) {
-                    this.placeholder = 'Seçiniz veya yazın...';
+                    this.placeholder = 'KALEM GRUBU';
                 }
             }, 200);
         });
@@ -1362,7 +1380,7 @@ function updateFilterDisplay(type) {
     tagsContainer.innerHTML = '';
     
     if (selected.length === 0) {
-        input.placeholder = 'Seçiniz veya yazın...';
+        input.placeholder = 'STOK DURUMU';
         input.value = '';
     } else {
         input.placeholder = '';

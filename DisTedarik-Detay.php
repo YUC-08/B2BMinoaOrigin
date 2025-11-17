@@ -9,7 +9,6 @@ $sap = new SAPConnect();
 
 $requestNo = $_GET['requestNo'] ?? '';
 $orderNo = $_GET['orderNo'] ?? null;
-$status = $_GET['status'] ?? '';
 
 if (empty($requestNo)) {
     header("Location: DisTedarik.php");
@@ -20,121 +19,103 @@ $detailData = null;
 $lines = [];
 $isPurchaseOrder = !empty($orderNo);
 $errorMsg = '';
+$allOrdersForRequest = [];
 
-$debugInfo = [];
+$uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
+$branch = $_SESSION["Branch2"]["Name"] ?? $_SESSION["WhsCode"] ?? '';
 
 if ($isPurchaseOrder) {
-   
+    // Sipariş detayı
     $orderQuery = 'PurchaseOrders(' . intval($orderNo) . ')';
     $orderData = $sap->get($orderQuery);
     
-    $debugInfo['query'] = $orderQuery;
-    $debugInfo['http_status'] = $orderData['status'] ?? 'NO STATUS';
-    $debugInfo['has_response'] = isset($orderData['response']);
-    $debugInfo['error'] = $orderData['error'] ?? null;
-    $debugInfo['response_error'] = $orderData['response']['error'] ?? null;
-    
     if (($orderData['status'] ?? 0) == 200 && isset($orderData['response'])) {
         $detailData = $orderData['response'];
-        
-        // ✅ ÖNEMLİ: DocEntry ile çek (DocNum değil!)
         $orderDocEntry = $detailData['DocEntry'] ?? intval($orderNo);
         
+        $canReceive = false;
+        $orderStatus = null;
+        if (!empty($uAsOwnr) && !empty($branch)) {
+            $orderNoInt = intval($orderNo);
+            $viewFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_ORNO eq {$orderNoInt}";
+            $viewQuery = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=' . urlencode($viewFilter);
+            $viewData = $sap->get($viewQuery);
+            $viewRows = $viewData['response']['value'] ?? [];
+            
+            if (!empty($viewRows)) {
+                $orderStatus = $viewRows[0]['U_ASB2B_STATUS'] ?? null;
+                $canReceive = isReceivableStatus($orderStatus);
+            }
+        }
         
         $linesQuery = "PurchaseOrders({$orderDocEntry})/DocumentLines";
         $linesData = $sap->get($linesQuery);
         
-        $debugInfo['lines_query'] = $linesQuery;
-        $debugInfo['lines_http_status'] = $linesData['status'] ?? 'NO STATUS';
-        
         if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
             $resp = $linesData['response'];
-            
-            // ✅ Robust parsing: Farklı response formatlarını destekle
             if (isset($resp['value']) && is_array($resp['value'])) {
                 $lines = $resp['value'];
             } elseif (isset($resp['DocumentLines']) && is_array($resp['DocumentLines'])) {
                 $lines = $resp['DocumentLines'];
-            } elseif (is_array($resp) && !isset($resp['@odata.context'])) {
-                // Direct array
-                $lines = $resp;
-            } elseif (isset($resp['DocumentLines@odata.navigationLink'])) {
-                // Navigation link
-                $navLink = $resp['DocumentLines@odata.navigationLink'];
-                $navRes = $sap->get($navLink);
-                if (($navRes['status'] ?? 0) == 200 && isset($navRes['response'])) {
-                    if (isset($navRes['response']['value']) && is_array($navRes['response']['value'])) {
-                        $lines = $navRes['response']['value'];
-                    } elseif (isset($navRes['response']['DocumentLines']) && is_array($navRes['response']['DocumentLines'])) {
-                        $lines = $navRes['response']['DocumentLines'];
-                    }
-                }
             }
         }
     } else {
-        $errorMsg = "Sipariş detayları alınamadı! HTTP " . ($orderData['status'] ?? 'NO STATUS');
-        if (isset($orderData['response']['error'])) {
-            $errorMsg .= " - " . json_encode($orderData['response']['error']);
-        }
+        $errorMsg = "Sipariş detayları alınamadı!";
     }
 } else {
-    // Senaryo B: Sipariş No boşsa (Talep Detay)
+    if (!empty($uAsOwnr) && !empty($branch)) {
+        $requestNoInt = intval($requestNo);
+        $viewFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and RequestNo eq {$requestNoInt}";
+        $viewQuery = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=' . urlencode($viewFilter) . '&$orderby=' . urlencode('U_ASB2B_ORNO desc');
+        $viewData = $sap->get($viewQuery);
+        $viewRows = $viewData['response']['value'] ?? [];
+        
+        foreach ($viewRows as $row) {
+            $orderNoFromView = $row['U_ASB2B_ORNO'] ?? null;
+            if (!empty($orderNoFromView) && $orderNoFromView !== null && $orderNoFromView !== '' && $orderNoFromView !== '-') {
+                $status = $row['U_ASB2B_STATUS'] ?? null;
+                $statusText = getStatusText($status);
+                $canReceive = isReceivableStatus($status);
+                
+                $allOrdersForRequest[] = [
+                    'OrderNo' => $orderNoFromView,
+                    'OrderDate' => $row['U_ASB2B_ORDT'] ?? null,
+                    'Status' => $status,
+                    'StatusText' => $statusText,
+                    'CanReceive' => $canReceive
+                ];
+            }
+        }
+    }
     
     $requestQuery = 'PurchaseRequests(' . intval($requestNo) . ')';
     $requestData = $sap->get($requestQuery);
     
-    $debugInfo['query'] = $requestQuery;
-    $debugInfo['http_status'] = $requestData['status'] ?? 'NO STATUS';
-    $debugInfo['has_response'] = isset($requestData['response']);
-    $debugInfo['error'] = $requestData['error'] ?? null;
-    $debugInfo['response_error'] = $requestData['response']['error'] ?? null;
-    
     if (($requestData['status'] ?? 0) == 200 && isset($requestData['response'])) {
         $detailData = $requestData['response'];
-        
-        // ✅ ÖNEMLİ: DocEntry ile çek
         $requestDocEntry = $detailData['DocEntry'] ?? intval($requestNo);
         
-        // Spec'e göre: GET /b1s/v2/PurchaseRequests(53)/DocumentLines (NOT PurchaseRequestLines!)
         $linesQuery = "PurchaseRequests({$requestDocEntry})/DocumentLines";
         $linesData = $sap->get($linesQuery);
         
-        $debugInfo['lines_query'] = $linesQuery;
-        $debugInfo['lines_http_status'] = $linesData['status'] ?? 'NO STATUS';
-        
         if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
             $resp = $linesData['response'];
-            
-            // ✅ Robust parsing: Farklı response formatlarını destekle
             if (isset($resp['value']) && is_array($resp['value'])) {
                 $lines = $resp['value'];
             } elseif (isset($resp['DocumentLines']) && is_array($resp['DocumentLines'])) {
                 $lines = $resp['DocumentLines'];
-            } elseif (is_array($resp) && !isset($resp['@odata.context'])) {
-                // Direct array
-                $lines = $resp;
-            } elseif (isset($resp['DocumentLines@odata.navigationLink'])) {
-                // Navigation link
-                $navLink = $resp['DocumentLines@odata.navigationLink'];
-                $navRes = $sap->get($navLink);
-                if (($navRes['status'] ?? 0) == 200 && isset($navRes['response'])) {
-                    if (isset($navRes['response']['value']) && is_array($navRes['response']['value'])) {
-                        $lines = $navRes['response']['value'];
-                    } elseif (isset($navRes['response']['DocumentLines']) && is_array($navRes['response']['DocumentLines'])) {
-                        $lines = $navRes['response']['DocumentLines'];
-                    }
-                }
             }
         }
     } else {
-        $errorMsg = "Talep detayları alınamadı! HTTP " . ($requestData['status'] ?? 'NO STATUS');
-        if (isset($requestData['response']['error'])) {
-            $errorMsg .= " - " . json_encode($requestData['response']['error']);
-        }
+        $errorMsg = "Talep detayları alınamadı!";
     }
 }
 
-// Tarih formatlama
+function isReceivableStatus($status) {
+    $s = trim((string)$status);
+    return in_array($s, ['2', '3'], true);
+}
+
 function formatDate($date) {
     if (empty($date)) return '-';
     if (strpos($date, 'T') !== false) {
@@ -142,14 +123,37 @@ function formatDate($date) {
     }
     return date('d.m.Y', strtotime($date));
 }
-?>
 
+function getStatusText($status) {
+    $statusMap = [
+        '0' => 'Sipariş yok',
+        '1' => 'Onay bekleniyor',
+        '2' => 'Hazırlanıyor',
+        '3' => 'Sevk edildi',
+        '4' => 'Tamamlandı',
+        '5' => 'İptal edildi'
+    ];
+    return $statusMap[(string)$status] ?? 'Bilinmiyor';
+}
+
+function getStatusClass($status) {
+    $classMap = [
+        '0' => 'status-unknown',
+        '1' => 'status-pending',
+        '2' => 'status-processing',
+        '3' => 'status-shipped',
+        '4' => 'status-completed',
+        '5' => 'status-cancelled'
+    ];
+    return $classMap[(string)$status] ?? 'status-unknown';
+}
+?>
 <!DOCTYPE html>
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dis Tedarik Detay - MINOA</title>
+    <title>Dış Tedarik Detay - MINOA</title>
     <style>
 * {
     margin: 0;
@@ -254,6 +258,45 @@ body {
     border-bottom: 1px solid #e5e7eb;
 }
 
+.status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 9999px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-align: center;
+}
+
+.status-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.status-processing {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.status-shipped {
+    background: #e0e7ff;
+    color: #4338ca;
+}
+
+.status-completed {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.status-cancelled {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.status-unknown {
+    background: #f3f4f6;
+    color: #6b7280;
+}
+
 .btn {
     padding: 0.5rem 1rem;
     border: none;
@@ -295,12 +338,34 @@ body {
 
     <main class="main-content">
         <header class="page-header">
-            <h2>Dis Tedarik Detay</h2>
+            <h2>Dış Tedarik Detay</h2>
             <div class="header-actions">
                 <?php if ($isPurchaseOrder): ?>
-                    <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?>&orderNo=<?= urlencode($orderNo) ?>">
-                        <button class="btn btn-primary">✓ Teslim Al</button>
-                    </a>
+                    <?php if ($canReceive): ?>
+                        <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?>&orderNos=<?= urlencode($orderNo) ?>">
+                            <button class="btn btn-primary">✓ Teslim Al</button>
+                        </a>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <?php
+                    // Sadece tek siparişli taleplerde header'da teslim al butonu göster
+                    $hasSingleOrder = count($allOrdersForRequest) === 1;
+                    
+                    if ($hasSingleOrder && !empty($allOrdersForRequest)) {
+                        $singleOrder = $allOrdersForRequest[0];
+                        $singleOrderNo = $singleOrder['OrderNo'] ?? null;
+                        $singleOrderStatus = $singleOrder['Status'] ?? null;
+                        
+                        if (!empty($singleOrderNo) && isReceivableStatus($singleOrderStatus)) {
+                            // Tek sipariş için orderNos parametresi kullan (geriye dönük uyumluluk için orderNo da destekleniyor)
+                    ?>
+                        <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?>&orderNos=<?= urlencode($singleOrderNo) ?>">
+                            <button class="btn btn-primary">✓ Teslim Al</button>
+                        </a>
+                    <?php
+                        }
+                    }
+                    ?>
                 <?php endif; ?>
                 <button class="btn btn-secondary" onclick="window.location.href='DisTedarik.php'">← Geri Dön</button>
             </div>
@@ -308,41 +373,9 @@ body {
 
         <div class="content-wrapper">
             <?php if ($errorMsg || !$detailData): ?>
-                <?php if ($errorMsg): ?>
-                    <div class="card" style="background: #fee2e2; border: 2px solid #ef4444; margin-bottom: 1.5rem;">
-                        <h3 style="color: #991b1b; margin-bottom: 1rem;">❌ Hata</h3>
-                        <p style="color: #991b1b; font-weight: 600;"><?= htmlspecialchars($errorMsg) ?></p>
-                    </div>
-                <?php else: ?>
-                    <div class="card" style="background: #fee2e2; border: 2px solid #ef4444; margin-bottom: 1.5rem;">
-                        <h3 style="color: #991b1b; margin-bottom: 1rem;">❌ Hata</h3>
-                        <p style="color: #991b1b; font-weight: 600;">Detay bilgileri alınamadı!</p>
-                    </div>
-                <?php endif; ?>
-                
-                <?php if (!empty($debugInfo)): ?>
-                    <div class="card" style="background: #fef3c7; border: 2px solid #f59e0b; margin-bottom: 1.5rem;">
-                        <h3 style="color: #92400e; margin-bottom: 1rem;">🔍 Debug Bilgileri</h3>
-                        <div style="font-family: monospace; font-size: 0.85rem; color: #78350f;">
-                            <p><strong>Request No:</strong> <?= htmlspecialchars($requestNo) ?></p>
-                            <p><strong>Order No:</strong> <?= htmlspecialchars($orderNo ?? 'N/A') ?></p>
-                            <p><strong>Is Purchase Order:</strong> <?= $isPurchaseOrder ? 'Evet' : 'Hayır' ?></p>
-                            <p><strong>Query:</strong> <?= htmlspecialchars($debugInfo['query'] ?? 'N/A') ?></p>
-                            <p><strong>HTTP Status:</strong> <?= htmlspecialchars($debugInfo['http_status'] ?? 'N/A') ?></p>
-                            <p><strong>Has Response:</strong> <?= $debugInfo['has_response'] ? 'Evet' : 'Hayır' ?></p>
-                            <?php if (isset($debugInfo['lines_query'])): ?>
-                                <p><strong>Lines Query:</strong> <?= htmlspecialchars($debugInfo['lines_query']) ?></p>
-                                <p><strong>Lines HTTP Status:</strong> <?= htmlspecialchars($debugInfo['lines_http_status'] ?? 'N/A') ?></p>
-                            <?php endif; ?>
-                            <?php if ($debugInfo['error']): ?>
-                                <p style="color: #dc2626;"><strong>Error:</strong> <?= htmlspecialchars(json_encode($debugInfo['error'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></p>
-                            <?php endif; ?>
-                            <?php if ($debugInfo['response_error']): ?>
-                                <p style="color: #dc2626;"><strong>Response Error:</strong> <?= htmlspecialchars(json_encode($debugInfo['response_error'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></p>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                <?php endif; ?>
+                <div class="card" style="background: #fee2e2; border: 2px solid #ef4444;">
+                    <p style="color: #991b1b; font-weight: 600;"><?= htmlspecialchars($errorMsg ?: 'Detay bilgileri alınamadı!') ?></p>
+                </div>
             <?php endif; ?>
             
             <?php if ($detailData): ?>
@@ -355,30 +388,39 @@ body {
                         <?php if ($isPurchaseOrder): ?>
                             <div class="detail-item">
                                 <div class="detail-label">Sipariş No</div>
-                                <div class="detail-value"><?= htmlspecialchars($orderNo) ?></div>
-                            </div>
-                            <div class="detail-item">
-                                <div class="detail-label">Sipariş Tarihi</div>
-                                <div class="detail-value"><?= formatDate($detailData['DocDate'] ?? '') ?></div>
-                            </div>
-                            <div class="detail-item">
-                                <div class="detail-label">Tahmini Teslimat</div>
-                                <div class="detail-value"><?= formatDate($detailData['DocDueDate'] ?? '') ?></div>
+                                <div class="detail-value"><?= htmlspecialchars($orderDocEntry ?? $orderNo) ?></div>
                             </div>
                             <div class="detail-item">
                                 <div class="detail-label">Tedarikçi</div>
                                 <div class="detail-value"><?= htmlspecialchars($detailData['CardName'] ?? '-') ?></div>
                             </div>
                             <div class="detail-item">
+                                <div class="detail-label">Sipariş Tarihi</div>
+                                <div class="detail-value"><?= formatDate($detailData['DocDate'] ?? '') ?></div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">Durum</div>
+                                <div class="detail-value">
+                                    <?php if (isset($orderStatus)): ?>
+                                        <span class="status-badge <?= getStatusClass($orderStatus) ?>"><?= getStatusText($orderStatus) ?></span>
+                                    <?php else: ?>
+                                        <span class="status-badge status-unknown">Bilinmiyor</span>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <div class="detail-item">
                                 <div class="detail-label">Teslimat Belge No</div>
                                 <div class="detail-value"><?= htmlspecialchars($detailData['U_ASB2B_NumAtCard'] ?? '-') ?></div>
                             </div>
                             <div class="detail-item">
+                                <div class="detail-label">Tahmini Teslimat</div>
+                                <div class="detail-value"><?= formatDate($detailData['DocDueDate'] ?? '') ?></div>
+                            </div>
+                            <div class="detail-item" style="grid-column: 1 / -1;">
                                 <div class="detail-label">Sipariş Notu</div>
                                 <div class="detail-value"><?= htmlspecialchars($detailData['U_ASB2B_ORDSUM'] ?? '-') ?></div>
                             </div>
                         <?php else: ?>
-                            <!-- Senaryo B: Talep Detayı -->
                             <div class="detail-item">
                                 <div class="detail-label">Talep Tarihi</div>
                                 <div class="detail-value"><?= formatDate($detailData['DocDate'] ?? '') ?></div>
@@ -390,7 +432,7 @@ body {
                         <?php endif; ?>
                     </div>
                 </section>
-
+                
                 <section class="card">
                     <h3 style="margin-bottom: 1rem; color: #1e40af;"><?= $isPurchaseOrder ? 'Sipariş' : 'Talep' ?> Detayı (Satırlar)</h3>
                     <table class="data-table">
@@ -400,33 +442,34 @@ body {
                                 <th>Kalem Tanımı</th>
                                 <th><?= $isPurchaseOrder ? 'Sipariş' : 'Talep' ?> Miktarı</th>
                                 <th>Birim</th>
+                                <?php if (!$isPurchaseOrder): ?>
+                                    <th>Tedarikçi Kodu</th>
+                                <?php endif; ?>
                             </tr>
                         </thead>
                         <tbody>
                             <?php if (!empty($lines)): ?>
-                                <?php foreach ($lines as $line): ?>
+                                <?php foreach ($lines as $lineIndex => $line): ?>
                                     <tr>
                                         <td><?= htmlspecialchars($line['ItemCode'] ?? '-') ?></td>
                                         <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
                                         <td><?= number_format(floatval($line['Quantity'] ?? 0), 2) ?></td>
                                         <td><?= htmlspecialchars($line['UoMCode'] ?? '-') ?></td>
+                                        <?php if (!$isPurchaseOrder): ?>
+                                            <td><?= htmlspecialchars($line['VendorNum'] ?? '-') ?></td>
+                                        <?php endif; ?>
                                     </tr>
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="4" style="text-align: center; padding: 2rem; color: #9ca3af;">Satır bulunamadı.</td>
+                                    <td colspan="<?= $isPurchaseOrder ? '4' : '5' ?>" style="text-align: center; padding: 2rem; color: #9ca3af;">Satır bulunamadı.</td>
                                 </tr>
                             <?php endif; ?>
                         </tbody>
                     </table>
-                </section>
-            <?php else: ?>
-                <section class="card">
-                    <p style="color: #ef4444;">Detay bilgileri alınamadı!</p>
                 </section>
             <?php endif; ?>
         </div>
     </main>
 </body>
 </html>
-

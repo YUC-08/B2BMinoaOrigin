@@ -1,8 +1,8 @@
 {
-    "DocDate": "2025-11-13",
-    "DocDueDate": "2025-11-20",
-    "RequriedDate": "2025-11-20",
-    "Comments": "Deneme Talep ",
+    "DocDate": "2025-11-17",
+    "DocDueDate": "2025-11-24",
+    "RequriedDate": "2025-11-24",
+    "Comments": "",
     "U_ASB2B_BRAN": "100",
     "U_AS_OWNR": "KT",
     "U_ASB2B_STATUS": "1",
@@ -10,14 +10,14 @@
     "DocumentLines": [
         {
             "ItemCode": "90228",
-            "Quantity": 5,
+            "Quantity": 2,
             "UoMCode": "AD",
             "WarehouseCode": "100-KT-1",
             "VendorNum": "P100001"
         },
         {
             "ItemCode": "90229",
-            "Quantity": 5,
+            "Quantity": 2,
             "UoMCode": "KT",
             "WarehouseCode": "100-KT-1",
             "VendorNum": ""
