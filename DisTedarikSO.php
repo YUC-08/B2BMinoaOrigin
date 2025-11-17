@@ -31,6 +31,17 @@ $toWarehouseData = $sap->get($toWarehouseQuery);
 $toWarehouses = $toWarehouseData['response']['value'] ?? [];
 $toWarehouse = !empty($toWarehouses) ? $toWarehouses[0]['WarehouseCode'] : null;
 
+// Kayıt dışı mod kontrolü
+$isUnregisteredMode = isset($_GET['mode']) && $_GET['mode'] === 'unregistered';
+
+// Kayıt dışı mod için tedarikçi listesi çek
+$vendors = [];
+if ($isUnregisteredMode) {
+    $vendorsQuery = "BusinessPartners?\$select=CardCode,CardName&\$filter=CardType eq 'S'&\$top=500";
+    $vendorsData = $sap->get($vendorsQuery);
+    $vendors = $vendorsData['response']['value'] ?? [];
+}
+
 // POST işlemi: PurchaseRequests oluştur
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create_request') {
     header('Content-Type: application/json');
@@ -88,6 +99,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         'U_ASB2B_User' => $userName, // Login kullanıcı adı
         'DocumentLines' => $documentLines // ✅ SAP'de PurchaseRequests için DocumentLines kullanılmalı
     ];
+    
+    // Kayıt dışı mod için ekstra bilgiler
+    if (isset($_POST['is_unregistered']) && $_POST['is_unregistered'] === '1') {
+        $vendorCode = trim($_POST['vendor_code'] ?? '');
+        $irsaliyeNo = trim($_POST['irsaliye_no'] ?? '');
+        $teslimatBelgeNo = trim($_POST['teslimat_belge_no'] ?? '');
+        
+        // CardCode ekle (Tedarikçi/Muhatap)
+        if (!empty($vendorCode)) {
+            $payload['CardCode'] = $vendorCode;
+        }
+        
+        // İrsaliye No ve Teslimat Belge No'yu Comments'e ekle
+        $unregisteredInfo = [];
+        if (!empty($irsaliyeNo)) {
+            $unregisteredInfo[] = "İrsaliye No: {$irsaliyeNo}";
+        }
+        if (!empty($teslimatBelgeNo)) {
+            $unregisteredInfo[] = "Teslimat Belge No: {$teslimatBelgeNo}";
+        }
+        if (!empty($unregisteredInfo)) {
+            $payload['Comments'] = $comments . ' | ' . implode(' | ', $unregisteredInfo);
+        }
+    }
     
     // Debug: Payload'ı logla
     $logDir = __DIR__ . '/logs';
@@ -898,6 +933,11 @@ body {
         <header class="page-header">
             <h2>Dış Tedarik Talebi Oluştur</h2>
             <div style="display: flex; gap: 12px; align-items: center;">
+                <?php if (!$isUnregisteredMode): ?>
+                <button class="btn btn-secondary" onclick="window.location.href='DisTedarikSO.php?mode=unregistered'" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; border: none; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">📦 Kayıt Dışı Gelen Mal</button>
+                <?php else: ?>
+                <button class="btn btn-secondary" onclick="window.location.href='DisTedarikSO.php'" style="background: #3b82f6; color: white; border: none;">📝 Normal Talep Oluştur</button>
+                <?php endif; ?>
                 <button class="btn btn-primary sepet-btn" id="sepetToggleBtn" onclick="toggleSepet()" style="position: relative;">
                     🛒 Sepet
                     <span class="sepet-badge" id="sepetBadge" style="display: none;">0</span>
@@ -928,7 +968,7 @@ body {
                 <!-- Sol taraf: Filtreler ve Tablo -->
                 <div class="main-content-left" id="mainContentLeft">
                     <!-- Filtreler -->
-            <section class="card">
+            <section class="card" id="filterSection" style="<?= $isUnregisteredMode ? 'display: none;' : '' ?>">
                 <div class="filter-section">
                     <div class="filter-group">
                         
@@ -974,6 +1014,34 @@ body {
                     </div>
                 </div>
             </section>
+            
+            <!-- Kayıt Dışı Mod için Bilgi Alanları -->
+            <?php if ($isUnregisteredMode): ?>
+            <section class="card" style="background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border: 2px solid #3b82f6; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);">
+                <div style="padding: 20px;">
+                    <h3 style="margin: 0 0 1rem 0; color: #1e40af; font-size: 1.1rem; font-weight: 600;">📦 Kayıt Dışı Gelen Mal Bilgileri</h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+                        <div>
+                            <label style="display: block; font-weight: 600; color: #1e40af; margin-bottom: 0.5rem;">Tedarikçi / Muhatap *</label>
+                            <select id="vendorSelect" required style="width: 100%; padding: 0.5rem; border: 2px solid #3b82f6; border-radius: 6px; font-size: 0.875rem; background: white; color: #1f2937;">
+                                <option value="">Seçiniz...</option>
+                                <?php foreach ($vendors as $vendor): ?>
+                                    <option value="<?= htmlspecialchars($vendor['CardCode']) ?>"><?= htmlspecialchars($vendor['CardCode'] . ' - ' . $vendor['CardName']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="display: block; font-weight: 600; color: #1e40af; margin-bottom: 0.5rem;">İrsaliye Numarası *</label>
+                            <input type="text" id="irsaliyeNo" required placeholder="İrsaliye numarasını giriniz" style="width: 100%; padding: 0.5rem; border: 2px solid #3b82f6; border-radius: 6px; font-size: 0.875rem; background: white; color: #1f2937;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-weight: 600; color: #1e40af; margin-bottom: 0.5rem;">Teslimat Belge Numarası *</label>
+                            <input type="text" id="teslimatBelgeNo" required placeholder="Teslimat belge numarasını giriniz" style="width: 100%; padding: 0.5rem; border: 2px solid #3b82f6; border-radius: 6px; font-size: 0.875rem; background: white; color: #1f2937;">
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <?php endif; ?>
 
             <!-- Debug Container -->
             <div id="debugContainer" style="display: none;"></div>
@@ -1051,8 +1119,18 @@ body {
                                           placeholder="Talep ile ilgili açıklama giriniz..." 
                                           style="width: 100%; padding: 0.5rem; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 0.875rem; min-height: 80px; resize: vertical;"></textarea>
                             </div>
+                            <?php if ($isUnregisteredMode): ?>
+                            <div style="margin-bottom: 1rem; padding: 1rem; background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border-radius: 6px; border: 1px solid #3b82f6;">
+                                <div style="font-size: 0.875rem; color: #1e40af; margin-bottom: 0.5rem; font-weight: 600;">📦 Kayıt Dışı Bilgiler (Yukarıdan otomatik alınacak)</div>
+                                <div style="font-size: 0.8rem; color: #1e3a8a;">
+                                    <div><strong>Tedarikçi:</strong> <span id="sepetVendorDisplay">-</span></div>
+                                    <div><strong>İrsaliye No:</strong> <span id="sepetIrsaliyeDisplay">-</span></div>
+                                    <div><strong>Teslimat Belge No:</strong> <span id="sepetTeslimatDisplay">-</span></div>
+                                </div>
+                            </div>
+                            <?php endif; ?>
                             <div style="text-align: right;">
-                                <button class="btn btn-primary" onclick="saveRequest()">✓ Talep Oluştur</button>
+                                <button class="btn btn-primary" onclick="saveRequest()">✓ <?= $isUnregisteredMode ? 'Talep Oluştur / Teslim Al' : 'Talep Oluştur' ?></button>
                             </div>
                         </div>
                     </section>
@@ -1667,6 +1745,7 @@ function toggleSepet() {
         panel.style.display = 'block';
         container.classList.add('sepet-open');
         updateSepet();
+        updateUnregisteredInfoInSepet(); // Kayıt dışı mod için bilgileri güncelle
     }
 }
 
@@ -1750,13 +1829,38 @@ function saveRequest() {
         return;
     }
     
+    // Kayıt dışı mod kontrolü
+    const urlParams = new URLSearchParams(window.location.search);
+    const isUnregisteredMode = urlParams.get('mode') === 'unregistered';
+    
     const formData = new FormData();
     formData.append('action', 'create_request');
     formData.append('items', JSON.stringify(items));
     formData.append('comments', comments);
-    formData.append('required_date', requiredDate); 
+    formData.append('required_date', requiredDate);
     
-    if (!confirm('Talebi oluşturmak istediğinize emin misiniz?')) {
+    // Kayıt dışı mod için ekstra bilgiler
+    if (isUnregisteredMode) {
+        const vendorCode = document.getElementById('vendorSelect')?.value || '';
+        const irsaliyeNo = document.getElementById('irsaliyeNo')?.value || '';
+        const teslimatBelgeNo = document.getElementById('teslimatBelgeNo')?.value || '';
+        
+        if (!vendorCode || !irsaliyeNo || !teslimatBelgeNo) {
+            alert('Lütfen tüm kayıt dışı bilgilerini doldurun! (Tedarikçi, İrsaliye No, Teslimat Belge No)');
+            return;
+        }
+        
+        formData.append('is_unregistered', '1');
+        formData.append('vendor_code', vendorCode);
+        formData.append('irsaliye_no', irsaliyeNo);
+        formData.append('teslimat_belge_no', teslimatBelgeNo);
+    }
+    
+    const confirmMsg = isUnregisteredMode 
+        ? 'Kayıt dışı gelen mal için talebi oluşturmak istediğinize emin misiniz?'
+        : 'Talebi oluşturmak istediğinize emin misiniz?';
+    
+    if (!confirm(confirmMsg)) {
         return;
     }
     
@@ -1767,7 +1871,7 @@ function saveRequest() {
     .then(res => res.json())
     .then(data => {
         if (data.success) {
-            alert('Talep başarıyla oluşturuldu!');
+            alert(isUnregisteredMode ? 'Kayıt dışı gelen mal talebi başarıyla oluşturuldu!' : 'Talep başarıyla oluşturuldu!');
             window.location.href = 'DisTedarik.php';
         } else {
             alert('Hata: ' + (data.message || 'Bilinmeyen hata'));
@@ -1778,6 +1882,57 @@ function saveRequest() {
         alert('Talep oluşturulurken hata oluştu!');
     });
 }
+
+// Kayıt dışı mod için sepet panelinde bilgileri güncelle
+function updateUnregisteredInfoInSepet() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const isUnregisteredMode = urlParams.get('mode') === 'unregistered';
+    
+    if (!isUnregisteredMode) return;
+    
+    const vendorSelect = document.getElementById('vendorSelect');
+    const irsaliyeNo = document.getElementById('irsaliyeNo');
+    const teslimatBelgeNo = document.getElementById('teslimatBelgeNo');
+    
+    if (vendorSelect && irsaliyeNo && teslimatBelgeNo) {
+        const vendorDisplay = document.getElementById('sepetVendorDisplay');
+        const irsaliyeDisplay = document.getElementById('sepetIrsaliyeDisplay');
+        const teslimatDisplay = document.getElementById('sepetTeslimatDisplay');
+        
+        if (vendorDisplay) {
+            const selectedOption = vendorSelect.options[vendorSelect.selectedIndex];
+            vendorDisplay.textContent = selectedOption ? selectedOption.text : '-';
+        }
+        if (irsaliyeDisplay) {
+            irsaliyeDisplay.textContent = irsaliyeNo.value || '-';
+        }
+        if (teslimatDisplay) {
+            teslimatDisplay.textContent = teslimatBelgeNo.value || '-';
+        }
+    }
+}
+
+// Kayıt dışı alanlar değiştiğinde sepet panelini güncelle
+document.addEventListener('DOMContentLoaded', function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const isUnregisteredMode = urlParams.get('mode') === 'unregistered';
+    
+    if (isUnregisteredMode) {
+        const vendorSelect = document.getElementById('vendorSelect');
+        const irsaliyeNo = document.getElementById('irsaliyeNo');
+        const teslimatBelgeNo = document.getElementById('teslimatBelgeNo');
+        
+        if (vendorSelect) {
+            vendorSelect.addEventListener('change', updateUnregisteredInfoInSepet);
+        }
+        if (irsaliyeNo) {
+            irsaliyeNo.addEventListener('input', updateUnregisteredInfoInSepet);
+        }
+        if (teslimatBelgeNo) {
+            teslimatBelgeNo.addEventListener('input', updateUnregisteredInfoInSepet);
+        }
+    }
+});
 
 // Close dropdowns when clicking outside
 document.addEventListener('click', function(e) {

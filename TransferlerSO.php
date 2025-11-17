@@ -1,93 +1,206 @@
 <?php
 session_start();
-if (!isset($_SESSION["sapSession"])) {
+if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
     header("Location: config/login.php");
     exit;
 }
-
 include 'sap_connect.php';
 $sap = new SAPConnect();
 
-$whsCode = $_SESSION["1000"] ?? '1000';
-$userName = $_SESSION["UserName"] ?? 'manager';
+// Session'dan bilgileri al
+$uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
+$branch = $_SESSION["WhsCode"] ?? $_SESSION["Branch2"]["Name"] ?? '';
+$userName = $_SESSION["UserName"] ?? '';
 
-$isAjax = isset($_GET['ajax']) && $_GET['ajax'] === '1';
-
-// ✅ AJAX filtre sorgusu
-if ($isAjax) {
-    header('Content-Type: application/json');
-
-    $itemName = trim($_GET['item_name'] ?? '');
-    $itemGroup = trim($_GET['item_group'] ?? '');
-    $branch = trim($_GET['branch'] ?? '');
-    $stockStatus = trim($_GET['stock_status'] ?? '');
-    $query = "SQLQueries('OWTQ_T_NEW')/List?value1='TRANSFER'&value2='{$_SESSION["1000"]}'";
-
-    if ($itemName !== '') $query .= "&value3='" . urlencode($itemName) . "'";
-    if ($itemGroup !== '') $query .= "&value4='" . urlencode($itemGroup) . "'";
-    if ($branch !== '') $query .= "&value5='" . urlencode($branch) . "'";
-    if ($stockStatus !== '') $query .= "&value6='" . urlencode($stockStatus) . "'";
-
-    $data = $sap->get($query);
-    $rows = $data['response']['value'] ?? [];
-
-    echo json_encode([
-        'success' => true,
-        'data' => $rows,
-        'count' => count($rows)
-    ]);
-    exit;
+if (empty($uAsOwnr) || empty($branch)) {
+    die("Session bilgileri eksik. Lütfen tekrar giriş yapın.");
 }
 
-// ✅ Transfer oluşturma
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_transfer'])) {
+// ToWarehouse sorgusu (talep eden depo - U_ASB2B_MAIN eq '2')
+$toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '{$branch}'";
+$toWarehouseQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilter);
+$toWarehouseData = $sap->get($toWarehouseQuery);
+$toWarehouses = $toWarehouseData['response']['value'] ?? [];
+$toWarehouse = !empty($toWarehouses) ? $toWarehouses[0]['WarehouseCode'] : null;
+
+// FromWarehouse sorgusu (diğer şubeler - U_ASB2B_MAIN eq '1')
+// Not: ASB2B_BranchWhsItem_B1SLQuery kullanılacak, bu view'den FromWarehouse bilgisi gelecek
+// Şimdilik AnaDepoSO.php'deki mantığı takip ediyoruz
+$fromWarehouseFilter = "U_ASB2B_FATH eq 'Y' and U_AS_OWNR eq '{$uAsOwnr}'";
+$fromWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fromWarehouseFilter);
+$fromWarehouseData = $sap->get($fromWarehouseQuery);
+$fromWarehouses = $fromWarehouseData['response']['value'] ?? [];
+$fromWarehouse = !empty($fromWarehouses) ? $fromWarehouses[0]['WarehouseCode'] : null;
+$fromWhsName = !empty($fromWarehouses) ? ($fromWarehouses[0]['WarehouseName'] ?? '') : '';
+
+// POST işlemi: InventoryTransferRequests oluştur
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create_request') {
     header('Content-Type: application/json');
-    $transferItems = json_decode($_POST['transfer_items'], true);
-    $sessionID = $_SESSION["sapSession"]["SessionId"] ?? uniqid();
-    $guid = uniqid('TRANSFER_', true);
-    $results = [];
-    $successCount = 0;
-    $errorCount = 0;
-
-    foreach ($transferItems as $item) {
-        $postData = [
-            'U_Type' => 'TRANSFER',
-            'U_WhsCode' => $whsCode,
-            'U_ItemCode' => $item['ItemCode'],
-            'U_ItemName' => $item['ItemName'],
-            'U_FromWhsCode' => $item['FromWhsCode'],
-            'U_FromWhsName' => $item['FromWhsName'],
-            'U_Quantity' => floatval($item['Quantity']),
-            'U_UomCode' => $item['UomCode'],
-            'U_Comments' => $item['Comments'] ?? '',
-            'U_SessionID' => $sessionID,
-            'U_GUID' => $guid,
-            'U_User' => $userName
-        ];
-
-        $result = $sap->post('ASUDO_B2B_OWTQ', $postData);
-        if ($result['status'] >= 200 && $result['status'] < 300) {
-            $successCount++;
-        } else {
-            $errorCount++;
+    
+    $selectedItems = json_decode($_POST['items'] ?? '[]', true);
+    
+    if (empty($selectedItems)) {
+        echo json_encode(['success' => false, 'message' => 'Lütfen en az bir kalem seçin!']);
+        exit;
+    }
+    
+    if (empty($fromWarehouse) || empty($toWarehouse)) {
+        echo json_encode(['success' => false, 'message' => 'Depo bilgileri bulunamadı!']);
+        exit;
+    }
+    
+    $stockTransferLines = [];
+    foreach ($selectedItems as $item) {
+        $userQuantity = floatval($item['quantity'] ?? 0);
+        if ($userQuantity > 0) {
+            $baseQty = floatval($item['baseQty'] ?? 1.0);
+            $sapQuantity = $userQuantity * $baseQty;
+            
+            $stockTransferLines[] = [
+                'ItemCode' => $item['itemCode'] ?? '',
+                'Quantity' => $sapQuantity,
+                'FromWarehouseCode' => $fromWarehouse,
+                'WarehouseCode' => $toWarehouse
+            ];
         }
     }
-
-    echo json_encode([
-        'success' => $errorCount === 0,
-        'message' => "{$successCount} başarılı, {$errorCount} hatalı işlem."
-    ]);
+    
+    if (empty($stockTransferLines)) {
+        echo json_encode(['success' => false, 'message' => 'Miktarı girilen kalem bulunamadı!']);
+        exit;
+    }
+    
+    $payload = [
+        'DocDate' => date('Y-m-d'),
+        'FromWarehouse' => $fromWarehouse,
+        'ToWarehouse' => $toWarehouse,
+        'Comments' => 'Stok nakil talebi',
+        'U_ASB2B_BRAN' => $branch,
+        'U_AS_OWNR' => $uAsOwnr,
+        'U_ASB2B_STATUS' => '1',
+        'U_ASB2B_TYPE' => 'TRANSFER',
+        'U_ASB2B_User' => $userName,
+        'StockTransferLines' => $stockTransferLines
+    ];
+    
+    $result = $sap->post('InventoryTransferRequests', $payload);
+    
+    if ($result['status'] == 200 || $result['status'] == 201) {
+        echo json_encode(['success' => true, 'message' => 'Transfer talebi başarıyla oluşturuldu!', 'data' => $result]);
+    } else {
+        $errorMsg = 'Talep oluşturulamadı: HTTP ' . ($result['status'] ?? 'NO STATUS');
+        if (isset($result['response']['error'])) {
+            $errorMsg .= ' - ' . json_encode($result['response']['error']);
+        }
+        echo json_encode(['success' => false, 'message' => $errorMsg, 'response' => $result]);
+    }
     exit;
 }
 
-// ✅ Varsayılan veri yükleme
-$query = "SQLQueries('OWTQ_T_NEW')/List?value1='TRANSFER'&value2='{$whsCode}'";
-$data = $sap->get($query);
-$rows = $data['response']['value'] ?? [];
+// AJAX: Items listesi getir (ASB2B_BranchWhsItem_B1SLQuery veya ASB2B_MainWhsItem_B1SLQuery kullanılacak)
+// Not: ASB2B_BranchWhsItem_B1SLQuery bulunamadı, şimdilik ASB2B_MainWhsItem_B1SLQuery kullanıyoruz
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'] === 'items') {
+    header('Content-Type: application/json');
+    
+    if (empty($fromWhsName)) {
+        echo json_encode([
+            'data' => [],
+            'count' => 0,
+            'hasMore' => false,
+            'error' => 'Ana depo adı bulunamadı! FromWarehouse: ' . ($fromWarehouse ?: 'BULUNAMADI')
+        ]);
+        exit;
+    }
+    
+    $skip = intval($_GET['skip'] ?? 0);
+    $top = intval($_GET['top'] ?? 25);
+    $search = trim($_GET['search'] ?? '');
+    $itemNames = isset($_GET['item_names']) ? json_decode($_GET['item_names'], true) : [];
+    $itemGroups = isset($_GET['item_groups']) ? json_decode($_GET['item_groups'], true) : [];
+    $stockStatus = trim($_GET['stock_status'] ?? '');
+    
+    // FromWhsName ile filtreleme
+    $fromWhsNameEscaped = str_replace("'", "''", $fromWhsName);
+    $filter = "FromWhsName eq '{$fromWhsNameEscaped}'";
+    
+    // Kalem Tanımı filtresi
+    if (!empty($itemNames) && is_array($itemNames)) {
+        $itemNameConditions = [];
+        foreach ($itemNames as $itemDisplay) {
+            if (strpos($itemDisplay, ' - ') !== false) {
+                list($itemCode, $itemName) = explode(' - ', $itemDisplay, 2);
+                $itemCodeEscaped = str_replace("'", "''", trim($itemCode));
+                $itemNameEscaped = str_replace("'", "''", trim($itemName));
+                $itemNameConditions[] = "(ItemCode eq '{$itemCodeEscaped}' or ItemName eq '{$itemNameEscaped}')";
+            } else {
+                $itemNameEscaped = str_replace("'", "''", $itemDisplay);
+                $itemNameConditions[] = "ItemName eq '{$itemNameEscaped}'";
+            }
+        }
+        if (!empty($itemNameConditions)) {
+            $filter .= " and (" . implode(" or ", $itemNameConditions) . ")";
+        }
+    } else if (!empty($search)) {
+        $searchEscaped = str_replace("'", "''", $search);
+        $filter .= " and (contains(ItemCode, '{$searchEscaped}') or contains(ItemName, '{$searchEscaped}'))";
+    }
+    
+    // Kalem Grubu filtresi
+    if (!empty($itemGroups) && is_array($itemGroups)) {
+        $itemGroupConditions = [];
+        foreach ($itemGroups as $itemGroup) {
+            $itemGroupEscaped = str_replace("'", "''", $itemGroup);
+            $itemGroupConditions[] = "ItemGroup eq '{$itemGroupEscaped}'";
+        }
+        if (!empty($itemGroupConditions)) {
+            $filter .= " and (" . implode(" or ", $itemGroupConditions) . ")";
+        }
+    }
+    
+    // Stok durumu filtresi
+    if (!empty($stockStatus)) {
+        if ($stockStatus === 'var') {
+            $filter .= " and MainQty gt 0";
+        } else if ($stockStatus === 'yok') {
+            $filter .= " and MainQty le 0";
+        }
+    }
+    
+    // ASB2B_MainWhsItem_B1SLQuery kullanıyoruz (ASB2B_BranchWhsItem_B1SLQuery bulunamadı)
+    $itemsQuery = "view.svc/ASB2B_MainWhsItem_B1SLQuery?\$filter=" . urlencode($filter) . "&\$orderby=ItemCode&\$top={$top}&\$skip={$skip}";
+    
+    $itemsData = $sap->get($itemsQuery);
+    $items = $itemsData['response']['value'] ?? [];
 
-$warehousesQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=Inactive eq 'N'";
-$warehousesData = $sap->get($warehousesQuery);
-$warehouses = $warehousesData['response']['value'] ?? [];
+    // Deduplication
+    $uniqueItems = [];
+    $seenKeys = [];
+    foreach ($items as $item) {
+        $code = trim($item['ItemCode'] ?? '');
+        $name = trim($item['ItemName'] ?? '');
+        $key = $code . '|' . $name;
+        if (isset($seenKeys[$key])) {
+            continue;
+        }
+        $seenKeys[$key] = true;
+        $uniqueItems[] = $item;
+    }
+    $items = $uniqueItems;
+    
+    // Her item için stok bilgisini ekle
+    foreach ($items as &$item) {
+        $mainQty = floatval($item['MainQty'] ?? 0);
+        $item['_stock'] = $mainQty;
+        $item['_hasStock'] = $mainQty > 0;
+    }
+    
+    echo json_encode([
+        'data' => $items,
+        'count' => count($items),
+        'hasMore' => count($items) >= $top
+    ]);
+    exit;
+}
 ?>
 <!DOCTYPE html>
 <html lang="tr">
