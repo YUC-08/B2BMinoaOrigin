@@ -26,6 +26,18 @@ if (!$requestData) {
     exit;
 }
 
+// Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
+function formatQuantity($qty) {
+    $num = floatval($qty);
+    if ($num == 0) return '0';
+    // Tam sayı ise küsurat gösterme
+    if ($num == floor($num)) {
+        return (string)intval($num);
+    }
+    // Küsurat varsa virgül ile göster
+    return str_replace('.', ',', rtrim(rtrim(sprintf('%.2f', $num), '0'), ','));
+}
+
 // Status mapping
 function getStatusText($status) {
     $statusMap = [
@@ -321,7 +333,7 @@ $showNewRequestButton = ($type === 'incoming'); // Sadece gelen transferler içi
                     <?php if ($canApprove && $type === 'outgoing'): ?>
                         <a href="Transferler-Onayla.php?docEntry=<?= urlencode($docEntry) ?>" class="btn btn-approve">✓ Onayla</a>
                     <?php endif; ?>
-                    <a href="Transferler.php" class="btn btn-secondary">← Geri</a>
+                    <button class="btn btn-secondary" onclick="window.location.href='Transferler.php'">← Geri Dön</button>
                 </div>
             </header>
 
@@ -416,8 +428,8 @@ $showNewRequestButton = ($type === 'incoming'); // Sadece gelen transferler içi
                                 <tr>
                                     <td style="font-weight: 600; color: #1e40af;"><?= htmlspecialchars($itemCode) ?></td>
                                     <td><?= htmlspecialchars($itemName) ?></td>
-                                    <td><?= number_format($quantity, 2) ?></td>
-                                    <td><?= number_format($delivered, 2) ?></td>
+                                    <td><?= formatQuantity($quantity) ?></td>
+                                    <td><?= formatQuantity($delivered) ?></td>
                                     <td><?= htmlspecialchars($uomCode) ?></td>
                                 </tr>
                             <?php endforeach; ?>

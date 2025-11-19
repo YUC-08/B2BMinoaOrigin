@@ -16,6 +16,18 @@ if (empty($uAsOwnr) || empty($branch)) {
     die("Session bilgileri eksik. Lütfen tekrar giriş yapın.");
 }
 
+// Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
+function formatQuantity($qty) {
+    $num = floatval($qty);
+    if ($num == 0) return '0';
+    // Tam sayı ise küsurat gösterme
+    if ($num == floor($num)) {
+        return (string)intval($num);
+    }
+    // Küsurat varsa virgül ile göster
+    return str_replace('.', ',', rtrim(rtrim(sprintf('%.2f', $num), '0'), ','));
+}
+
 // FromWarehouse ve ToWarehouse sorguları
 $fromWarehouseFilter = "U_ASB2B_FATH eq 'Y' and U_AS_OWNR eq '{$uAsOwnr}'";
 $fromWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fromWarehouseFilter);
@@ -80,6 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         'U_ASB2B_STATUS' => '1',
         'U_ASB2B_TYPE' => 'MAIN',
         'U_ASB2B_User' => $userName,
+        'U_ASWHSF' => $fromWhsName, 
         'StockTransferLines' => $stockTransferLines
     ];
     
@@ -270,7 +283,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ana Depo Siparişi Oluştur</title>
+    <title>Ana Depo Talebi Oluştur</title>
     <link rel="stylesheet" href="styles.css">
     <style>
 /* Modern mavi-beyaz tema ve layout düzenlemeleri */
@@ -878,13 +891,13 @@ body {
 
     <main class="main-content">
         <header class="page-header">
-            <h2>Ana Depo Siparişi Oluştur</h2>
+            <h2>Ana Depo Talebi Oluştur</h2>
             <div style="display: flex; gap: 12px; align-items: center;">
                 <button class="btn btn-primary sepet-btn" id="sepetToggleBtn" onclick="toggleSepet()" style="position: relative;">
                     🛒 Sepet
                     <span class="sepet-badge" id="sepetBadge" style="display: none;">0</span>
                 </button>
-                <button class="btn btn-secondary" onclick="window.location.href='config/logout.php'">Çıkış Yap →</button>
+                <button class="btn btn-secondary" onclick="window.location.href='AnaDepo.php'">← Geri Dön</button>
             </div>
         </header>
 
@@ -971,10 +984,10 @@ body {
                             <th>Kalem Kodu</th>
                             <th>Kalem Tanımı</th>
                             <th>Kalem Grubu</th>
-                            <th>Stokta</th>
-                            <th>Stoktaki Miktar</th>
+                            <th>Ana depo</th>
+                            <th>Ana depo miktarı</th>
                             <th>Minimum Miktar</th>
-                            <th>Sipariş Miktarı</th>
+                            <th>Talep Miktarı</th>
                             <th>Ölçü Birimi</th>
                             <th>Dönüşüm</th>
                         </tr>
@@ -1004,7 +1017,7 @@ body {
                         </div>
                         <div id="sepetList"></div>
                         <div style="margin-top: 1.5rem; text-align: right; padding-top: 1.5rem; border-top: 1px solid #e5e7eb;">
-                            <button class="btn btn-primary" onclick="saveRequest()">✓ Sipariş Oluştur</button>
+                            <button class="btn btn-primary" onclick="saveRequest()">✓ Talep Oluştur</button>
                         </div>
                     </section>
                 </div>
@@ -1462,6 +1475,18 @@ function renderItems(items) {
         return;
     }
     
+    // Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
+    function formatQuantity(qty) {
+        const num = parseFloat(qty);
+        if (isNaN(num)) return '0';
+        // Tam sayı ise küsurat gösterme
+        if (num % 1 === 0) {
+            return num.toString();
+        }
+        // Küsurat varsa virgül ile göster
+        return num.toString().replace('.', ',');
+    }
+    
     tbody.innerHTML = items.map(item => {
         const itemCode = item.ItemCode || '';
         const itemName = item.ItemName || item.ItemDescription || '';
@@ -1475,14 +1500,14 @@ function renderItems(items) {
         const isInSepet = selectedItems.hasOwnProperty(itemCode);
         const sepetQty = isInSepet ? selectedItems[itemCode].quantity : 0;
         
-        // Dönüşüm kolonu: Eğer sipariş miktarı varsa "miktar x UomConvert", yoksa sadece UomConvert
+        // Dönüşüm kolonu: Eğer talep miktarı varsa "miktar x UomConvert", yoksa sadece UomConvert
         let conversionText = '-';
         if (uomConvert && uomConvert !== 1) {
             if (sepetQty > 0) {
-                // Sipariş miktarı × UomConvert formatında göster
+                // Talep miktarı × UomConvert formatında göster
                 conversionText = `${sepetQty.toFixed(0)}x${uomConvert.toFixed(0)}`;
             } else {
-                // Sipariş miktarı yoksa sadece UomConvert göster
+                // Talep miktarı yoksa sadece UomConvert göster
                 conversionText = uomConvert.toFixed(0);
             }
         } else if (uomConvert === 1) {
@@ -1500,8 +1525,8 @@ function renderItems(items) {
                 <td>${itemName}</td>
                 <td>${itemGroup}</td>
                 <td><span class="stock-badge ${hasStock ? 'stock-yes' : 'stock-no'}">${hasStock ? 'Var' : 'Yok'}</span></td>
-                <td>${stockQty.toFixed(2)}</td>
-                <td>${minQty}</td>
+                <td>${formatQuantity(stockQty)}</td>
+                <td>${formatQuantity(minQty)}</td>
                 <td>
                     <div class="quantity-controls">
                         <button type="button" class="qty-btn" onclick="changeQuantity('${itemCode}', -1)">-</button>

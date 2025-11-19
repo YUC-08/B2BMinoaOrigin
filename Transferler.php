@@ -536,7 +536,7 @@ function formatDate($date) {
         </div>
     </main>
 
-    <script>
+    <script> 
         function applyFilters() {
             const status = document.getElementById('filterStatus').value;
             const startDate = document.getElementById('start-date').value;

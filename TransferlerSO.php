@@ -16,27 +16,51 @@ if (empty($uAsOwnr) || empty($branch)) {
     die("Session bilgileri eksik. Lütfen tekrar giriş yapın.");
 }
 
-// ToWarehouse sorgusu (talep eden depo - U_ASB2B_MAIN eq '2')
+// Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
+function formatQuantity($qty) {
+    $num = floatval($qty);
+    if ($num == 0) return '0';
+    // Tam sayı ise küsurat gösterme
+    if ($num == floor($num)) {
+        return (string)intval($num);
+    }
+    // Küsurat varsa virgül ile göster
+    return str_replace('.', ',', rtrim(rtrim(sprintf('%.2f', $num), '0'), ','));
+}
+
+$branch = (string)$branch;
+
+// ToWarehouse (talep eden depo)
 $toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '{$branch}'";
-$toWarehouseQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilter);
+$toWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&\$filter=" . urlencode($toWarehouseFilter);
 $toWarehouseData = $sap->get($toWarehouseQuery);
 $toWarehouses = $toWarehouseData['response']['value'] ?? [];
 $toWarehouse = !empty($toWarehouses) ? $toWarehouses[0]['WarehouseCode'] : null;
 
-// FromWarehouse sorgusu (diğer şubeler - U_ASB2B_MAIN eq '1')
-// Not: ASB2B_BranchWhsItem_B1SLQuery kullanılacak, bu view'den FromWarehouse bilgisi gelecek
-// Şimdilik AnaDepoSO.php'deki mantığı takip ediyoruz
-$fromWarehouseFilter = "U_ASB2B_FATH eq 'Y' and U_AS_OWNR eq '{$uAsOwnr}'";
-$fromWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fromWarehouseFilter);
+// FromWarehouse (gönderen şube deposu)
+$fromWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '{$branch}'";
+$fromWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&\$filter=" . urlencode($fromWarehouseFilter);
 $fromWarehouseData = $sap->get($fromWarehouseQuery);
 $fromWarehouses = $fromWarehouseData['response']['value'] ?? [];
 $fromWarehouse = !empty($fromWarehouses) ? $fromWarehouses[0]['WarehouseCode'] : null;
-$fromWhsName = !empty($fromWarehouses) ? ($fromWarehouses[0]['WarehouseName'] ?? '') : '';
+
+// Diğer şubeler (filtreleme için)
+$allOtherWarehousesFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1'";
+$allOtherWarehousesQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&\$filter=" . urlencode($allOtherWarehousesFilter);
+$allOtherWarehousesData = $sap->get($allOtherWarehousesQuery);
+$allOtherWarehouses = $allOtherWarehousesData['response']['value'] ?? [];
+
+$otherWarehouses = [];
+foreach ($allOtherWarehouses as $whs) {
+    if ((string)($whs['U_ASB2B_BRAN'] ?? '') !== $branch) {
+        $otherWarehouses[] = $whs;
+    }
+}
 
 // POST işlemi: InventoryTransferRequests oluştur
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create_request') {
     header('Content-Type: application/json');
-    
+
     $selectedItems = json_decode($_POST['items'] ?? '[]', true);
     
     if (empty($selectedItems)) {
@@ -45,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
     
     if (empty($fromWarehouse) || empty($toWarehouse)) {
-        echo json_encode(['success' => false, 'message' => 'Depo bilgileri bulunamadı!']);
+        echo json_encode(['success' => false, 'message' => 'Depo bilgileri bulunamadı! FromWarehouse: ' . ($fromWarehouse ?: 'BULUNAMADI') . ', ToWarehouse: ' . ($toWarehouse ?: 'BULUNAMADI')]);
         exit;
     }
     
@@ -53,13 +77,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     foreach ($selectedItems as $item) {
         $userQuantity = floatval($item['quantity'] ?? 0);
         if ($userQuantity > 0) {
-            $baseQty = floatval($item['baseQty'] ?? 1.0);
-            $sapQuantity = $userQuantity * $baseQty;
+            $itemFromWarehouse = $item['fromWhsCode'] ?? $fromWarehouse;
+            if (empty($itemFromWarehouse)) continue;
             
             $stockTransferLines[] = [
                 'ItemCode' => $item['itemCode'] ?? '',
-                'Quantity' => $sapQuantity,
-                'FromWarehouseCode' => $fromWarehouse,
+                'Quantity' => $userQuantity * floatval($item['baseQty'] ?? 1.0),
+                'FromWarehouseCode' => $itemFromWarehouse,
                 'WarehouseCode' => $toWarehouse
             ];
         }
@@ -70,17 +94,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
     
+    $firstItemFromWarehouse = $stockTransferLines[0]['FromWarehouseCode'] ?? $fromWarehouse;
+    
     $payload = [
         'DocDate' => date('Y-m-d'),
-        'FromWarehouse' => $fromWarehouse,
+        'FromWarehouse' => $firstItemFromWarehouse,
         'ToWarehouse' => $toWarehouse,
         'Comments' => 'Stok nakil talebi',
         'U_ASB2B_BRAN' => $branch,
         'U_AS_OWNR' => $uAsOwnr,
-        'U_ASB2B_STATUS' => '1',
+        'U_ASB2B_STATUS' => 'ONAYBEKLIYOR',
         'U_ASB2B_TYPE' => 'TRANSFER',
         'U_ASB2B_User' => $userName,
-        'StockTransferLines' => $stockTransferLines
+        'InventoryTransferRequestLines' => $stockTransferLines
     ];
     
     $result = $sap->post('InventoryTransferRequests', $payload);
@@ -97,33 +123,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
-// AJAX: Items listesi getir (ASB2B_BranchWhsItem_B1SLQuery veya ASB2B_MainWhsItem_B1SLQuery kullanılacak)
-// Not: ASB2B_BranchWhsItem_B1SLQuery bulunamadı, şimdilik ASB2B_MainWhsItem_B1SLQuery kullanıyoruz
+// AJAX: Items listesi getir
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'] === 'items') {
     header('Content-Type: application/json');
     
-    if (empty($fromWhsName)) {
+    // Items listesi için ToWarehouse gerekli değil, sadece FromWhsName ile filtreleme yapılıyor
+    // ToWarehouse sadece POST işleminde (transfer talebi oluştururken) gerekli
+    if (empty($otherWarehouses)) {
         echo json_encode([
             'data' => [],
             'count' => 0,
             'hasMore' => false,
-            'error' => 'Ana depo adı bulunamadı! FromWarehouse: ' . ($fromWarehouse ?: 'BULUNAMADI')
+            'error' => 'Diğer şube depo bilgileri bulunamadı!'
         ]);
         exit;
     }
-    
+
     $skip = intval($_GET['skip'] ?? 0);
     $top = intval($_GET['top'] ?? 25);
     $search = trim($_GET['search'] ?? '');
     $itemNames = isset($_GET['item_names']) ? json_decode($_GET['item_names'], true) : [];
     $itemGroups = isset($_GET['item_groups']) ? json_decode($_GET['item_groups'], true) : [];
+    $branches = isset($_GET['branches']) ? json_decode($_GET['branches'], true) : [];
     $stockStatus = trim($_GET['stock_status'] ?? '');
     
-    // FromWhsName ile filtreleme
-    $fromWhsNameEscaped = str_replace("'", "''", $fromWhsName);
-    $filter = "FromWhsName eq '{$fromWhsNameEscaped}'";
+    // FromWhsName filtresi
+    $fromWhsNameConditions = [];
+    if (!empty($branches) && is_array($branches)) {
+        foreach ($branches as $branchName) {
+            $fromWhsNameConditions[] = "FromWhsName eq '" . str_replace("'", "''", $branchName) . "'";
+        }
+    } else {
+        foreach ($otherWarehouses as $whs) {
+            $whsName = $whs['WarehouseName'] ?? '';
+            if (!empty($whsName)) {
+                $fromWhsNameConditions[] = "FromWhsName eq '" . str_replace("'", "''", $whsName) . "'";
+            }
+        }
+    }
     
-    // Kalem Tanımı filtresi
+    if (empty($fromWhsNameConditions)) {
+        echo json_encode(['data' => [], 'count' => 0, 'hasMore' => false, 'error' => 'Diğer şube depo adları bulunamadı!']);
+        exit;
+    }
+    
+    // Sadece FromWhsName ile filtreleme (AnaDepoSO.php'deki gibi)
+    // WhsCode filtresi kaldırıldı - view'de WhsCode değerleri farklı olabilir
+    $filter = "(" . implode(" or ", $fromWhsNameConditions) . ")";
+    
+    if (!empty($search)) {
+        $searchEscaped = str_replace("'", "''", $search);
+        $filter .= " and (contains(ItemCode, '{$searchEscaped}') or contains(ItemName, '{$searchEscaped}'))";
+    }
+    
     if (!empty($itemNames) && is_array($itemNames)) {
         $itemNameConditions = [];
         foreach ($itemNames as $itemDisplay) {
@@ -140,12 +192,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
         if (!empty($itemNameConditions)) {
             $filter .= " and (" . implode(" or ", $itemNameConditions) . ")";
         }
-    } else if (!empty($search)) {
-        $searchEscaped = str_replace("'", "''", $search);
-        $filter .= " and (contains(ItemCode, '{$searchEscaped}') or contains(ItemName, '{$searchEscaped}'))";
     }
     
-    // Kalem Grubu filtresi
     if (!empty($itemGroups) && is_array($itemGroups)) {
         $itemGroupConditions = [];
         foreach ($itemGroups as $itemGroup) {
@@ -157,48 +205,216 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
         }
     }
     
-    // Stok durumu filtresi
     if (!empty($stockStatus)) {
-        if ($stockStatus === 'var') {
-            $filter .= " and MainQty gt 0";
-        } else if ($stockStatus === 'yok') {
-            $filter .= " and MainQty le 0";
+        $filter .= $stockStatus === 'var' ? " and OtherBranQty gt 0" : " and OtherBranQty le 0";
+    }
+    
+    // View expose kontrolü ve işlemi
+    $viewCheckQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$top=1";
+    $viewCheck = $sap->get($viewCheckQuery);
+    $viewCheckStatus = $viewCheck['status'] ?? 'NO STATUS';
+    $viewCheckError = $viewCheck['response']['error'] ?? null;
+    $isViewExposed = true;
+    $exposeAttempted = false;
+    $exposeResult = null;
+    
+    // View expose edilmemişse (806 hatası), expose et
+    if (isset($viewCheckError['code']) && $viewCheckError['code'] === '806') {
+        $isViewExposed = false;
+        $exposeAttempted = true;
+        $exposeResult = $sap->post("SQLViews('ASB2B_BranchWhsItem_B1SLQuery')/Expose", []);
+        $exposeStatus = $exposeResult['status'] ?? 'NO STATUS';
+        $exposeError = $exposeResult['response']['error'] ?? null;
+        
+        // Expose başarısızsa hata döndür
+        if ($exposeStatus != 200 && $exposeStatus != 201 && $exposeStatus != 204) {
+            echo json_encode([
+                'data' => [],
+                'count' => 0,
+                'hasMore' => false,
+                'error' => 'View expose edilemedi!',
+                'debug' => [
+                    'viewCheckQuery' => $viewCheckQuery,
+                    'viewCheckStatus' => $viewCheckStatus,
+                    'viewCheckError' => $viewCheckError,
+                    'exposeAttempted' => $exposeAttempted,
+                    'exposeStatus' => $exposeStatus,
+                    'exposeError' => $exposeError,
+                    'exposeResponse' => $exposeResult['response'] ?? null
+                ]
+            ]);
+            exit;
+        }
+        
+        // Expose başarılı, kısa bir bekleme sonrası tekrar kontrol et
+        sleep(1);
+        $viewCheck2 = $sap->get($viewCheckQuery);
+        if (isset($viewCheck2['response']['error']['code']) && $viewCheck2['response']['error']['code'] === '806') {
+            // Hala expose edilmemiş
+            echo json_encode([
+                'data' => [],
+                'count' => 0,
+                'hasMore' => false,
+                'error' => 'View expose edildi ancak hala erişilemiyor!',
+                'debug' => [
+                    'exposeStatus' => $exposeStatus,
+                    'secondCheckStatus' => $viewCheck2['status'] ?? 'NO STATUS',
+                    'secondCheckError' => $viewCheck2['response']['error'] ?? null
+                ]
+            ]);
+            exit;
         }
     }
     
-    // ASB2B_MainWhsItem_B1SLQuery kullanıyoruz (ASB2B_BranchWhsItem_B1SLQuery bulunamadı)
-    $itemsQuery = "view.svc/ASB2B_MainWhsItem_B1SLQuery?\$filter=" . urlencode($filter) . "&\$orderby=ItemCode&\$top={$top}&\$skip={$skip}";
+    // Önce filtresiz bir sorgu yaparak view'den gelen verileri kontrol et
+    $testQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$top=10&\$select=WhsCode,FromWhsCode,FromWhsName,ItemCode,ItemName";
+    $testData = $sap->get($testQuery);
+    $testItems = $testData['response']['value'] ?? [];
+    $sampleWhsCodes = [];
+    $sampleFromWhsCodes = [];
+    $sampleFromWhsNames = [];
+    foreach ($testItems as $testItem) {
+        if (!empty($testItem['WhsCode'])) $sampleWhsCodes[] = $testItem['WhsCode'];
+        if (!empty($testItem['FromWhsCode'])) $sampleFromWhsCodes[] = $testItem['FromWhsCode'];
+        if (!empty($testItem['FromWhsName'])) $sampleFromWhsNames[] = $testItem['FromWhsName'];
+    }
+    $sampleWhsCodes = array_unique($sampleWhsCodes);
+    $sampleFromWhsCodes = array_unique($sampleFromWhsCodes);
+    $sampleFromWhsNames = array_unique($sampleFromWhsNames);
     
+    // Normal sorguyu çalıştır
+    $itemsQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$filter=" . urlencode($filter) . "&\$orderby=ItemCode&\$top={$top}&\$skip={$skip}";
     $itemsData = $sap->get($itemsQuery);
     $items = $itemsData['response']['value'] ?? [];
+    
+    // Eğer kayıt yoksa, WhsCode filtresini kaldırıp tekrar dene (test için)
+    $itemsWithoutWhsFilter = [];
+    if (count($items) === 0 && !empty($toWarehouse)) {
+        $filterWithoutWhs = str_replace(" and WhsCode eq '" . str_replace("'", "''", $toWarehouse) . "'", "", $filter);
+        $testQuery2 = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$filter=" . urlencode($filterWithoutWhs) . "&\$top=10";
+        $testData2 = $sap->get($testQuery2);
+        $itemsWithoutWhsFilter = $testData2['response']['value'] ?? [];
+    }
+    
+    $debugInfo = [
+        'viewCheckQuery' => $viewCheckQuery,
+        'viewCheckStatus' => $viewCheckStatus,
+        'viewCheckError' => $viewCheckError,
+        'isViewExposed' => $isViewExposed,
+        'exposeAttempted' => $exposeAttempted,
+        'exposeStatus' => $exposeResult['status'] ?? null,
+        'exposeError' => $exposeResult['response']['error'] ?? null,
+        'testQuery' => $testQuery,
+        'testItemsCount' => count($testItems),
+        'sampleWhsCodes' => array_values($sampleWhsCodes),
+        'sampleFromWhsCodes' => array_values($sampleFromWhsCodes),
+        'sampleFromWhsNames' => array_values($sampleFromWhsNames),
+        'itemsQuery' => $itemsQuery,
+        'itemsStatus' => $itemsData['status'] ?? 'NO STATUS',
+        'rawCount' => count($items),
+        'itemsWithoutWhsFilterCount' => count($itemsWithoutWhsFilter),
+        'toWarehouse' => $toWarehouse,
+        'fromWarehouse' => $fromWarehouse,
+        'filter' => $filter,
+        'filterWithoutWhs' => isset($filterWithoutWhs) ? $filterWithoutWhs : null,
+        'itemsError' => $itemsData['response']['error'] ?? null,
+        'otherWarehousesCount' => count($otherWarehouses),
+        'fromWhsNameConditionsCount' => count($fromWhsNameConditions),
+        'otherWarehouses' => array_map(function($whs) {
+            return [
+                'code' => $whs['WarehouseCode'] ?? '',
+                'name' => $whs['WarehouseName'] ?? '',
+                'branch' => $whs['U_ASB2B_BRAN'] ?? ''
+            ];
+        }, $otherWarehouses)
+    ];
 
     // Deduplication
     $uniqueItems = [];
     $seenKeys = [];
     foreach ($items as $item) {
-        $code = trim($item['ItemCode'] ?? '');
-        $name = trim($item['ItemName'] ?? '');
-        $key = $code . '|' . $name;
-        if (isset($seenKeys[$key])) {
-            continue;
+        $key = trim($item['ItemCode'] ?? '') . '|' . trim($item['FromWhsCode'] ?? '');
+        if (!isset($seenKeys[$key])) {
+            $seenKeys[$key] = true;
+            $otherBranQty = floatval($item['OtherBranQty'] ?? 0);
+            $item['_stock'] = $otherBranQty;
+            $item['_hasStock'] = $otherBranQty > 0;
+            $item['MainQty'] = $otherBranQty;
+            $uniqueItems[] = $item;
         }
-        $seenKeys[$key] = true;
-        $uniqueItems[] = $item;
-    }
-    $items = $uniqueItems;
-    
-    // Her item için stok bilgisini ekle
-    foreach ($items as &$item) {
-        $mainQty = floatval($item['MainQty'] ?? 0);
-        $item['_stock'] = $mainQty;
-        $item['_hasStock'] = $mainQty > 0;
     }
     
+    $debugInfo['uniqueCount'] = count($uniqueItems);
     echo json_encode([
-        'data' => $items,
-        'count' => count($items),
-        'hasMore' => count($items) >= $top
+        'data' => $uniqueItems,
+        'count' => count($uniqueItems),
+        'hasMore' => count($uniqueItems) >= $top,
+        'debug' => $debugInfo
     ]);
+    exit;
+}
+
+// AJAX: Filter options
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'] === 'filter_options') {
+    header('Content-Type: application/json');
+    
+    if (empty($otherWarehouses)) {
+        echo json_encode(['itemNames' => [], 'itemGroups' => [], 'branches' => []]);
+        exit;
+    }
+    
+    $branchList = array_filter(array_map(function($whs) { return $whs['WarehouseName'] ?? ''; }, $otherWarehouses));
+    sort($branchList);
+    
+    $fromWhsNameConditions = [];
+    foreach ($otherWarehouses as $whs) {
+        $whsName = $whs['WarehouseName'] ?? '';
+        if (!empty($whsName)) {
+            $fromWhsNameConditions[] = "FromWhsName eq '" . str_replace("'", "''", $whsName) . "'";
+        }
+    }
+    
+    if (empty($fromWhsNameConditions)) {
+        echo json_encode(['itemNames' => [], 'itemGroups' => [], 'branches' => $branchList]);
+        exit;
+    }
+    
+    // Sadece FromWhsName ile filtreleme (AnaDepoSO.php'deki gibi)
+    $filter = "(" . implode(" or ", $fromWhsNameConditions) . ")";
+    
+    // View expose kontrolü
+    $viewCheckQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$top=1";
+    $viewCheck = $sap->get($viewCheckQuery);
+    if (isset($viewCheck['response']['error']['code']) && $viewCheck['response']['error']['code'] === '806') {
+        $exposeResult = $sap->post("SQLViews('ASB2B_BranchWhsItem_B1SLQuery')/Expose", []);
+        if (($exposeResult['status'] ?? 0) == 200 || ($exposeResult['status'] ?? 0) == 201 || ($exposeResult['status'] ?? 0) == 204) {
+            sleep(1); // Expose sonrası kısa bekleme
+        }
+    }
+    
+    // Normal sorguyu çalıştır
+    $itemsQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$filter=" . urlencode($filter) . "&\$select=ItemCode,ItemName,ItemGroup,FromWhsName&\$top=1000";
+    $itemsData = $sap->get($itemsQuery);
+    $items = $itemsData['response']['value'] ?? [];
+    
+    $itemNames = [];
+    $itemGroups = [];
+    foreach ($items as $item) {
+        if (!empty($item['ItemCode']) && !empty($item['ItemName'])) {
+            $itemDisplay = $item['ItemCode'] . ' - ' . $item['ItemName'];
+            if (!in_array($itemDisplay, $itemNames)) {
+                $itemNames[] = $itemDisplay;
+            }
+        }
+        if (!empty($item['ItemGroup']) && !in_array($item['ItemGroup'], $itemGroups)) {
+            $itemGroups[] = $item['ItemGroup'];
+        }
+    }
+    
+    sort($itemNames);
+    sort($itemGroups);
+    
+    echo json_encode(['itemNames' => $itemNames, 'itemGroups' => $itemGroups, 'branches' => $branchList]);
     exit;
 }
 ?>
@@ -208,474 +424,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Transfer Oluştur - CREMMAVERSE</title>
-<link rel="stylesheet" href="navbar.css">
 <link rel="stylesheet" href="styles.css">
 <style>
-:root {
-    --primary: #1e3a8a;
-    --primary-light: #eef2ff;
-    --accent: #2563eb;
-    --muted: #6b7280;
-    --border: #e5e7eb;
-    --bg: #f5f7fa;
-}
-
-/* Ana sayfa düzeni */
-.app-container {
-    display: flex;
-    min-height: 100vh;
-    background-color: var(--bg);
-}
-
-.main-content {
-    width: 100%;
-    background: whitesmoke;
-    padding: 0;
-    min-height: 100vh;
-}
-
-.page-header {
-    background: white;
-    padding: 20px 2rem;
-    border-radius: 0 0 0 20px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin: 0;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    height: 80px;
-    box-sizing: border-box;
-}
-
-.page-header h2 {
-    color: #1e40af;
-    font-size: 1.75rem;
-    font-weight: 600;
-    margin: 0;
-}
-
-.btn-exit {
-    border: none;
-    border-radius: 999px;
-    padding: 10px 18px;
-    font-weight: 600;
-    cursor: pointer;
-    background: #fff;
-    color: var(--accent);
-    border: 1px solid var(--accent);
-    transition: transform .15s ease, box-shadow .15s ease, background .15s ease, color .15s ease;
-}
-
-.btn-exit:hover {
-    background: var(--accent);
-    color: #fff;
-    box-shadow: 0 10px 25px rgba(37, 99, 235, 0.25);
-    transform: translateY(-1px);
-}
-
-/* Kart tasarımı */
-.card {
-    background: #ffffff;
-    border-radius: 24px;
-    padding: 24px 32px 32px 32px;
-    box-shadow: 0 25px 50px rgba(15, 23, 42, 0.08);
-    margin-top: 24px;
-}
-
-.content-wrapper {
-    max-width: 1400px;
-    margin: 0 auto;
-    width: 100%;
-}
-
-/* Filtre bölümü */
-.filter-section {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 20px;
-    margin-bottom: 20px;
-}
-
-.filter-group {
-    display: flex;
-    flex-direction: column;
-}
-
-.filter-group label {
-    font-weight: 700;
-    color: var(--muted);
-    margin-bottom: 6px;
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: .05em;
-}
-
-.filter-input, .filter-select {
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    font-size: 14px;
-    background: var(--primary-light);
-    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
-}
-
-.filter-input:focus, .filter-select:focus {
-    outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25);
-    background: #fff;
-}
-
-/* Multi-select stilleri */
-.multi-select-container {
-    position: relative;
-}
-
-.multi-select-input {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    padding: 8px 12px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    min-height: 40px;
-    cursor: pointer;
-    background: white;
-}
-
-.multi-select-tag {
-    background: var(--accent);
-    color: white;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-}
-
-.multi-select-tag .remove {
-    cursor: pointer;
-    font-weight: bold;
-}
-
-.multi-select-dropdown {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: white;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    max-height: 200px;
-    overflow-y: auto;
-    z-index: 1000;
-    display: none;
-}
-
-.multi-select-option {
-    padding: 10px 12px;
-    cursor: pointer;
-    border-bottom: 1px solid #f0f0f0;
-}
-
-.multi-select-option:hover {
-    background: #f5f5f5;
-}
-
-.multi-select-option.selected {
-    background: #e3f2fd;
-    color: #1976d2;
-}
-
-/* Tablo kontrolleri */
-.table-controls {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 15px;
-    padding: 16px 20px;
-    background: #ffffff;
-    border-radius: 16px;
-    border: 1px solid var(--border);
-}
-
-.show-entries {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    color: #666;
-    font-size: 14px;
-}
-
-.entries-select {
-    padding: 6px 10px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 14px;
-}
-
-.search-box {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.search-input {
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    font-size: 14px;
-    width: 260px;
-}
-
-.search-btn {
-    background: var(--accent);
-    color: white;
-    border: none;
-    padding: 8px 12px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 14px;
-}
-
-/* Tablo stilleri */
-.data-table {
-    width: 100%;
-    border-collapse: collapse;
-    background: white;
-    border-radius: 18px;
-    overflow: hidden;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-}
-
-.data-table th {
-    background: var(--primary);
-    color: #ffffff;
-    font-weight: 600;
-    padding: 15px 12px;
-    text-align: left;
-    border-bottom: 2px solid #e0e0e0;
-    position: relative;
-    cursor: pointer;
-    user-select: none;
-}
-
-.data-table th:hover {
-    background: #e9ecef;
-}
-
-.data-table th .sort-icon {
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 12px;
-    color: #666;
-}
-
-.data-table td {
-    padding: 14px 16px;
-    border-bottom: 1px solid #f0f0f0;
-    vertical-align: middle;
-}
-
-.data-table tbody tr {
-    transition: background 0.2s;
-}
-
-.data-table tbody tr:hover {
-    background: #f8f9fa;
-}
-
-/* Expandable row styles */
-.expandable-row {
-    cursor: pointer;
-}
-
-.expandable-row:hover {
-    background: #e3f2fd !important;
-}
-
-.expandable-content {
-    display: none;
-    background: #f8f9fa;
-    border-top: 1px solid #e0e0e0;
-}
-
-.expandable-content td {
-    padding: 20px;
-    background: #f8f9fa;
-}
-
-.expand-icon {
-    margin-right: 8px;
-    transition: transform 0.3s;
-}
-
-.expand-icon.expanded {
-    transform: rotate(90deg);
-}
-
-/* Stok durumu */
-.stock-status-var {
-    color: #4caf50;
-    font-weight: 600;
-}
-
-.stock-status-yok {
-    color: #f44336;
-    font-weight: 600;
-}
-
-/* Miktar kontrolleri */
-.quantity-control {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.quantity-btn {
-    width: 32px;
-    height: 32px;
-    border: none;
-    background: #2c2c2c;
-    color: #fff;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.quantity-btn:hover {
-    background: #3c3c3c;
-}
-
-.quantity-input {
-    width: 60px;
-    height: 32px;
-    text-align: center;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 14px;
-}
-
-.note-input {
-    width: 100%;
-    padding: 8px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 14px;
-}
-
-/* Sayfalama */
-.pagination {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    margin: 20px 0;
-    gap: 6px;
-}
-
-.page-btn {
-    background: #f5f5f5;
-    border: 1px solid #ccc;
-    padding: 8px 12px;
-    cursor: pointer;
-    border-radius: 6px;
-    transition: all 0.2s;
-    font-size: 14px;
-    min-width: 40px;
-    text-align: center;
-}
-
-.page-btn:hover {
-    background: #e0e0e0;
-}
-
-.page-btn.active {
-    background: var(--accent);
-    color: white;
-    border-color: var(--accent);
-}
-
-.page-btn:disabled {
-    background: #f5f5f5;
-    color: #ccc;
-    cursor: not-allowed;
-}
-
-/* Tablo alt bilgi */
-.table-footer {
-    text-align: center;
-    padding: 15px;
-    color: #666;
-    font-size: 14px;
-    background: #f8f9fa;
-    border-top: 1px solid #e0e0e0;
-}
-
-/* Submit butonu */
-.submit-btn {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    padding: 15px 30px;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    font-size: 16px;
-    font-weight: 600;
-    cursor: pointer;
-    z-index: 1000;
-    box-shadow: 0 4px 12px rgba(255, 87, 34, 0.3);
-    transition: all 0.3s;
-}
-
-.submit-btn:hover:not(:disabled) {
-    background: #1d4ed8;
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(255, 87, 34, 0.4);
-}
-
-.submit-btn:disabled {
-    background: #ccc;
-    cursor: not-allowed;
-    transform: none;
-    box-shadow: none;
-}
-
-/* Responsive */
-@media (max-width: 768px) {
-    .main-content {
-        margin-left: 0;
-        padding: 10px;
-    }
-    
-    .filter-section {
-        grid-template-columns: 1fr;
-    }
-    
-    .table-controls {
-        flex-direction: column;
-        gap: 15px;
-    }
-    
-    .data-table {
-        font-size: 12px;
-    }
-    
-    .data-table th,
-    .data-table td {
-        padding: 8px 6px;
-    }
-}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background:#f5f7fa;color:#2c3e50;line-height:1.6}
+.main-content{width:100%;background:whitesmoke;padding:0;min-height:100vh}
+.page-header{background:white;padding:20px 2rem;border-radius:0 0 0 20px;box-shadow:0 2px 8px rgba(0,0,0,0.1);display:flex;justify-content:space-between;align-items:center;margin:0;position:sticky;top:0;z-index:100;height:80px;box-sizing:border-box}
+.page-header h2{color:#1e40af;font-size:1.75rem;font-weight:600}
+.content-wrapper{padding:24px 32px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:1.5rem}
+.card{background:white;border-radius:12px;padding:1.5rem;box-shadow:0 2px 8px rgba(0,0,0,0.1);margin-bottom:0}
+.alert{padding:1rem 1.5rem;border-radius:8px;margin-bottom:1.5rem}
+.alert-warning{background:#fef3c7;border:1px solid #f59e0b;color:#92400e}
+.btn{padding:0.625rem 1.25rem;border:none;border-radius:8px;font-size:0.95rem;font-weight:500;cursor:pointer;transition:all 0.2s;display:inline-flex;align-items:center;gap:0.5rem}
+.btn-primary{background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:white}
+.btn-primary:hover{background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%);transform:translateY(-1px);box-shadow:0 4px 12px rgba(37,99,235,0.3)}
+.btn-secondary{background:#f3f4f6;color:#374151}
+.btn-secondary:hover{background:#e5e7eb}
+.filter-section{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;margin-bottom:20px;padding:20px;background:linear-gradient(135deg,#eff6ff 0%,#dbeafe 100%);border-radius:8px;border:1px solid #e0e0e0}
+.filter-group{display:flex;flex-direction:column}
+.filter-group label{font-weight:600;color:#1e40af;font-size:0.9rem}
+.filter-input,.filter-select{padding:10px 12px;border:1px solid #ddd;border-radius:6px;font-size:14px;transition:border-color 0.3s}
+.filter-input:focus,.filter-select:focus{outline:none;border-color:#1e40af;box-shadow:0 0 0 2px rgba(255,87,34,0.1)}
+.multi-select-container{position:relative}
+.multi-select-input{display:flex;flex-wrap:wrap;gap:5px;padding:8px 12px;border:1px solid #ddd;border-radius:6px;min-height:40px;cursor:pointer;background:white}
+.multi-select-input:hover{border-color:#1e40af}
+.multi-select-input.active{border-color:#1e40af;box-shadow:0 0 0 2px rgba(255,87,34,0.1)}
+.multi-select-input input{border:none;outline:none;flex:1;background:transparent;min-width:120px;font-size:14px;cursor:pointer}
+.multi-select-tag{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:white;padding:4px 10px;border-radius:16px;font-size:0.85rem;font-weight:500}
+.multi-select-tag .remove{cursor:pointer;font-weight:bold}
+.multi-select-dropdown{position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #ddd;border-radius:6px;max-height:200px;overflow-y:auto;z-index:1000;display:none;box-shadow:0 2px 8px rgba(0,0,0,0.1);margin-top:4px}
+.multi-select-dropdown.show{display:block}
+.multi-select-option{padding:10px 14px;cursor:pointer;border-bottom:1px solid #f3f4f6;transition:background 0.15s;font-size:0.9rem}
+.multi-select-option:hover{background:#f9fafb}
+.multi-select-option.selected{background:#dbeafe;color:#1e40af;font-weight:500}
+.table-controls{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:1rem}
+.show-entries{display:flex;align-items:center;gap:0.5rem;color:#4b5563;font-size:0.9rem}
+.entries-select{padding:0.5rem 0.75rem;border:2px solid #e5e7eb;border-radius:6px;background:white;font-size:0.9rem;cursor:pointer;transition:border-color 0.2s}
+.entries-select:focus{outline:none;border-color:#3b82f6}
+.search-box{display:flex;gap:0.5rem;align-items:center}
+.search-input{padding:0.5rem 0.75rem;border:2px solid #e5e7eb;border-radius:6px;min-width:220px;font-size:0.9rem;transition:border-color 0.2s}
+.search-input:focus{outline:none;border-color:#3b82f6}
+.data-table{width:100%;border-collapse:collapse;font-size:0.9rem}
+.data-table thead{background:linear-gradient(135deg,#1e40af 0%,#1e3a8a 100%);color:white}
+.data-table th{padding:1rem;text-align:left;font-weight:600;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.5px}
+.data-table tbody tr{border-bottom:1px solid #e5e7eb;transition:background 0.15s}
+.data-table tbody tr:hover{background:#f9fafb}
+.data-table td{padding:1rem;color:#374151}
+.quantity-controls{display:flex;gap:6px;align-items:center;justify-content:center}
+.qty-btn{padding:6px 12px;border:2px solid #e5e7eb;background:white;border-radius:6px;cursor:pointer;font-weight:600;font-size:1rem;min-width:36px;transition:all 0.2s;color:#374151}
+.qty-btn:hover{background:#f3f4f6;border-color:#3b82f6;color:#3b82f6}
+.qty-input{width:90px;text-align:center;padding:0.5rem;border:2px solid #e5e7eb;border-radius:6px;font-size:0.95rem;transition:border-color 0.2s}
+.qty-input:focus{outline:none;border-color:#3b82f6}
+.stock-badge{padding:6px 12px;border-radius:16px;font-size:0.8rem;font-weight:600;display:inline-block;text-transform:uppercase;letter-spacing:0.5px}
+.stock-yes{background:#d1fae5;color:#065f46}
+.stock-no{background:#fee2e2;color:#991b1b}
+.sepet-badge{position:absolute;top:-8px;right:-8px;background:#ef4444;color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.2)}
+.sepet-btn{position:relative}
+.main-layout-container{display:flex;gap:24px;transition:all 0.3s ease;padding:0}
+.main-content-left{flex:1;transition:flex 0.3s ease;display:flex;flex-direction:column;gap:24px}
+.main-content-right.sepet-panel{flex:1;min-width:400px;max-width:500px;display:flex;flex-direction:column}
+.main-content-right.sepet-panel .card{margin:0}
+.sepet-panel{animation:slideIn 0.3s ease}
+@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+.sepet-item{display:flex;justify-content:space-between;align-items:center;padding:1rem;border-bottom:1px solid #bfdbfe;background:white;margin-bottom:0.75rem;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
+.sepet-item:last-child{border-bottom:none;margin-bottom:0}
+.sepet-item-info{flex:1}
+.sepet-item-name{font-weight:600;margin-bottom:8px;color:#1e40af}
+.sepet-item-qty{display:flex;gap:8px;align-items:center}
+.sepet-item-qty input{width:90px;text-align:center;padding:6px;border:2px solid #e5e7eb;border-radius:6px;font-size:0.9rem}
+.remove-sepet-btn{background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:500;transition:all 0.2s}
+.remove-sepet-btn:hover{background:linear-gradient(135deg,#dc2626 0%,#b91c1c 100%);transform:translateY(-1px);box-shadow:0 4px 12px rgba(220,38,38,0.3)}
+.pagination{display:flex;justify-content:center;gap:0.75rem;align-items:center;margin-top:1.5rem}
+.pagination button:disabled{opacity:0.5;cursor:not-allowed}
+#pageInfo{color:#4b5563;font-weight:500;min-width:100px;text-align:center}
+@media (max-width:768px){.content-wrapper{padding:16px 20px}.filter-section{grid-template-columns:1fr}.table-controls{flex-direction:column;align-items:stretch}.data-table{font-size:0.85rem}.data-table th,.data-table td{padding:0.75rem 0.5rem}}
 </style>
 </head>
 <body>
@@ -684,21 +506,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
     <main class="main-content">
         <header class="page-header">
             <h2>Transfer Oluştur</h2>
-            <button class="btn-exit" onclick="window.location.href='Transferler.php'">← Transferler</button>
+            <div style="display: flex; gap: 12px; align-items: center;">
+                <button class="btn btn-primary sepet-btn" id="sepetToggleBtn" onclick="toggleSepet()" style="position: relative;">
+                    🛒 Sepet
+                    <span class="sepet-badge" id="sepetBadge" style="display: none;">0</span>
+                </button>
+                <button class="btn btn-secondary" onclick="window.location.href='Transferler.php'">← Geri Dön</button>
+        </div>
         </header>
 
         <div class="content-wrapper">
-        <div class="card">
+            <?php if (empty($toWarehouse)): ?>
+                <div class="alert alert-warning">
+                    <strong>Uyarı:</strong> ToWarehouse bulunamadı (Şube: <?= htmlspecialchars($branch) ?>). 
+                    Transfer talebi oluşturmak için ToWarehouse gerekli. Ürün listesini görmek için sorun yok.
+                </div>
+            <?php endif; ?>
+            <?php if (empty($otherWarehouses)): ?>
+                <div class="alert alert-danger">
+                    <strong>HATA:</strong> Diğer şube depo bilgileri bulunamadı! Ürün listesi yüklenemez.
+                </div>
+            <?php endif; ?>
+
+            <div class="main-layout-container" id="mainLayoutContainer">
+                <div class="main-content-left" id="mainContentLeft">
+                    <section class="card">
             <div class="filter-section">
                 <div class="filter-group">
                     <label>Kalem Tanımı</label>
                     <div class="multi-select-container">
                         <div class="multi-select-input" onclick="toggleDropdown('itemName')">
                             <div id="itemNameTags"></div>
-                            <input type="text" id="filterItemName" class="filter-input" placeholder="Seçiniz..." readonly>
+                            <input type="text" id="filterItemName" class="filter-input" placeholder="KALEM TANIMI" onkeyup="handleFilterInput('itemName', this.value)" onfocus="openDropdownIfClosed('itemName')" onclick="event.stopPropagation();">
                         </div>
                         <div class="multi-select-dropdown" id="itemNameDropdown">
                             <div class="multi-select-option" data-value="" onclick="selectOption('itemName', '', 'Tümü')">Tümü</div>
+                            <div id="itemNameOptions"></div>
                         </div>
                     </div>
                 </div>
@@ -707,10 +550,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
                     <div class="multi-select-container">
                         <div class="multi-select-input" onclick="toggleDropdown('itemGroup')">
                             <div id="itemGroupTags"></div>
-                            <input type="text" id="filterItemGroup" class="filter-input" placeholder="Seçiniz..." readonly>
+                            <input type="text" id="filterItemGroup" class="filter-input" placeholder="KALEM GRUBU" onkeyup="handleFilterInput('itemGroup', this.value)" onfocus="openDropdownIfClosed('itemGroup')" onclick="event.stopPropagation();">
                         </div>
                         <div class="multi-select-dropdown" id="itemGroupDropdown">
                             <div class="multi-select-option" data-value="" onclick="selectOption('itemGroup', '', 'Tümü')">Tümü</div>
+                            <div id="itemGroupOptions"></div>
                         </div>
                     </div>
                 </div>
@@ -719,13 +563,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
                     <div class="multi-select-container">
                         <div class="multi-select-input" onclick="toggleDropdown('branch')">
                             <div id="branchTags"></div>
-                            <input type="text" id="filterBranch" class="filter-input" placeholder="Seçiniz..." readonly>
+                            <input type="text" id="filterBranch" class="filter-input" placeholder="ŞUBE" onkeyup="handleFilterInput('branch', this.value)" onfocus="openDropdownIfClosed('branch')" onclick="event.stopPropagation();">
                         </div>
                         <div class="multi-select-dropdown" id="branchDropdown">
                             <div class="multi-select-option" data-value="" onclick="selectOption('branch', '', 'Tümü')">Tümü</div>
-                            <?php foreach ($warehouses as $whs): ?>
-                            <div class="multi-select-option" data-value="<?= htmlspecialchars($whs['WarehouseCode']) ?>" onclick="selectOption('branch', '<?= htmlspecialchars($whs['WarehouseCode']) ?>', '<?= htmlspecialchars($whs['WarehouseName']) ?>')"><?= htmlspecialchars($whs['WarehouseName']) ?></div>
-                            <?php endforeach; ?>
+                            <div id="branchOptions"></div>
                         </div>
                     </div>
                 </div>
@@ -734,7 +576,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
                     <div class="multi-select-container">
                         <div class="multi-select-input" onclick="toggleDropdown('stockStatus')">
                             <div id="stockStatusTags"></div>
-                            <input type="text" id="filterStockStatus" class="filter-input" placeholder="Seçiniz..." readonly>
+                            <input type="text" id="filterStockStatus" class="filter-input" placeholder="STOK DURUMU" readonly>
                         </div>
                         <div class="multi-select-dropdown" id="stockStatusDropdown">
                             <div class="multi-select-option" data-value="" onclick="selectOption('stockStatus', '', 'Tümü')">Tümü</div>
@@ -744,421 +586,633 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
                     </div>
                 </div>
             </div>
-
             <div class="table-controls">
                 <div class="show-entries">
-                    <span>Sayfada</span>
-                    <select id="pageSize" class="entries-select">
-                        <option value="25">25</option>
+                    Sayfada <select class="entries-select" id="entriesPerPage" onchange="updatePageSize()">
+                        <option value="25" selected>25</option>
                         <option value="50">50</option>
                         <option value="75">75</option>
-                        <option value="100">100</option>
-                    </select>
-                    <span>kayıt göster</span>
+                    </select> kayıt göster
                 </div>
                 <div class="search-box">
-                    <input type="text" id="searchBox" class="search-input" placeholder="Ara...">
+                    <input type="text" class="search-input" id="tableSearch" placeholder="Ara..." onkeyup="if(event.key==='Enter') loadItems()">
+                    <button class="btn btn-secondary" onclick="loadItems()">🔍</button>
                 </div>
             </div>
 
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th onclick="sortTable('ItemCode')">Kalem Kodu <span class="sort-icon">◊</span></th>
-                        <th onclick="sortTable('ItemName')">Kalem Tanımı <span class="sort-icon">◊</span></th>
-                        <th onclick="sortTable('ItemGroup')">Kalem Grubu <span class="sort-icon">◊</span></th>
-                        <th onclick="sortTable('FromWhsName')">Şube Adı <span class="sort-icon">◊</span></th>
-                        <th onclick="sortTable('OnHand')">Stokta <span class="sort-icon">◊</span></th>
-                        <th onclick="sortTable('OnHand')">Stok Miktarı <span class="sort-icon">◊</span></th>
-                        <th onclick="sortTable('MinQty')">Gerekli Miktar <span class="sort-icon">◊</span></th>
+                        <th>Kalem Kodu</th>
+                        <th>Kalem Tanımı</th>
+                        <th>Kalem Grubu</th>
+                        <th>Şube Adı</th>
+                        <th>Stokta</th>
+                        <th>Stoktaki Miktar</th>
+                        <th>Minimum Miktar</th>
                         <th>Sipariş Miktarı</th>
-                        <th onclick="sortTable('UomCode')">Ölçü Birimi <span class="sort-icon">◊</span></th>
-                        <th>Not</th>
+                        <th>Ölçü Birimi</th>
+                        <th>Dönüşüm</th>
                     </tr>
                 </thead>
-                <tbody id="tableBody"></tbody>
+                <tbody id="itemsTableBody">
+                    <tr>
+                        <td colspan="10" style="text-align:center;color:#888;padding:20px;">Filtre seçerek veya arama yaparak kalemleri görüntüleyin.</td>
+                    </tr>
+                </tbody>
             </table>
-
-            <div class="table-footer">
-                <span id="recordCount"></span>
+            <div class="pagination">
+                <button class="btn btn-secondary" id="prevBtn" onclick="changePage(-1)" disabled>← Önceki</button>
+                <span id="pageInfo">Sayfa 1</span>
+                <button class="btn btn-secondary" id="nextBtn" onclick="changePage(1)" disabled>Sonraki →</button>
             </div>
-            <div id="pagination" class="pagination"></div>
-        </div><!-- /.card -->
-        </div><!-- /.content-wrapper -->
-        <button class="submit-btn" id="submitBtn" disabled>Transfer Oluştur</button>
+                    </section>
+                </div>
+                <div class="main-content-right sepet-panel" id="sepetPanel" style="display: none;">
+                    <section class="card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                            <h3 style="margin: 0; color: #1e40af; font-size: 1.25rem; font-weight: 600;">🛒 Sepet</h3>
+                            <button class="btn btn-secondary" onclick="toggleSepet()" style="padding: 0.5rem 1rem; font-size: 0.875rem;">✕ Kapat</button>
+    </div>
+                        <div id="sepetList"></div>
+                        <div style="margin-top: 1.5rem; text-align: right; padding-top: 1.5rem; border-top: 1px solid #e5e7eb;">
+                            <button class="btn btn-primary" onclick="saveRequest()">✓ Transfer Oluştur</button>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </div>
     </main>
 </div>
 
 <script>
-let allData = <?= json_encode($rows) ?>;
-let filteredData = [...allData];
-let currentPage = 1;
-let sortColumn = '';
-let sortDirection = 'asc';
-let selectedFilters = {
-    itemName: [],
-    itemGroup: [],
-    branch: [],
-    stockStatus: []
-};
+let currentPage = 0;
+let pageSize = 25;
+let selectedItems = {};
+let hasMore = false;
+let selectedItemNames = [];
+let selectedItemGroups = [];
+let selectedBranches = [];
+let selectedStockStatus = '';
+let allItemNames = [];
+let allItemGroups = [];
+let allBranches = [];
+let filteredItemNames = [];
+let filteredItemGroups = [];
+let filteredBranches = [];
+let itemsData = [];
 
-// Initialize page
 document.addEventListener('DOMContentLoaded', function() {
-    initializeMultiSelect();
-    populateFilterOptions();
-    document.getElementById('pageSize').addEventListener('change', () => { currentPage = 1; renderTable(); });
-    document.getElementById('searchBox').addEventListener('input', () => { currentPage = 1; applyFilters(); });
-    renderTable();
+    loadItems();
 });
 
-// Multi-select functionality
-function initializeMultiSelect() {
-    // Close dropdowns when clicking outside
-    document.addEventListener('click', function(e) {
-        if (!e.target.closest('.multi-select-container')) {
-            closeAllDropdowns();
-        }
-    });
+function normalizeForSearch(text) {
+    if (!text) return '';
+    return text
+        .replace(/İ/g, 'i').replace(/I/g, 'i').replace(/ı/g, 'i')
+        .replace(/Ğ/g, 'g').replace(/ğ/g, 'g')
+        .replace(/Ü/g, 'u').replace(/ü/g, 'u')
+        .replace(/Ş/g, 's').replace(/ş/g, 's')
+        .replace(/Ö/g, 'o').replace(/ö/g, 'o')
+        .replace(/Ç/g, 'c').replace(/ç/g, 'c')
+        .toLowerCase().trim();
+}
+
+function populateDropdowns() {
+    const populate = (containerId, inputId, items, selected) => {
+        const container = document.getElementById(containerId);
+        const input = document.getElementById(inputId);
+        if (!container) return;
+        
+        const searchText = input ? normalizeForSearch(input.value) : '';
+        const filtered = searchText 
+            ? items.filter(item => normalizeForSearch(item).includes(searchText))
+            : items;
+        
+        container.innerHTML = filtered.map(item => {
+            const isSelected = selected.includes(item);
+            const escaped = item.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const type = containerId.includes('itemName') ? 'itemName' : 
+                        containerId.includes('itemGroup') ? 'itemGroup' : 'branch';
+            return `<div class="multi-select-option ${isSelected ? 'selected' : ''}" data-value="${escaped}" onclick="selectOption('${type}', '${escaped}', '${escaped}')">${item}</div>`;
+        }).join('');
+    };
+    
+    populate('itemNameOptions', 'filterItemName', filteredItemNames, selectedItemNames);
+    populate('itemGroupOptions', 'filterItemGroup', filteredItemGroups, selectedItemGroups);
+    populate('branchOptions', 'filterBranch', filteredBranches, selectedBranches);
+}
+
+function openDropdownIfClosed(type) {
+    const dropdown = document.getElementById(type + 'Dropdown');
+    if (dropdown && !dropdown.classList.contains('show')) {
+        toggleDropdown(type);
+    }
+}
+
+function handleFilterInput(type, value) {
+    openDropdownIfClosed(type);
+    const tagsContainer = document.getElementById(type === 'itemName' ? 'itemNameTags' : 
+                                                   type === 'itemGroup' ? 'itemGroupTags' : 'branchTags');
+    if (tagsContainer) {
+        tagsContainer.style.display = value.trim() !== '' ? 'none' : '';
+    }
+    populateDropdowns();
 }
 
 function toggleDropdown(type) {
     const dropdown = document.getElementById(type + 'Dropdown');
-    const isOpen = dropdown.style.display === 'block';
+    const input = document.querySelector(`#filter${type.charAt(0).toUpperCase() + type.slice(1)}`).parentElement;
+    const isOpen = dropdown.classList.contains('show');
     
-    closeAllDropdowns();
+    document.querySelectorAll('.multi-select-dropdown').forEach(d => d.classList.remove('show'));
+    document.querySelectorAll('.multi-select-input').forEach(d => d.classList.remove('active'));
+    
     if (!isOpen) {
-        dropdown.style.display = 'block';
+        dropdown.classList.add('show');
+        input.classList.add('active');
+        if (['itemName', 'itemGroup', 'branch'].includes(type)) {
+            loadFilterOptionsForType(type);
+        }
     }
 }
 
-function closeAllDropdowns() {
-    document.querySelectorAll('.multi-select-dropdown').forEach(dropdown => {
-        dropdown.style.display = 'none';
+function loadFilterOptionsForType(type) {
+    updateDropdownsFromTable();
+    populateDropdowns();
+    
+    fetch('TransferlerSO.php?ajax=filter_options')
+        .then(res => res.json())
+        .then(data => {
+            allItemNames = Array.from(new Set([...allItemNames, ...(data.itemNames || [])])).sort();
+            allItemGroups = Array.from(new Set([...allItemGroups, ...(data.itemGroups || [])])).sort();
+            allBranches = Array.from(new Set([...allBranches, ...(data.branches || [])])).sort();
+            filteredItemNames = allItemNames;
+            filteredItemGroups = allItemGroups;
+            filteredBranches = allBranches;
+            populateDropdowns();
+        })
+        .catch(err => {
+            console.error('Filtre seçenekleri yüklenirken hata:', err);
+            populateDropdowns();
+        });
+}
+
+function updateDropdownsFromTable() {
+    if (!itemsData || itemsData.length === 0) return;
+    
+    itemsData.forEach(item => {
+        if (item.ItemCode && item.ItemName) {
+            const itemDisplay = item.ItemCode + ' - ' + item.ItemName;
+            if (!allItemNames.includes(itemDisplay)) allItemNames.push(itemDisplay);
+        }
+        if (item.ItemGroup && !allItemGroups.includes(item.ItemGroup)) {
+            allItemGroups.push(item.ItemGroup);
+        }
+        if (item.FromWhsName && !allBranches.includes(item.FromWhsName)) {
+            allBranches.push(item.FromWhsName);
+        }
     });
+    
+    allItemNames.sort();
+    allItemGroups.sort();
+    allBranches.sort();
 }
 
 function selectOption(type, value, text) {
+    if (type === 'stockStatus') {
+        selectedStockStatus = value === '' ? '' : value.toLowerCase();
+        updateFilterDisplay('stockStatus');
+        currentPage = 0;
+        loadItems();
+        return;
+    }
+    
+    const selectedArray = type === 'itemName' ? selectedItemNames : 
+                         type === 'itemGroup' ? selectedItemGroups : selectedBranches;
+    
     if (value === '') {
-        // Clear all selections
-        selectedFilters[type] = [];
+        selectedArray.length = 0;
     } else {
-        // Toggle selection
-        const index = selectedFilters[type].indexOf(value);
+        const index = selectedArray.indexOf(value);
         if (index > -1) {
-            selectedFilters[type].splice(index, 1);
+            selectedArray.splice(index, 1);
         } else {
-            selectedFilters[type].push(value);
+            selectedArray.push(value);
         }
     }
     
+    const input = document.getElementById(`filter${type.charAt(0).toUpperCase() + type.slice(1)}`);
+    if (input) input.value = '';
+    
     updateFilterDisplay(type);
-    applyFilters();
+    currentPage = 0;
+    loadItems();
 }
 
 function updateFilterDisplay(type) {
-    const tagsContainer = document.getElementById(type + 'Tags');
-    const input = document.getElementById('filter' + type.charAt(0).toUpperCase() + type.slice(1));
-    
-    tagsContainer.innerHTML = '';
-    
-    if (selectedFilters[type].length === 0) {
-        input.placeholder = 'Seçiniz...';
-        input.value = '';
-    } else {
-        selectedFilters[type].forEach(value => {
-            const option = document.querySelector(`#${type}Dropdown .multi-select-option[data-value="${value}"]`);
-            if (option) {
-                const tag = document.createElement('div');
-                tag.className = 'multi-select-tag';
-                tag.innerHTML = `${option.textContent} <span class="remove" onclick="removeTag('${type}', '${value}')">×</span>`;
-                tagsContainer.appendChild(tag);
+    if (type === 'stockStatus') {
+        const tagsContainer = document.getElementById('stockStatusTags');
+        const input = document.getElementById('filterStockStatus');
+        if (!input) return;
+        
+        if (selectedStockStatus === '') {
+            input.value = 'Tümü';
+            if (tagsContainer) tagsContainer.innerHTML = '';
+        } else {
+            const text = selectedStockStatus === 'var' ? 'Var' : 'Yok';
+            input.value = text;
+            if (tagsContainer) {
+                tagsContainer.innerHTML = `<span class="multi-select-tag">${text} <span class="remove" onclick="selectOption('stockStatus', '', 'Tümü')">×</span></span>`;
             }
-        });
-        input.value = selectedFilters[type].length + ' seçenek';
-    }
-}
-
-function removeTag(type, value) {
-    const index = selectedFilters[type].indexOf(value);
-    if (index > -1) {
-        selectedFilters[type].splice(index, 1);
-        updateFilterDisplay(type);
-        applyFilters();
-    }
-}
-
-function populateFilterOptions() {
-    // Populate item names
-    const itemNames = [...new Set(allData.map(item => item.ItemName).filter(Boolean))];
-    const itemNameDropdown = document.getElementById('itemNameDropdown');
-    itemNames.forEach(name => {
-        const option = document.createElement('div');
-        option.className = 'multi-select-option';
-        option.setAttribute('data-value', name);
-        option.textContent = name;
-        option.onclick = () => selectOption('itemName', name, name);
-        itemNameDropdown.appendChild(option);
-    });
-
-    // Populate item groups
-    const itemGroups = [...new Set(allData.map(item => item.ItemGroup).filter(Boolean))];
-    const itemGroupDropdown = document.getElementById('itemGroupDropdown');
-    itemGroups.forEach(group => {
-        const option = document.createElement('div');
-        option.className = 'multi-select-option';
-        option.setAttribute('data-value', group);
-        option.textContent = group;
-        option.onclick = () => selectOption('itemGroup', group, group);
-        itemGroupDropdown.appendChild(option);
-    });
-}
-
-function applyFilters() {
-    const search = document.getElementById('searchBox').value.toLowerCase();
-
-    filteredData = allData.filter(item => {
-        // Multi-select filters
-        if (selectedFilters.itemName.length > 0 && !selectedFilters.itemName.includes(item.ItemName)) return false;
-        if (selectedFilters.itemGroup.length > 0 && !selectedFilters.itemGroup.includes(item.ItemGroup)) return false;
-        if (selectedFilters.branch.length > 0 && !selectedFilters.branch.includes(item.FromWhsCode)) return false;
-        if (selectedFilters.stockStatus.length > 0) {
-            const hasStock = (item.OnHand || 0) > 0;
-            if (selectedFilters.stockStatus.includes('Var') && !hasStock) return false;
-            if (selectedFilters.stockStatus.includes('Yok') && hasStock) return false;
         }
-        
-        // Search filter
-        if (search && !JSON.stringify(item).toLowerCase().includes(search)) return false;
-        
-        return true;
-    });
-    
-    currentPage = 1;
-    renderTable();
-}
-
-function sortTable(column) {
-    if (sortColumn === column) {
-        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
-    } else {
-        sortColumn = column;
-        sortDirection = 'asc';
-    }
-    
-    filteredData.sort((a, b) => {
-        let aVal = a[column] || '';
-        let bVal = b[column] || '';
-        
-        if (typeof aVal === 'string') {
-            aVal = aVal.toLowerCase();
-            bVal = bVal.toLowerCase();
-        }
-        
-        if (sortDirection === 'asc') {
-            return aVal > bVal ? 1 : -1;
-        } else {
-            return aVal < bVal ? 1 : -1;
-        }
-    });
-    
-    renderTable();
-}
-
-function renderTable() {
-    const pageSize = parseInt(document.getElementById('pageSize').value);
-    const tbody = document.getElementById('tableBody');
-    const total = filteredData.length;
-    const totalPages = Math.ceil(total / pageSize);
-    const start = (currentPage - 1) * pageSize;
-    const end = start + pageSize;
-    const data = filteredData.slice(start, end);
-
-    if (data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:40px;">Eşleşen kayıt bulunamadı</td></tr>';
-        document.getElementById('recordCount').textContent = `Kayıt yok (${allData.length} kayıt içerisinden bulunan)`;
-        document.getElementById('pagination').innerHTML = "";
-        return;
-    }
-
-    tbody.innerHTML = data.map((item, index) => `
-        <tr class="expandable-row" onclick="toggleRow(${index})" data-item='${JSON.stringify(item).replace(/'/g,"&#39;")}'>
-            <td><span class="expand-icon">▶</span>${item.ItemCode||''}</td>
-            <td>${item.ItemName||''}</td>
-            <td>${item.ItemGroup||''}</td>
-            <td>${item.FromWhsName||''}</td>
-            <td><span class="stock-status-${(item.OnHand||0)>0?'var':'yok'}">${(item.OnHand||0)>0?'Var':'Yok'}</span></td>
-            <td>${parseFloat(item.OnHand||0).toFixed(2)}</td>
-            <td>${parseFloat(item.MinQty||0).toFixed(2)}</td>
-            <td><div class="quantity-control">
-                <button class="quantity-btn" onclick="event.stopPropagation(); decreaseQuantity(this)">−</button>
-                <input type="number" class="quantity-input" value="0" min="0" onchange="updateSelectedCount()" onclick="event.stopPropagation();">
-                <button class="quantity-btn" onclick="event.stopPropagation(); increaseQuantity(this)">+</button>
-            </div></td>
-            <td>${item.UomCode||'PK'}</td>
-            <td><input type="text" class="note-input" placeholder="Not ekle..." onclick="event.stopPropagation();"></td>
-        </tr>
-        <tr class="expandable-content" id="expand-${index}" style="display: none;">
-            <td colspan="10">
-                <div style="padding: 20px; background: #f8f9fa; border-radius: 8px;">
-                    <h4>Detay Bilgiler</h4>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
-                        <div><strong>Kalem Kodu:</strong> ${item.ItemCode||''}</div>
-                        <div><strong>Kalem Tanımı:</strong> ${item.ItemName||''}</div>
-                        <div><strong>Kalem Grubu:</strong> ${item.ItemGroup||''}</div>
-                        <div><strong>Şube Adı:</strong> ${item.FromWhsName||''}</div>
-                        <div><strong>Stok Miktarı:</strong> ${parseFloat(item.OnHand||0).toFixed(2)}</div>
-                        <div><strong>Gerekli Miktar:</strong> ${parseFloat(item.MinQty||0).toFixed(2)}</div>
-                        <div><strong>Ölçü Birimi:</strong> ${item.UomCode||'PK'}</div>
-                        <div><strong>Stok Durumu:</strong> <span class="stock-status-${(item.OnHand||0)>0?'var':'yok'}">${(item.OnHand||0)>0?'Var':'Yok'}</span></div>
-                    </div>
-                </div>
-            </td>
-        </tr>
-    `).join('');
-
-    document.getElementById('recordCount').textContent =
-        `Toplam ${total} kayıttan ${start + 1}-${Math.min(end, total)} arası gösteriliyor`;
-
-    renderPagination(totalPages);
-    updateSelectedCount();
-}
-
-function toggleRow(index) {
-    const expandIcon = document.querySelector(`tr[onclick="toggleRow(${index})"] .expand-icon`);
-    const expandContent = document.getElementById(`expand-${index}`);
-    
-    if (expandContent.style.display === 'none') {
-        expandContent.style.display = 'table-row';
-        expandIcon.classList.add('expanded');
-    } else {
-        expandContent.style.display = 'none';
-        expandIcon.classList.remove('expanded');
-    }
-}
-
-function renderPagination(totalPages) {
-    const pag = document.getElementById('pagination');
-    pag.innerHTML = '';
-    if (totalPages <= 1) return;
-    
-    let html = '';
-    const maxVisiblePages = 5;
-    let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
-    let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
-    
-    if (endPage - startPage + 1 < maxVisiblePages) {
-        startPage = Math.max(1, endPage - maxVisiblePages + 1);
-    }
-
-    // Previous button
-    if (currentPage > 1) {
-        html += `<button class="page-btn" onclick="changePage(${currentPage - 1})">‹</button>`;
-    } else {
-        html += `<button class="page-btn" disabled>‹</button>`;
-    }
-
-    // First page
-    if (startPage > 1) {
-        html += `<button class="page-btn" onclick="changePage(1)">1</button>`;
-        if (startPage > 2) {
-            html += `<span style="padding: 8px;">...</span>`;
-        }
-    }
-
-    // Page numbers
-    for (let i = startPage; i <= endPage; i++) {
-        if (i === currentPage) {
-            html += `<button class="page-btn active">${i}</button>`;
-        } else {
-            html += `<button class="page-btn" onclick="changePage(${i})">${i}</button>`;
-        }
-    }
-
-    // Last page
-    if (endPage < totalPages) {
-        if (endPage < totalPages - 1) {
-            html += `<span style="padding: 8px;">...</span>`;
-        }
-        html += `<button class="page-btn" onclick="changePage(${totalPages})">${totalPages}</button>`;
-    }
-
-    // Next button
-    if (currentPage < totalPages) {
-        html += `<button class="page-btn" onclick="changePage(${currentPage + 1})">›</button>`;
-    } else {
-        html += `<button class="page-btn" disabled>›</button>`;
-    }
-
-    pag.innerHTML = html;
-}
-
-function changePage(page) {
-    currentPage = page;
-    renderTable();
-}
-
-function increaseQuantity(btn) {
-    const input = btn.previousElementSibling;
-    input.value = parseInt(input.value || 0) + 1;
-    updateSelectedCount();
-}
-
-function decreaseQuantity(btn) {
-    const input = btn.nextElementSibling;
-    if (parseInt(input.value) > 0) {
-        input.value--;
-        updateSelectedCount();
-    }
-}
-
-function updateSelectedCount() {
-    let count = 0;
-    document.querySelectorAll('.quantity-input').forEach(input => {
-        if (parseInt(input.value) > 0) count++;
-    });
-    document.getElementById('submitBtn').disabled = count === 0;
-}
-
-// Submit transfer function
-document.getElementById('submitBtn').addEventListener('click', function() {
-    const transferItems = [];
-    document.querySelectorAll('tr[data-item]').forEach(row => {
-        const quantityInput = row.querySelector('.quantity-input');
-        const noteInput = row.querySelector('.note-input');
-        if (parseInt(quantityInput.value) > 0) {
-            const item = JSON.parse(row.getAttribute('data-item').replace(/&#39;/g, "'"));
-            transferItems.push({
-                ItemCode: item.ItemCode,
-                ItemName: item.ItemName,
-                FromWhsCode: item.FromWhsCode,
-                FromWhsName: item.FromWhsName,
-                Quantity: quantityInput.value,
-                UomCode: item.UomCode,
-                Comments: noteInput.value
+        const dropdown = document.getElementById('stockStatusDropdown');
+        if (dropdown) {
+            dropdown.querySelectorAll('.multi-select-option').forEach(opt => {
+                const val = opt.getAttribute('data-value');
+                opt.classList.toggle('selected', (selectedStockStatus === '' && val === '') || selectedStockStatus === val.toLowerCase());
             });
         }
-    });
+        return;
+    }
+    
+    const tagsContainer = document.getElementById(type === 'itemName' ? 'itemNameTags' : 
+                                                   type === 'itemGroup' ? 'itemGroupTags' : 'branchTags');
+    const input = document.getElementById(`filter${type.charAt(0).toUpperCase() + type.slice(1)}`);
+    const selected = type === 'itemName' ? selectedItemNames : 
+                    type === 'itemGroup' ? selectedItemGroups : selectedBranches;
+    
+    if (!tagsContainer || !input || input.value.trim() !== '') return;
+    
+    tagsContainer.style.display = '';
+    tagsContainer.innerHTML = '';
+    
+    if (selected.length === 0) {
+        input.placeholder = type === 'itemName' ? 'KALEM TANIMI' : type === 'itemGroup' ? 'KALEM GRUBU' : 'ŞUBE';
+        input.value = '';
+    } else {
+        input.placeholder = '';
+        input.value = '';
+        selected.forEach(value => {
+            const tag = document.createElement('span');
+            tag.className = 'multi-select-tag';
+            const escapedValue = value.replace(/'/g, "\\'");
+            tag.innerHTML = `${value} <span class="remove" onclick="selectOption('${type}', '${escapedValue}', '${escapedValue}')">×</span>`;
+            tagsContainer.appendChild(tag);
+        });
+    }
+    
+    const dropdown = document.getElementById(type + 'Dropdown');
+    if (dropdown) {
+        dropdown.querySelectorAll('.multi-select-option').forEach(opt => {
+            opt.classList.toggle('selected', selected.includes(opt.getAttribute('data-value')));
+        });
+    }
+}
 
-    if (transferItems.length === 0) return;
+function removeFilter(type, value) {
+    const selectedArray = type === 'itemName' ? selectedItemNames : 
+                         type === 'itemGroup' ? selectedItemGroups : selectedBranches;
+    const index = selectedArray.indexOf(value);
+    if (index > -1) selectedArray.splice(index, 1);
+    updateFilterDisplay(type);
+    currentPage = 0;
+    loadItems();
+}
 
-    fetch(window.location.href, {
+function updatePageSize() {
+    pageSize = parseInt(document.getElementById('entriesPerPage').value);
+    currentPage = 0;
+    loadItems();
+}
+
+function loadItems() {
+    const search = document.getElementById('tableSearch').value.trim();
+    const skip = currentPage * pageSize;
+    
+    let url = `TransferlerSO.php?ajax=items&skip=${skip}&top=${pageSize}`;
+    if (search) url += `&search=${encodeURIComponent(search)}`;
+    if (selectedItemNames.length > 0) url += `&item_names=${encodeURIComponent(JSON.stringify(selectedItemNames))}`;
+    if (selectedItemGroups.length > 0) url += `&item_groups=${encodeURIComponent(JSON.stringify(selectedItemGroups))}`;
+    if (selectedBranches.length > 0) url += `&branches=${encodeURIComponent(JSON.stringify(selectedBranches))}`;
+    if (selectedStockStatus) url += `&stock_status=${encodeURIComponent(selectedStockStatus)}`;
+    
+    fetch(url)
+        .then(res => res.json())
+        .then(data => {
+            // Detaylı debug bilgisi console'a yazdır
+            if (data.debug) {
+                console.log('=== TRANSFERLERSO DEBUG INFO ===');
+                console.log('View Check Status:', data.debug.viewCheckStatus);
+                console.log('View Check Error:', data.debug.viewCheckError);
+                console.log('View Exposed:', data.debug.isViewExposed);
+                console.log('Expose Attempted:', data.debug.exposeAttempted);
+                console.log('Expose Status:', data.debug.exposeStatus);
+                console.log('Expose Error:', data.debug.exposeError);
+                console.log('Test Items Count:', data.debug.testItemsCount);
+                console.log('Sample WhsCodes (view\'den gelen):', data.debug.sampleWhsCodes);
+                console.log('Sample FromWhsCodes (view\'den gelen):', data.debug.sampleFromWhsCodes);
+                console.log('Sample FromWhsNames (view\'den gelen):', data.debug.sampleFromWhsNames);
+                console.log('Items Query Status:', data.debug.itemsStatus);
+                console.log('Items Error:', data.debug.itemsError);
+                console.log('Items Without WhsCode Filter Count:', data.debug.itemsWithoutWhsFilterCount);
+                console.log('ToWarehouse (kullanılan):', data.debug.toWarehouse);
+                console.log('FromWarehouse:', data.debug.fromWarehouse);
+                console.log('Raw Count:', data.debug.rawCount);
+                console.log('Other Warehouses:', data.debug.otherWarehouses);
+                console.log('FromWhsName Conditions Count:', data.debug.fromWhsNameConditionsCount);
+                console.log('Filter:', data.debug.filter);
+                if (data.debug.filterWithoutWhs) {
+                    console.log('Filter (WhsCode olmadan):', data.debug.filterWithoutWhs);
+                }
+                console.log('Items Query:', data.debug.itemsQuery);
+                console.log('Full Debug Object:', data.debug);
+                console.log('================================');
+            }
+            
+            if (data.error) {
+                console.error('ERROR:', data.error);
+                if (data.debug) {
+                    console.error('Error Debug:', data.debug);
+                }
+            }
+            
+            hasMore = data.hasMore || false;
+            itemsData = data.data || [];
+            
+            updateDropdownsFromTable();
+            renderItems(itemsData);
+            updatePagination();
+            
+            if (itemsData.length === 0) {
+                let msg = '';
+                if (data.error) {
+                    msg = `<tr><td colspan="10" style="text-align:center;color:#dc3545;padding:20px;">
+                        <strong>⚠️ HATA: ${data.error}</strong><br>
+                        <small style="color:#666;margin-top:10px;display:block;text-align:left;max-width:800px;margin:10px auto;">
+                            ${data.debug ? JSON.stringify(data.debug, null, 2).replace(/\n/g, '<br>') : ''}
+                        </small></td></tr>`;
+                } else if (data.debug) {
+                    const debug = data.debug;
+                    msg = `<tr><td colspan="10" style="text-align:center;color:#dc3545;padding:20px;">
+                        <strong>Kayıt bulunamadı</strong><br>
+                        <small style="color:#666;margin-top:10px;display:block;text-align:left;max-width:800px;margin:10px auto;">
+                            <strong>View Check:</strong> Status=${debug.viewCheckStatus || 'N/A'}, Error=${debug.viewCheckError ? JSON.stringify(debug.viewCheckError) : 'YOK'}<br>
+                            <strong>View Exposed:</strong> ${debug.isViewExposed ? 'EVET' : 'HAYIR'}<br>
+                            <strong>Expose Attempted:</strong> ${debug.exposeAttempted ? 'EVET' : 'HAYIR'}<br>
+                            ${debug.exposeStatus ? `<strong>Expose Status:</strong> ${debug.exposeStatus}<br>` : ''}
+                            ${debug.exposeError ? `<strong>Expose Error:</strong> ${JSON.stringify(debug.exposeError)}<br>` : ''}
+                            <strong>Items Query Status:</strong> ${debug.itemsStatus || 'N/A'}<br>
+                            <strong>Items Error:</strong> ${debug.itemsError ? JSON.stringify(debug.itemsError) : 'YOK'}<br>
+                            <strong>Test Items Count:</strong> ${debug.testItemsCount || 0}<br>
+                            <strong>Sample WhsCodes:</strong> ${debug.sampleWhsCodes ? debug.sampleWhsCodes.join(', ') : 'YOK'}<br>
+                            <strong>Sample FromWhsCodes:</strong> ${debug.sampleFromWhsCodes ? debug.sampleFromWhsCodes.join(', ') : 'YOK'}<br>
+                            <strong>Sample FromWhsNames:</strong> ${debug.sampleFromWhsNames ? debug.sampleFromWhsNames.join(', ') : 'YOK'}<br>
+                            <strong>Items Without WhsCode Filter Count:</strong> ${debug.itemsWithoutWhsFilterCount || 0}<br>
+                            <strong>ToWarehouse:</strong> ${debug.toWarehouse || 'BULUNAMADI'}<br>
+                            <strong>FromWarehouse:</strong> ${debug.fromWarehouse || 'BULUNAMADI'}<br>
+                            <strong>Raw Count:</strong> ${debug.rawCount || 0}<br>
+                            <strong>Other Warehouses:</strong> ${debug.otherWarehouses ? JSON.stringify(debug.otherWarehouses) : 'YOK'}<br>
+                            <strong>FromWhsName Conditions Count:</strong> ${debug.fromWhsNameConditionsCount || 0}<br>
+                            <strong>Filter:</strong> ${debug.filter || 'YOK'}<br>
+                            ${debug.filterWithoutWhs ? `<strong>Filter (WhsCode olmadan):</strong> ${debug.filterWithoutWhs}<br>` : ''}
+                            <strong>Query:</strong> ${debug.itemsQuery || 'YOK'}
+                        </small></td></tr>`;
+                } else {
+                    msg = '<tr><td colspan="10" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
+                }
+                document.getElementById('itemsTableBody').innerHTML = msg;
+            }
+        })
+        .catch(err => {
+            console.error('Hata:', err);
+            document.getElementById('itemsTableBody').innerHTML = 
+                '<tr><td colspan="10" style="text-align:center;color:#dc3545;">Veri yüklenirken hata oluştu: ' + err.message + '</td></tr>';
+        });
+}
+
+function renderItems(items) {
+    const tbody = document.getElementById('itemsTableBody');
+    
+    if (items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
+        return;
+    }
+    
+    // Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
+    function formatQuantity(qty) {
+        const num = parseFloat(qty);
+        if (isNaN(num)) return '0';
+        // Tam sayı ise küsurat gösterme
+        if (num % 1 === 0) {
+            return num.toString();
+        }
+        // Küsurat varsa virgül ile göster
+        return num.toString().replace('.', ',');
+    }
+    
+    tbody.innerHTML = items.map(item => {
+        const itemCode = item.ItemCode || '';
+        const itemName = item.ItemName || item.ItemDescription || '';
+        const itemGroup = item.ItemGroup || '-';
+        const fromWhsName = item.FromWhsName || '-';
+        const hasStock = item._hasStock || false;
+        const stockQty = item.MainQty || item._stock || 0;
+        const minQty = item.MinQty || 0;
+        const uomCode = item.UomCode || item.UoMCode || '-';
+        const uomConvert = parseFloat(item.UomConvert || item.UOMConvert || 1);
+        const sepetQty = selectedItems[itemCode]?.quantity || 0;
+        
+        let conversionText = '-';
+        if (uomConvert !== 1) {
+            conversionText = sepetQty > 0 ? `${formatQuantity(sepetQty)}x${formatQuantity(uomConvert)}` : formatQuantity(uomConvert);
+        } else if (sepetQty > 0) {
+            conversionText = formatQuantity(sepetQty);
+        }
+        
+        return `
+            <tr>
+                <td>${itemCode}</td>
+                <td>${itemName}</td>
+                <td>${itemGroup}</td>
+                <td>${fromWhsName}</td>
+                <td><span class="stock-badge ${hasStock ? 'stock-yes' : 'stock-no'}">${hasStock ? 'Var' : 'Yok'}</span></td>
+                <td>${formatQuantity(stockQty)}</td>
+                <td>${formatQuantity(minQty)}</td>
+                <td>
+                    <div class="quantity-controls">
+                        <button type="button" class="qty-btn" onclick="changeQuantity('${itemCode}', -1)">-</button>
+                        <input type="number" 
+                               id="qty_${itemCode}"
+                               value="${sepetQty}" 
+                               min="0" 
+                               step="0.01"
+                               class="qty-input"
+                               onchange="updateQuantity('${itemCode}', this.value)"
+                               oninput="updateQuantity('${itemCode}', this.value)">
+                        <button type="button" class="qty-btn" onclick="changeQuantity('${itemCode}', 1)">+</button>
+                </div>
+            </td>
+                <td>${uomCode}</td>
+                <td style="text-align: center; font-weight: 600; color: #3b82f6;">${conversionText}</td>
+        </tr>
+        `;
+    }).join('');
+}
+
+function changeQuantity(itemCode, delta) {
+    const input = document.getElementById('qty_' + itemCode);
+    if (!input) return;
+    
+    let value = parseFloat(input.value) || 0;
+    value += delta;
+    if (value < 0) value = 0;
+    input.value = value;
+    updateQuantity(itemCode, value);
+}
+
+function updateQuantity(itemCode, quantity) {
+    const qty = parseFloat(quantity) || 0;
+    
+    if (qty > 0) {
+        if (!selectedItems[itemCode]) {
+            const row = document.getElementById('qty_' + itemCode).closest('tr');
+            const itemData = itemsData.find(i => i.ItemCode === itemCode);
+            selectedItems[itemCode] = {
+                itemCode: itemCode,
+                itemName: row.cells[1].textContent,
+                quantity: qty,
+                baseQty: itemData ? parseFloat(itemData.BaseQty || 1.0) : 1.0,
+                uomCode: itemData ? (itemData.UomCode || itemData.UoMCode || '') : '',
+                fromWhsName: itemData ? (itemData.FromWhsName || '') : '',
+                fromWhsCode: itemData ? (itemData.FromWhsCode || '') : ''
+            };
+        } else {
+            selectedItems[itemCode].quantity = qty;
+        }
+    } else {
+        delete selectedItems[itemCode];
+    }
+    
+    updateSepet();
+    if (itemsData && itemsData.length > 0) {
+        renderItems(itemsData);
+    }
+}
+
+function toggleSepet() {
+    const panel = document.getElementById('sepetPanel');
+    const container = document.getElementById('mainLayoutContainer');
+    const isOpen = panel.style.display !== 'none';
+    
+    if (isOpen) {
+        panel.style.display = 'none';
+        container.classList.remove('sepet-open');
+    } else {
+        panel.style.display = 'block';
+        container.classList.add('sepet-open');
+        updateSepet();
+    }
+}
+
+function updateSepet() {
+    const list = document.getElementById('sepetList');
+    const badge = document.getElementById('sepetBadge');
+    const itemCount = Object.keys(selectedItems).length;
+    
+    if (itemCount > 0) {
+        badge.textContent = itemCount;
+        badge.style.display = 'flex';
+    } else {
+        badge.style.display = 'none';
+    }
+    
+    if (itemCount === 0) {
+        list.innerHTML = '<div style="text-align: center; padding: 2rem; color: #9ca3af;">Sepetiniz boş</div>';
+        return;
+    }
+    
+    list.innerHTML = Object.values(selectedItems).map(item => `
+        <div class="sepet-item">
+            <div class="sepet-item-info">
+                <div class="sepet-item-name">${item.itemCode} - ${item.itemName}</div>
+                <div class="sepet-item-qty">
+                    <button type="button" class="qty-btn" onclick="changeQuantity('${item.itemCode}', -1)">-</button>
+                    <input type="number" value="${item.quantity}" min="0" step="0.01"
+                           onchange="updateQuantity('${item.itemCode}', this.value)"
+                           oninput="updateQuantity('${item.itemCode}', this.value)">
+                    <button type="button" class="qty-btn" onclick="changeQuantity('${item.itemCode}', 1)">+</button>
+                </div>
+            </div>
+            <button type="button" class="remove-sepet-btn" onclick="removeFromSepet('${item.itemCode}')">Kaldır</button>
+        </div>
+    `).join('');
+}
+
+function removeFromSepet(itemCode) {
+    if (selectedItems[itemCode]) {
+        delete selectedItems[itemCode];
+        const input = document.getElementById('qty_' + itemCode);
+        if (input) input.value = 0;
+        updateSepet();
+        if (itemsData && itemsData.length > 0) {
+            renderItems(itemsData);
+        }
+    }
+}
+
+function changePage(delta) {
+    currentPage += delta;
+    if (currentPage < 0) currentPage = 0;
+    loadItems();
+}
+
+function updatePagination() {
+    document.getElementById('pageInfo').textContent = `Sayfa ${currentPage + 1}`;
+    document.getElementById('prevBtn').disabled = currentPage === 0;
+    document.getElementById('nextBtn').disabled = !hasMore;
+}
+
+function saveRequest() {
+    const items = Object.values(selectedItems).filter(item => item.quantity > 0);
+    
+    if (items.length === 0) {
+        alert('Lütfen en az bir kalem seçin!');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('action', 'create_request');
+    formData.append('items', JSON.stringify(items));
+    
+    if (!confirm('Transfer talebini oluşturmak istediğinize emin misiniz?')) {
+        return;
+    }
+    
+    fetch('TransferlerSO.php', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: `create_transfer=1&transfer_items=${encodeURIComponent(JSON.stringify(transferItems))}`
+        body: formData
     })
-    .then(response => response.json())
+    .then(res => res.json())
     .then(data => {
-        alert(data.message);
         if (data.success) {
-            location.reload();
+            alert('Transfer talebi başarıyla oluşturuldu!');
+            window.location.href = 'Transferler.php';
+        } else {
+            alert('Hata: ' + (data.message || 'Bilinmeyen hata'));
         }
     })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('Transfer oluşturulurken hata oluştu.');
+    .catch(err => {
+        console.error('Hata:', err);
+        alert('Transfer talebi oluşturulurken hata oluştu!');
     });
+}
+
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('.multi-select-container')) {
+        document.querySelectorAll('.multi-select-dropdown').forEach(d => d.classList.remove('show'));
+        document.querySelectorAll('.multi-select-input').forEach(d => d.classList.remove('active'));
+    }
 });
 </script>
 </body>

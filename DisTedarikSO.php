@@ -16,6 +16,18 @@ if (empty($uAsOwnr) || empty($branch)) {
     die("Session bilgileri eksik. Lütfen tekrar giriş yapın.");
 }
 
+// Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
+function formatQuantity($qty) {
+    $num = floatval($qty);
+    if ($num == 0) return '0';
+    // Tam sayı ise küsurat gösterme
+    if ($num == floor($num)) {
+        return (string)intval($num);
+    }
+    // Küsurat varsa virgül ile göster
+    return str_replace('.', ',', rtrim(rtrim(sprintf('%.2f', $num), '0'), ','));
+}
+
 // Ana depo (FromWhsName için) - U_ASB2B_FATH eq 'Y'
 $fromWarehouseFilter = "U_ASB2B_FATH eq 'Y' and U_AS_OWNR eq '{$uAsOwnr}'";
 $fromWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fromWarehouseFilter);
@@ -942,7 +954,7 @@ body {
                     🛒 Sepet
                     <span class="sepet-badge" id="sepetBadge" style="display: none;">0</span>
                 </button>
-                <button class="btn btn-secondary" onclick="window.location.href='config/logout.php'">Çıkış Yap →</button>
+                <button class="btn btn-secondary" onclick="window.location.href='DisTedarik.php'">← Geri Dön</button>
             </div>
         </header>
 
@@ -1014,7 +1026,7 @@ body {
                     </div>
                 </div>
             </section>
-            
+
             <!-- Kayıt Dışı Mod için Bilgi Alanları -->
             <?php if ($isUnregisteredMode): ?>
             <section class="card" style="background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border: 2px solid #3b82f6; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);">
@@ -1618,6 +1630,18 @@ function renderItems(items) {
         return;
     }
     
+    // Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
+    function formatQuantity(qty) {
+        const num = parseFloat(qty);
+        if (isNaN(num)) return '0';
+        // Tam sayı ise küsurat gösterme
+        if (num % 1 === 0) {
+            return num.toString();
+        }
+        // Küsurat varsa virgül ile göster
+        return num.toString().replace('.', ',');
+    }
+    
     tbody.innerHTML = items.map(item => {
         const itemCode = item.ItemCode || '';
         const itemName = item.ItemName || item.ItemDescription || '';
@@ -1638,15 +1662,15 @@ function renderItems(items) {
         if (uomConvert && uomConvert !== 1) {
             if (sepetQty > 0) {
                 // Sipariş miktarı × UomConvert formatında göster
-                conversionText = `${sepetQty.toFixed(0)}x${uomConvert.toFixed(0)}`;
+                conversionText = `${formatQuantity(sepetQty)}x${formatQuantity(uomConvert)}`;
             } else {
                 // Sipariş miktarı yoksa sadece UomConvert göster
-                conversionText = uomConvert.toFixed(0);
+                conversionText = formatQuantity(uomConvert);
             }
         } else if (uomConvert === 1) {
             // Standart (1 adet) ise sadece miktarı göster veya boş bırak
             if (sepetQty > 0) {
-                conversionText = sepetQty.toFixed(0);
+                conversionText = formatQuantity(sepetQty);
             } else {
                 conversionText = '-';
             }
@@ -1657,9 +1681,9 @@ function renderItems(items) {
                 <td>${itemCode}</td>
                 <td>${itemName}</td>
                 <td>${itemGroup}</td>
-                <td>${mainQty.toFixed(2)}</td>
-                <td>${branQty.toFixed(2)}</td>
-                <td>${minQty}</td>
+                <td>${formatQuantity(mainQty)}</td>
+                <td>${formatQuantity(branQty)}</td>
+                <td>${formatQuantity(minQty)}</td>
                 <td>
                     <div class="quantity-controls">
                         <button type="button" class="qty-btn" onclick="changeQuantity('${itemCode}', -1)">-</button>

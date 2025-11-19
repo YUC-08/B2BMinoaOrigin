@@ -69,6 +69,75 @@ if (empty($targetWarehouse)) {
     die("Hedef depo (U_ASB2B_MAIN=1) bulunamadı!");
 }
 
+// Sevk ve Teslimat miktarları için haritalama
+$stockTransferLinesMap = []; // Ana deponun sevk ettiği miktar
+$deliveryTransferLinesMap = []; // Kullanıcının teslim aldığı miktar (varsa)
+
+// Sevk miktarını bul (StockTransfer'den)
+$stockTransferFilter = "BaseType eq 1250000001 and BaseEntry eq {$doc}";
+$stockTransferQuery = "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
+$stockTransferData = $sap->get($stockTransferQuery);
+$stockTransfers = $stockTransferData['response']['value'] ?? [];
+
+if (!empty($stockTransfers)) {
+    $stockTransferInfo = $stockTransfers[0];
+    $stLines = $stockTransferInfo['StockTransferLines'] ?? [];
+    foreach ($stLines as $stLine) {
+        $itemCode = $stLine['ItemCode'] ?? '';
+        $qty = (float)($stLine['Quantity'] ?? 0);
+        $stockTransferLinesMap[$itemCode] = $qty;
+    }
+}
+
+// Teslim miktarını bul (daha önce teslim alınmışsa)
+$requestComments = $requestData['Comments'] ?? '';
+$deliveryDocEntry = null;
+
+if (preg_match('/DELIVERY_DocEntry:(\d+)/', $requestComments, $matches)) {
+    $deliveryDocEntry = intval($matches[1]);
+    
+    if ($deliveryDocEntry) {
+        $deliveryTransferQuery = "StockTransfers({$deliveryDocEntry})?\$expand=StockTransferLines";
+        $deliveryTransferData = $sap->get($deliveryTransferQuery);
+        $deliveryTransferInfo = $deliveryTransferData['response'] ?? null;
+        
+        if ($deliveryTransferInfo) {
+            $dtLines = $deliveryTransferInfo['StockTransferLines'] ?? [];
+            foreach ($dtLines as $dtLine) {
+                $itemCode = $dtLine['ItemCode'] ?? '';
+                $qty = (float)($dtLine['Quantity'] ?? 0);
+                if (isset($deliveryTransferLinesMap[$itemCode])) {
+                    $deliveryTransferLinesMap[$itemCode] += $qty;
+                } else {
+                    $deliveryTransferLinesMap[$itemCode] = $qty;
+                }
+            }
+        }
+    }
+}
+
+// Her kalem için ana depo stok miktarını çek
+$warehouseStockMap = [];
+foreach ($lines as $line) {
+    $itemCode = $line['ItemCode'] ?? '';
+    if (!empty($itemCode) && !isset($warehouseStockMap[$itemCode])) {
+        try {
+            $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$targetWarehouse}'";
+            $itemWhResult = $sap->get($itemWhQuery);
+            $itemWhData = $itemWhResult['response'] ?? null;
+            
+            $stockQty = 0;
+            if ($itemWhData && isset($itemWhData['value']) && !empty($itemWhData['value'])) {
+                $whInfo = $itemWhData['value'][0];
+                $stockQty = floatval($whInfo['InStock'] ?? $whInfo['Available'] ?? 0);
+            }
+            $warehouseStockMap[$itemCode] = $stockQty;
+        } catch (Exception $e) {
+            $warehouseStockMap[$itemCode] = 0;
+        }
+    }
+}
+
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $transferLines = [];
@@ -181,9 +250,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $result = $sap->post('StockTransfers', $stockTransferPayload);
         
         if ($result['status'] == 200 || $result['status'] == 201) {
+            // StockTransfer oluşturulduktan sonra DocEntry'yi al
+            $stockTransferDocEntry = $result['response']['DocEntry'] ?? null;
+            
+            // InventoryTransferRequest'i güncelle: Status ve Teslimat DocEntry'si
             $updatePayload = [
                 'U_ASB2B_STATUS' => '4'
             ];
+            
+            // Eğer StockTransfer DocEntry varsa, Comments'e ekle (belgeyi bulmak için)
+            if ($stockTransferDocEntry) {
+                $currentComments = $requestData['Comments'] ?? '';
+                $deliveryDocEntryComment = "DELIVERY_DocEntry:{$stockTransferDocEntry}";
+                
+                // Eğer Comments'te zaten DELIVERY_DocEntry varsa, güncelle; yoksa ekle
+                if (preg_match('/DELIVERY_DocEntry:\d+/', $currentComments)) {
+                    $currentComments = preg_replace('/DELIVERY_DocEntry:\d+/', $deliveryDocEntryComment, $currentComments);
+                } else {
+                    $currentComments = !empty($currentComments) ? $deliveryDocEntryComment . ' | ' . $currentComments : $deliveryDocEntryComment;
+                }
+                
+                $updatePayload['Comments'] = $currentComments;
+            }
+            
             $updateResult = $sap->patch("InventoryTransferRequests({$doc})", $updatePayload);
             
             if ($updateResult['status'] == 200 || $updateResult['status'] == 204) {
@@ -467,7 +556,7 @@ body {
 
     <main class="main-content">
         <header class="page-header">
-            <h2>Teslim Al - DocEntry: <?= htmlspecialchars($doc) ?></h2>
+            <h2>Teslim Al – Talep No: <?= htmlspecialchars($doc) ?></h2>
             <button class="btn btn-secondary" onclick="window.location.href='AnaDepo.php'">← Geri Dön</button>
         </header>
 
@@ -487,8 +576,10 @@ body {
                     <tr>
                         <th>Kalem Kodu</th>
                         <th>Kalem Tanımı</th>
-                        <th>Sipariş Miktarı</th>
-                        <th>Teslimat Miktarı</th>
+                        <th>Ana Depo Miktarı</th>
+                        <th>Talep Miktarı</th>
+                        <th>Sevk Miktarı</th>
+                        <th>Teslim Miktarı</th>
                         <th>Eksik Miktar</th>
                         <th>Kusurlu Miktar</th>
                         <th>Not</th>

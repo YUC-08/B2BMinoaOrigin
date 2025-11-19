@@ -20,10 +20,11 @@ $isAnadepoUser = false;
 
 // FromWarehouse sorgusu (ana depo)
 $fromWarehouseFilter = "U_ASB2B_FATH eq 'Y' and U_AS_OWNR eq '{$uAsOwnr}'";
-$fromWarehouseQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($fromWarehouseFilter);
+$fromWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fromWarehouseFilter);
 $fromWarehouseData = $sap->get($fromWarehouseQuery);
 $fromWarehouses = $fromWarehouseData['response']['value'] ?? [];
 $fromWarehouse = !empty($fromWarehouses) ? $fromWarehouses[0]['WarehouseCode'] : null;
+$fromWarehouseName = !empty($fromWarehouses) ? ($fromWarehouses[0]['WarehouseName'] ?? null) : null;
 $fromWarehouseNotFound = ($fromWarehouseData['status'] ?? 0) == 200 && empty($fromWarehouses);
 
 // ToWarehouse sorgusu (kullanıcının şube sevkiyat deposu)
@@ -107,7 +108,7 @@ if (!$errorMsg && $fromWarehouse && $toWarehouse) {
         $transferFilter .= " and DocDate le '{$endDateFormatted}'";
     }
     
-    $selectValue = "DocEntry,DocDate,DueDate,U_ASB2B_NumAtCard,U_ASB2B_STATUS,U_ASWHST";
+    $selectValue = "DocEntry,DocDate,DueDate,U_ASB2B_NumAtCard,U_ASB2B_STATUS,U_ASWHSF";
     $filterEncoded = urlencode($transferFilter);
     $orderByEncoded = urlencode("DocEntry desc");
     $transferQuery = "InventoryTransferRequests?\$select=" . urlencode($selectValue) . "&\$filter=" . $filterEncoded . "&\$orderby=" . $orderByEncoded . "&\$top=100";
@@ -180,7 +181,7 @@ function formatDate($date) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ana Depo Siparişleri - CREMMAVERSE</title>
+    <title>Ana Depo Talepleri - CREMMAVERSE</title>
     <link rel="stylesheet" href="styles.css">
     <style>
 /* Modern mavi-beyaz tema ile yeni tasarım */
@@ -443,6 +444,27 @@ body {
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
+.search-box {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.search-input {
+    padding: 8px 12px;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 14px;
+    min-width: 220px;
+    transition: border-color 0.2s;
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
 /* Table Styles */
 .data-table {
     width: 100%;
@@ -627,8 +649,8 @@ body {
 
     <main class="main-content">
         <header class="page-header">
-            <h2>Ana Depo Siparişleri</h2>
-            <button class="btn btn-primary" onclick="window.location.href='AnaDepoSO.php'">+ Yeni Sipariş Oluştur</button>
+            <h2>Ana Depo Talepleri</h2>
+            <button class="btn btn-primary" onclick="window.location.href='AnaDepoSO.php'">+ Yeni Talep Oluştur</button>
         </header>
 
         <div class="content-wrapper">
@@ -701,7 +723,7 @@ body {
             <section class="card">
                 <div class="filter-section">
                     <div class="filter-group">
-                        <label>Sipariş Durumu</label>
+                        <label>Talep Durumu</label>
                         <div class="single-select-container">
                             <div class="single-select-input" onclick="toggleDropdown('status')">
                                 <input type="text" id="filterStatus" value="<?= $filterStatus ? getStatusText($filterStatus) : 'Tümü' ?>" placeholder="Seçiniz..." readonly>
@@ -741,6 +763,10 @@ body {
                         </select>
                         kayıt göster
                     </div>
+                    <div class="search-box">
+                        <input type="text" class="search-input" id="tableSearch" placeholder="Ara..." onkeyup="if(event.key==='Enter') performSearch()">
+                        <button class="btn btn-secondary" onclick="performSearch()">🔍</button>
+                    </div>
                 </div>
 
                 <table class="data-table">
@@ -750,7 +776,7 @@ body {
                             <th>Talep Tarihi</th>
                             <th>Vade Tarihi</th>
                             <th>Teslimat Belge No</th>
-                            <th>Alıcı Şube</th>
+                            <th>Gönderen</th>
                             <th>Durum</th>
                             <th>İşlemler</th>
                         </tr>
@@ -774,7 +800,7 @@ if (!empty($rows)) {
         $docDate = formatDate($row['DocDate'] ?? '');
         $dueDate = formatDate($row['DueDate'] ?? '');
         $numAtCard = $row['U_ASB2B_NumAtCard'] ?? '-';
-        $aliciSube = $row['U_ASWHST'] ?? '-';
+        $aliciSube = $row['U_ASWHSF'] ?? '-'; 
 
         echo "<tr>
                 <td>{$docEntry}</td>
@@ -905,6 +931,71 @@ document.addEventListener('click', function(e) {
     if (!e.target.closest('.single-select-container')) {
         document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
         document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
+    }
+});
+
+// Genel arama fonksiyonu - tüm kolonlarda serbest text search
+function performSearch() {
+    const searchInput = document.getElementById('tableSearch');
+    const searchTerm = searchInput.value.toLowerCase().trim();
+    const tableBody = document.querySelector('.data-table tbody');
+    const rows = tableBody.querySelectorAll('tr');
+    
+    if (!tableBody || !rows) return;
+    
+    let visibleCount = 0;
+    
+    rows.forEach(row => {
+        // Tüm hücrelerde ara (Transfer No, Talep Tarihi, Vade Tarihi, Teslimat Belge No, Gönderen, Durum)
+        const cells = row.querySelectorAll('td');
+        let found = false;
+        
+        if (searchTerm === '') {
+            // Arama boşsa tüm satırları göster
+            row.style.display = '';
+            visibleCount++;
+        } else {
+            cells.forEach(cell => {
+                const cellText = cell.textContent.toLowerCase();
+                if (cellText.includes(searchTerm)) {
+                    found = true;
+                }
+            });
+            
+            if (found) {
+                row.style.display = '';
+                visibleCount++;
+            } else {
+                row.style.display = 'none';
+            }
+        }
+    });
+    
+    // Eğer hiç sonuç yoksa mesaj göster
+    let noResultsRow = tableBody.querySelector('.no-results-message');
+    if (searchTerm !== '' && visibleCount === 0) {
+        if (!noResultsRow) {
+            noResultsRow = document.createElement('tr');
+            noResultsRow.className = 'no-results-message';
+            noResultsRow.innerHTML = '<td colspan="7" style="text-align: center; padding: 20px; color: #888;">Sonuç bulunamadı.</td>';
+            tableBody.appendChild(noResultsRow);
+        }
+        noResultsRow.style.display = '';
+    } else {
+        if (noResultsRow) {
+            noResultsRow.style.display = 'none';
+        }
+    }
+}
+
+// Arama input'una real-time arama ekle (opsiyonel - her tuş vuruşunda arama yapar)
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('tableSearch');
+    if (searchInput) {
+        // Her tuş vuruşunda arama yap (debounce olmadan)
+        searchInput.addEventListener('input', function() {
+            performSearch();
+        });
     }
 });
     </script>

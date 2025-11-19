@@ -15,13 +15,22 @@ if (empty($doc)) {
     exit;
 }
 
-// InventoryTransferRequests({doc}) çağır
+
+
+
+// InventoryTransferRequests({doc}) çağır - Tüm alanları çek (DocumentStatus dahil)
+// $select ile sadece gerekli alanları çekmek yerine tüm alanları çekiyoruz
 $docQuery = "InventoryTransferRequests({$doc})";
+// Cache'i önlemek için her zaman fresh data çek
 $docData = $sap->get($docQuery);
+
 $requestData = $docData['response'] ?? null;
 
 if (!$requestData) {
     echo "Belge bulunamadı!";
+    if (isset($docData['response']['error'])) {
+        echo "<br>Hata: " . json_encode($docData['response']['error']);
+    }
     exit;
 }
 
@@ -56,11 +65,69 @@ function formatDate($date) {
     return date('d.m.Y', strtotime($date));
 }
 
+// Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
+function formatQuantity($qty) {
+    $num = floatval($qty);
+    if ($num == 0) return '0';
+    // Tam sayı ise küsurat gösterme
+    if ($num == floor($num)) {
+        return (string)intval($num);
+    }
+    // Küsurat varsa virgül ile göster
+    return str_replace('.', ',', rtrim(rtrim(sprintf('%.2f', $num), '0'), ','));
+}
+
 $docEntry = $requestData['DocEntry'] ?? '';
 $docDate = formatDate($requestData['DocDate'] ?? '');
 $dueDate = formatDate($requestData['DueDate'] ?? '');
-$status = $requestData['U_ASB2B_STATUS'] ?? '1';
+// Status'u string'e çevir (SAP'den integer gelebilir)
+// Hem U_ASB2B_STATUS hem de DocumentStatus'u kontrol et
+$udfStatus = (string)($requestData['U_ASB2B_STATUS'] ?? '1');
+$documentStatus = $requestData['DocumentStatus'] ?? null;
+
+// Debug: Tüm status bilgilerini logla
+error_log("[ANADEPO-DETAY] DocEntry: {$docEntry}");
+error_log("[ANADEPO-DETAY] U_ASB2B_STATUS (raw): " . ($requestData['U_ASB2B_STATUS'] ?? 'NULL'));
+error_log("[ANADEPO-DETAY] DocumentStatus: " . ($documentStatus ?? 'NULL'));
+
+// Status belirleme: Önce U_ASB2B_STATUS'u kullan, ama DocumentStatus'a göre de kontrol et
+$status = $udfStatus;
+$statusUpdated = false;
+
+// DocumentStatus'a göre status senkronizasyonu ve UDF güncelleme
+// Eğer DocumentStatus kapalıysa ama U_ASB2B_STATUS hala açık durumdaysa, SAP'de UDF'yi güncelle
+if ($documentStatus == 'bost_Closed' && in_array($udfStatus, ['1', '2'])) {
+    // DocumentStatus kapalı ama UDF hala açık durumda - SAP'de UDF'yi güncelle
+    $updatePayload = ['U_ASB2B_STATUS' => '3']; // Sevk Edildi
+    $updateResult = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
+    
+    if (($updateResult['status'] ?? 0) == 200 || ($updateResult['status'] ?? 0) == 204) {
+        $status = '3';
+        $statusUpdated = true;
+        error_log("[ANADEPO-DETAY] DocumentStatus kapalı - U_ASB2B_STATUS '3' (Sevk Edildi) olarak güncellendi");
+    } else {
+        error_log("[ANADEPO-DETAY] UDF güncelleme başarısız: HTTP " . ($updateResult['status'] ?? 'NO STATUS'));
+        if (isset($updateResult['response']['error'])) {
+            error_log("[ANADEPO-DETAY] UDF güncelleme hatası: " . json_encode($updateResult['response']['error']));
+        }
+        // Hata olsa bile status'u güncelle (kullanıcıya doğru bilgi göster)
+        $status = '3';
+    }
+} elseif ($documentStatus == 'bost_Open' && in_array($udfStatus, ['3', '4'])) {
+    // DocumentStatus açık ama UDF kapalı durumda - UDF'yi öncelikli kabul et (değişiklik yapılmış olabilir)
+    $status = $udfStatus;
+    error_log("[ANADEPO-DETAY] DocumentStatus açık ama UDF kapalı - UDF öncelikli, status={$status}");
+}
+
 $statusText = getStatusText($status);
+error_log("[ANADEPO-DETAY] Final Status: {$status} ({$statusText})");
+
+// Eğer status güncellendiyse, sayfayı yeniden yükle (fresh data için)
+if ($statusUpdated) {
+    // Status güncellendi, sayfayı yeniden yükle
+    header("Location: AnaDepo-Detay.php?doc={$docEntry}");
+    exit;
+}
 $numAtCard = $requestData['U_ASB2B_NumAtCard'] ?? '-';
 $ordSum = $requestData['U_ASB2B_ORDSUM'] ?? '-';
 $branchCode = $requestData['U_ASB2B_BRAN'] ?? '-';
@@ -68,7 +135,39 @@ $journalMemo = $requestData['JournalMemo'] ?? '-';
 $fromWarehouse = $requestData['FromWarehouse'] ?? '';
 $toWarehouse = $requestData['ToWarehouse'] ?? '';
 $aliciSube = $requestData['U_ASWHST'] ?? '-'; // Alıcı Şube
+$gonderSube = $requestData['U_ASWHSF'] ?? ''; // Gönderen Şube adı
 $lines = $requestData['StockTransferLines'] ?? [];
+
+// Depo bilgilerini çek (WarehouseName için)
+$fromWarehouseName = '';
+$toWarehouseName = '';
+if (!empty($fromWarehouse)) {
+    $fromWhsQuery = "Warehouses('{$fromWarehouse}')?\$select=WarehouseCode,WarehouseName";
+    $fromWhsData = $sap->get($fromWhsQuery);
+    $fromWarehouseName = $fromWhsData['response']['WarehouseName'] ?? '';
+}
+if (!empty($toWarehouse)) {
+    $toWhsQuery = "Warehouses('{$toWarehouse}')?\$select=WarehouseCode,WarehouseName";
+    $toWhsData = $sap->get($toWhsQuery);
+    $toWarehouseName = $toWhsData['response']['WarehouseName'] ?? '';
+}
+
+// Gönderen Şube formatı: KT-00 / Beşiktaş Kitapevi Ana Depo
+$gonderSubeDisplay = $fromWarehouse;
+if (!empty($gonderSube)) {
+    $gonderSubeDisplay = $fromWarehouse . ' / ' . $gonderSube;
+} elseif (!empty($fromWarehouseName)) {
+    $gonderSubeDisplay = $fromWarehouse . ' / ' . $fromWarehouseName;
+}
+
+// Alıcı Şube formatı: 200-KT-1 / Kadıköy Rıhtım Depo
+$aliciSubeDisplay = $toWarehouse;
+if (!empty($toWarehouseName)) {
+    $aliciSubeDisplay = $toWarehouse . ' / ' . $toWarehouseName;
+}
+
+// Teslimat Tarihi (StockTransfer varsa onun DocDate'i, yoksa boş)
+$teslimatTarihi = '';
 
 // TEST: Durumu Onay Bekliyor'a döndür (GEÇİCİ - SONRA KALDIRILACAK)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reset_status'])) {
@@ -87,16 +186,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reset_status'])) {
 }
 
 // Sevk / Teslim miktarları için haritalama: ItemCode => Toplam Miktar (StockTransfers'tan gelen)
-$stockTransferLinesMap = [];
+$stockTransferLinesMap = []; // Ana deponun sevk ettiği miktar
+$deliveryTransferLinesMap = []; // Kullanıcının teslim aldığı miktar
 $stockTransferInfo 	 = null;
+$deliveryTransferInfo = null;
 
-// Sadece Sevk Edildi (3) ve Tamamlandı (4) durumlarında bağlı StockTransfer belgesini çekerek
-// Teslimat Miktarını bu belgelerdeki Quantity'den hesaplamak için ilk StockTransfer belgesini çek
-if ($status === '3' || $status === '4') {
-    // İlk bağlı StockTransfer belgesini BaseEntry ile çek
-    // BaseType = 1250000001  => InventoryTransferRequest
+// Sadece Sevk Edildi (3) ve Tamamlandı (4) durumlarında bağlı StockTransfer belgelerini çek
+if ($status == '3' || $status == '4') {
+    // 1. Ana deponun sevk ettiği belge (BaseType = 1250000001 => InventoryTransferRequest)
     $stockTransferFilter = "BaseType eq 1250000001 and BaseEntry eq {$docEntry}";
-    // En son (veya ilk) StockTransfer belgesini çek (Birden fazla transfer varsa ilkini alıyoruz)
     $stockTransferQuery 	= "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
     $stockTransferData = $sap->get($stockTransferQuery);
     $stockTransfers 	 = $stockTransferData['response']['value'] ?? [];
@@ -104,22 +202,94 @@ if ($status === '3' || $status === '4') {
     if (!empty($stockTransfers)) {
         $stockTransferInfo = $stockTransfers[0];
         
-        // StockTransfer satırlarındaki Quantity'leri topla (sadece ilk belge)
+        // Teslimat Tarihi: StockTransfer'in DocDate'i
+        $teslimatTarihi = formatDate($stockTransferInfo['DocDate'] ?? '');
+        
+        // StockTransfer satırlarındaki Quantity'leri topla (sevk miktarı)
         $stLines = $stockTransferInfo['StockTransferLines'] ?? [];
         foreach ($stLines as $stLine) {
             $itemCode = $stLine['ItemCode'] ?? '';
             $qty = (float)($stLine['Quantity'] ?? 0);
-            // Bu map'i tek bir StockTransfer belgesindeki miktarları tutmak için kullanıyoruz
             $stockTransferLinesMap[$itemCode] = $qty; 
         }
     }
     
-    // DEBUG Bilgisi - StockTransfer bulundu mu?
-    if (empty($stockTransfers)) {
-        error_log("DEBUG: DocEntry {$docEntry} için StockTransfer bulunamadı. Filtre: {$stockTransferFilter}");
-    } else {
-        error_log("DEBUG: DocEntry {$docEntry} için StockTransfer DocEntry: {$stockTransferInfo['DocEntry']}");
+    // 2. Kullanıcının teslim aldığı belge (FromWarehouse = ToWarehouse, ToWarehouse = Şube ana deposu, U_ASB2B_TYPE = 'MAIN', U_ASB2B_STATUS = '4')
+    // Önce InventoryTransferRequest'ten ToWarehouse'u al
+    $toWarehouse = $requestData['ToWarehouse'] ?? '';
+    $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
+    $branch = $_SESSION["WhsCode"] ?? $_SESSION["Branch2"]["Name"] ?? '';
+    $deliveryTransfers = [];
+    
+    if (!empty($toWarehouse) && !empty($uAsOwnr) && !empty($branch)) {
+        // Şubenin ana deposunu bul (U_ASB2B_MAIN=1)
+        $targetWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '1'";
+        $targetWarehouseQuery = "Warehouses?\$filter=" . urlencode($targetWarehouseFilter);
+        $targetWarehouseData = $sap->get($targetWarehouseQuery);
+        $targetWarehouses = $targetWarehouseData['response']['value'] ?? [];
+        $targetWarehouse = !empty($targetWarehouses) ? $targetWarehouses[0]['WarehouseCode'] : null;
+        
+        if (!empty($targetWarehouse)) {
+            // Kullanıcının teslim aldığı StockTransfer belgesini bul
+            // Önce InventoryTransferRequest'in Comments'inden DELIVERY_DocEntry'yi oku
+            $deliveryDocEntry = null;
+            $requestComments = $requestData['Comments'] ?? '';
+            
+            if (preg_match('/DELIVERY_DocEntry:(\d+)/', $requestComments, $matches)) {
+                $deliveryDocEntry = intval($matches[1]);
+            }
+            
+            if ($deliveryDocEntry) {
+                // DocEntry ile doğrudan belgeyi bul (en güvenilir yöntem)
+                $deliveryTransferQuery = "StockTransfers({$deliveryDocEntry})?\$expand=StockTransferLines";
+                $deliveryTransferData = $sap->get($deliveryTransferQuery);
+                $deliveryTransferInfo = $deliveryTransferData['response'] ?? null;
+                
+                if ($deliveryTransferInfo) {
+                    $deliveryTransfers = [$deliveryTransferInfo];
+                }
+            } else {
+                // Fallback: Warehouse ve type ile filtrele (eski yöntem)
+                $deliveryTransferFilter = "FromWarehouse eq '{$toWarehouse}' and ToWarehouse eq '{$targetWarehouse}' and U_ASB2B_TYPE eq 'MAIN'";
+                $deliveryTransferQuery = "StockTransfers?\$filter=" . urlencode($deliveryTransferFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
+                $deliveryTransferData = $sap->get($deliveryTransferQuery);
+                $deliveryTransfers = $deliveryTransferData['response']['value'] ?? [];
+            }
+            
+            if (!empty($deliveryTransfers)) {
+                $deliveryTransferInfo = $deliveryTransfers[0];
+                
+                // Teslim alınan miktarları map'e ekle
+                $dtLines = $deliveryTransferInfo['StockTransferLines'] ?? [];
+                foreach ($dtLines as $dtLine) {
+                    $itemCode = $dtLine['ItemCode'] ?? '';
+                    $qty = (float)($dtLine['Quantity'] ?? 0);
+                    // Eğer aynı item için birden fazla satır varsa, topla
+                    if (isset($deliveryTransferLinesMap[$itemCode])) {
+                        $deliveryTransferLinesMap[$itemCode] += $qty;
+                    } else {
+                        $deliveryTransferLinesMap[$itemCode] = $qty;
+                    }
+                }
+            }
+        }
     }
+    
+    // DEBUG Bilgisi
+    if (empty($stockTransfers)) {
+        error_log("DEBUG: DocEntry {$docEntry} için sevk StockTransfer bulunamadı. Filtre: {$stockTransferFilter}");
+    } else {
+        error_log("DEBUG: DocEntry {$docEntry} için sevk StockTransfer DocEntry: {$stockTransferInfo['DocEntry']}");
+    }
+    
+    if (empty($deliveryTransfers)) {
+        error_log("DEBUG: DocEntry {$docEntry} için teslimat StockTransfer bulunamadı. ToWarehouse: {$toWarehouse}, TargetWarehouse: " . ($targetWarehouse ?? 'NULL'));
+    } else {
+        $deliveryTransferDocEntry = $deliveryTransferInfo['DocEntry'] ?? 'UNKNOWN';
+        error_log("DEBUG: DocEntry {$docEntry} için teslimat StockTransfer DocEntry: {$deliveryTransferDocEntry}, Lines count: " . count($deliveryTransferInfo['StockTransferLines'] ?? []));
+        error_log("DEBUG: Teslimat miktarları: " . json_encode($deliveryTransferLinesMap));
+    }
+    
 }
 
 
@@ -129,7 +299,10 @@ if ($status === '3' || $status === '4') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ana Depo Sipariş Detayı - CREMMAVERSE</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Ana Depo Talep Detayı - CREMMAVERSE</title>
     <link rel="stylesheet" href="styles.css">
     <style>
 * {
@@ -214,6 +387,12 @@ body {
 .detail-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
+    gap: 2rem;
+}
+
+.detail-column {
+    display: flex;
+    flex-direction: column;
     gap: 1.5rem;
 }
 
@@ -417,7 +596,7 @@ body {
 
     <main class="main-content">
         <header class="page-header">
-            <h2>Ana Depo Sipariş Detayı</h2> 
+            <h2>Ana Depo Talep Detayı</h2> 
 
             <div>
                 <?php if ($status == '1' || $status == '2'): ?> 
@@ -457,57 +636,60 @@ body {
         <div class="content-wrapper">
             <div class="detail-header">
                 <div class="detail-title">
-                    <h3>Ana Depo Siparişi: <strong><?= htmlspecialchars($docEntry) ?></strong></h3>
+                    <h3>Ana Depo Talebi: <strong><?= htmlspecialchars($docEntry) ?></strong></h3>
                 </div>
             </div>
 
             <div class="detail-card">
                 <div class="detail-grid">
-                    <div class="detail-item">
-                        <label>Sipariş No:</label>
-                        <div class="detail-value"><?= htmlspecialchars($docEntry) ?></div>
-                    </div>
-                    <div class="detail-item">
-                        <label>Sipariş Tarihi:</label>
-                        <div class="detail-value"><?= htmlspecialchars($docDate) ?></div>
-                    </div>
-                    <div class="detail-item">
-                        <label>Sipariş Özeti:</label>
-                        <div class="detail-value"><?= htmlspecialchars($ordSum) ?></div>
-                    </div>
-                    <div class="detail-item">
-                        <label>Şube Kodu:</label>
-                        <div class="detail-value"><?= htmlspecialchars($branchCode) ?></div>
-                    </div>
-                    <div class="detail-item">
-                        <label>Tahmini Teslimat Tarihi:</label>
-                        <div class="detail-value"><?= htmlspecialchars($dueDate) ?></div>
-                    </div>
-                    <div class="detail-item">
-                        <label>Sipariş Durumu:</label>
-                        <div class="detail-value">
-                            <span class="status-badge <?= getStatusClass($status) ?>"><?= htmlspecialchars($statusText) ?></span>
+                    <!-- Sol Sütun -->
+                    <div class="detail-column">
+                        <div class="detail-item">
+                            <label>Talep No:</label>
+                            <div class="detail-value"><?= htmlspecialchars($docEntry) ?></div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Tahmini Teslimat Tarihi:</label>
+                            <div class="detail-value"><?= htmlspecialchars($dueDate) ?></div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Teslimat Belge No:</label>
+                            <div class="detail-value"><?= htmlspecialchars($numAtCard) ?></div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Talep Özeti:</label>
+                            <div class="detail-value"><?= htmlspecialchars($ordSum) ?></div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Talep Notu:</label>
+                            <div class="detail-value"><?= htmlspecialchars($journalMemo) ?></div>
                         </div>
                     </div>
-                    <div class="detail-item">
-                        <label>Teslimat Belge No:</label>
-                        <div class="detail-value"><?= htmlspecialchars($numAtCard) ?></div>
-                    </div>
-                    <div class="detail-item">
-                        <label>Alıcı Şube:</label>
-                        <div class="detail-value"><?= htmlspecialchars($aliciSube) ?></div>
-                    </div>
-                    <div class="detail-item">
-                        <label>Sipariş Notu:</label>
-                        <div class="detail-value"><?= htmlspecialchars($journalMemo) ?></div>
-                    </div>
-                    <div class="detail-item">
-                        <label>Gönderen Depo:</label>
-                        <div class="detail-value"><?= htmlspecialchars($fromWarehouse) ?></div>
-                    </div>
-                    <div class="detail-item">
-                        <label>Alıcı Depo (Hedef):</label>
-                        <div class="detail-value"><?= htmlspecialchars($toWarehouse) ?></div>
+                    
+                    <!-- Sağ Sütun -->
+                    <div class="detail-column">
+                        <div class="detail-item">
+                            <label>Talep Durumu:</label>
+                            <div class="detail-value">
+                                <span class="status-badge <?= getStatusClass($status) ?>"><?= htmlspecialchars($statusText) ?></span>
+                            </div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Gönderen Şube:</label>
+                            <div class="detail-value"><?= htmlspecialchars($gonderSubeDisplay) ?></div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Alıcı Şube:</label>
+                            <div class="detail-value"><?= htmlspecialchars($aliciSubeDisplay) ?></div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Talep Tarihi:</label>
+                            <div class="detail-value"><?= htmlspecialchars($docDate) ?></div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Teslimat Tarihi:</label>
+                            <div class="detail-value"><?= htmlspecialchars($teslimatTarihi ?: '-') ?></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -559,8 +741,10 @@ body {
                             <th>Kalem Numarası</th>
                             <th>Kalem Tanımı</th>
                             <th>Talep Miktarı</th>
-                            <th>Teslimat Miktarı</th>
-                            <th>Birim</th>
+                            <?php if ($status == '3' || $status == '4'): ?>
+                                <th>Sevk Miktarı</th>
+                                <th>Teslimat Miktarı</th>
+                            <?php endif; ?>
                         </tr>
                     </thead>
                     <tbody>
@@ -570,47 +754,81 @@ body {
                                     $quantity = (float)($line['Quantity'] ?? 0);
                                     $remaining = (float)($line['RemainingOpenQuantity'] ?? 0);
                                     $itemCode = $line['ItemCode'] ?? '';
-                                    $delivered = 0; // Default 0
+                                    $uomCode = $line['UoMCode'] ?? 'AD';
+                                    $shipped = 0; // Sevk Miktarı
+                                    $delivered = 0; // Teslimat Miktarı
                                     
-                                    // Teslimat Miktarı hesaplama mantığı:
-                                    if ($status === '1' || $status === '2' || $status === '5') {
-                                        // Onay Bekliyor, Hazırlanıyor, İptal Edildi: Teslimat Miktarı 0
-                                        $delivered = 0;
-                                    } else if ($status === '4') {
-                                        // *** DÜZELTME: Tamamlandı durumunda StockTransfer bağlantısı hatalıysa Talep Miktarını göster *** 
-                                        // 1. Kontrol: StockTransfers'tan gelen miktarı kullan (daha güvenilir)
-                                        $delivered = $stockTransferLinesMap[$itemCode] ?? 0;
+                                    // Sevk ve Teslimat Miktarı hesaplama mantığı: Sadece Sevk Edildi (3) ve Tamamlandı (4) durumunda
+                                    if ($status == '3' || $status == '4') {
+                                        // Sevk Miktarı: Ana deponun sevk ettiği miktar (StockTransfer belgesinden)
+                                        $shipped = $stockTransferLinesMap[$itemCode] ?? 0;
                                         
-                                        // 2. Kontrol (Tamamlandı için Güçlendirilmiş Geri Dönüş): StockTransfer bulunamazsa ve Tamamlandıysa, Talep Miktarını göster.
-                                        if ($delivered == 0 && empty($stockTransferInfo) && $quantity > 0) {
-                                            $delivered = $quantity; 
-                                        } else if ($delivered == 0 && $quantity > 0 && $remaining < $quantity) {
-                                            // StockTransfer yok ama açık kalan miktar < Talep Miktarı (Kısmi veya tam kapanmış olabilir)
-                                            $delivered = $quantity - $remaining;
+                                        // Eğer StockTransfer'den miktar gelmediyse, RemainingOpenQuantity'ye göre hesapla
+                                        if ($shipped == 0 && $quantity > 0) {
+                                            // RemainingOpenQuantity < Quantity ise, sevk edilen miktar = Quantity - RemainingOpenQuantity
+                                            if ($remaining < $quantity) {
+                                                $shipped = $quantity - $remaining;
+                                            } else {
+                                                // RemainingOpenQuantity = Quantity ise, henüz sevk edilmemiş demektir
+                                                // Ama status "Sevk Edildi" ise, talep miktarını göster (ana depo göndermiş sayılır)
+                                                if ($status == '3') {
+                                                    $shipped = $quantity;
+                                                }
+                                            }
+                                            
+                                            // Tamamlandı durumunda: Eğer hala 0 ise ve StockTransfer yoksa, talep miktarını göster
+                                            if ($shipped == 0 && $status == '4' && empty($stockTransferInfo) && $quantity > 0) {
+                                                $shipped = $quantity;
+                                            }
                                         }
-                                    } else if ($status === '3') {
-                                        // Sevk Edildi: StockTransfers'tan gelen miktarı kullan
-                                        $delivered = $stockTransferLinesMap[$itemCode] ?? 0;
                                         
-                                        // Geri Dönüş: StockTransfer yok ama kısmi kapandıysa
-                                        if ($delivered == 0 && $quantity > 0 && $remaining < $quantity) {
-                                            $delivered = $quantity - $remaining;
-                                        }
-                                    } 
+                                        // Teslimat Miktarı: Kullanıcının gerçekten teslim aldığı miktar (Teslim Al işleminden oluşan StockTransfer belgesinden)
+                                        $delivered = $deliveryTransferLinesMap[$itemCode] ?? 0;
+                                        
+                                        // Eğer teslimat belgesi yoksa, teslimat miktarı 0'dır (henüz teslim alınmamış)
+                                        // Kullanıcı "Teslim Al" işlemini yapmadıysa, teslimat miktarı gösterilmez (0 olarak kalır)
+                                    }
                                     
-                                    // Formatlama
-                                    $deliveredDisplay = number_format($delivered, 2, '.', '');
+                                    // Talep Miktarı formatı: "1 AD" (0 ise sadece "0")
+                                    $quantityDisplay = formatQuantity($quantity);
+                                    if ($quantity > 0) {
+                                        $quantityDisplay .= ' ' . htmlspecialchars($uomCode);
+                                    }
+                                    
+                                    // Sevk Miktarı formatı: "1 AD" (0 ise sadece "0")
+                                    $shippedDisplay = '';
+                                    if ($status == '3' || $status == '4') {
+                                        $shippedFormatted = formatQuantity($shipped);
+                                        if ($shipped > 0) {
+                                            $shippedDisplay = $shippedFormatted . ' ' . htmlspecialchars($uomCode);
+                                        } else {
+                                            $shippedDisplay = '0';
+                                        }
+                                    }
+                                    
+                                    // Teslimat Miktarı formatı: "1 AD" (0 ise sadece "0")
+                                    $deliveredDisplay = '';
+                                    if ($status == '3' || $status == '4') {
+                                        $deliveredFormatted = formatQuantity($delivered);
+                                        if ($delivered > 0) {
+                                            $deliveredDisplay = $deliveredFormatted . ' ' . htmlspecialchars($uomCode);
+                                        } else {
+                                            $deliveredDisplay = '0';
+                                        }
+                                    }
                                 ?>
                                 <tr>
                                     <td><?= htmlspecialchars($itemCode) ?></td>
                                     <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
-                                    <td><?= number_format($quantity, 2, '.', '') ?></td>
-                                    <td><?= $deliveredDisplay ?></td>
-                                    <td><?= htmlspecialchars($line['UoMCode'] ?? '-') ?></td>
+                                    <td><?= $quantityDisplay ?></td>
+                                    <?php if ($status == '3' || $status == '4'): ?>
+                                        <td><?= $shippedDisplay ?></td>
+                                        <td><?= $deliveredDisplay ?></td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center;color:#888;">Kalem bulunamadı.</td></tr>
+                            <tr><td colspan="<?= ($status == '3' || $status == '4') ? '5' : '3' ?>" style="text-align:center;color:#888;">Kalem bulunamadı.</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -619,5 +837,32 @@ body {
     </main>
 
     <script src="script.js"></script>
+    <script>
+    // Sayfayı otomatik yenile (30 saniyede bir) - SAP'deki status değişikliklerini görmek için
+    let autoRefreshInterval = setInterval(function() {
+        // Sayfa görünür durumdaysa yenile
+        if (!document.hidden) {
+            // Sadece GET parametrelerini koruyarak yenile (POST işlemi yapmadan)
+            if (window.location.search.indexOf('refresh=') === -1) {
+                window.location.href = window.location.pathname + window.location.search + (window.location.search ? '&' : '?') + 'refresh=' + Date.now();
+            } else {
+                // Zaten refresh parametresi varsa, sadece timestamp'i güncelle
+                const url = new URL(window.location);
+                url.searchParams.set('refresh', Date.now());
+                window.location.href = url.toString();
+            }
+        }
+    }, 30000); // 30 saniye
+    
+    // Sayfa görünür olduğunda da kontrol et
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) {
+            // Sayfa tekrar görünür olduğunda yenile
+            const url = new URL(window.location);
+            url.searchParams.set('refresh', Date.now());
+            window.location.href = url.toString();
+        }
+    });
+    </script>
 </body>
 </html>

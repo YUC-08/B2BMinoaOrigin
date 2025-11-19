@@ -798,9 +798,9 @@ body {
                     <thead>
                         <tr>
                             <th>Talep No</th>
-                            <th>Sipariş No</th>
+                            <th>Talep No</th>
                             <th>Talep Tarihi</th>
-                            <th>Sipariş Tarihi</th>
+                            <th>Talep Tarihi</th>
                             <th>Durum</th>
                             <th>İşlemler</th>
                         </tr>

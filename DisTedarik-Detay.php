@@ -111,6 +111,18 @@ if ($isPurchaseOrder) {
     }
 }
 
+// Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
+function formatQuantity($qty) {
+    $num = floatval($qty);
+    if ($num == 0) return '0';
+    // Tam sayı ise küsurat gösterme
+    if ($num == floor($num)) {
+        return (string)intval($num);
+    }
+    // Küsurat varsa virgül ile göster
+    return str_replace('.', ',', rtrim(rtrim(sprintf('%.2f', $num), '0'), ','));
+}
+
 function isReceivableStatus($status) {
     $s = trim((string)$status);
     return in_array($s, ['2', '3'], true);
@@ -453,7 +465,7 @@ body {
                                     <tr>
                                         <td><?= htmlspecialchars($line['ItemCode'] ?? '-') ?></td>
                                         <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
-                                        <td><?= number_format(floatval($line['Quantity'] ?? 0), 2) ?></td>
+                                        <td><?= formatQuantity(floatval($line['Quantity'] ?? 0)) ?></td>
                                         <td><?= htmlspecialchars($line['UoMCode'] ?? '-') ?></td>
                                         <?php if (!$isPurchaseOrder): ?>
                                             <td><?= htmlspecialchars($line['VendorNum'] ?? '-') ?></td>

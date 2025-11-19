@@ -233,3 +233,10 @@ Content-Type: application/json
 
 4. **SSL:** `192.168.54.185:50000` için SSL verification'ı kapat (self-signed certificate olabilir).
 
+https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN,U_ASB2B_MAIN&$filter=U_AS_OWNR eq 'KT' and U_ASB2B_BRAN eq '200'
+
+https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN,U_ASB2B_MAIN&$filter=U_AS_OWNR eq 'KT' and U_ASB2B_BRAN eq '100'
+
+https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&$filter=U_AS_OWNR eq 'KT' and U_ASB2B_MAIN eq '1' 
+
+https://192.168.54.185:50000/b1s/v2/BusinessPartners?$select=CardCode,CardName&$filter=CardType eq 'cSupplier' Dış Tedarik Supplier Tedarikçiler 
