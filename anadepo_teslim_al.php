@@ -106,32 +106,6 @@ if (!empty($stockTransfers)) {
     }
 }
 
-// Teslim miktarını bul (daha önce teslim alınmışsa)
-$requestComments = $requestData['Comments'] ?? '';
-$deliveryDocEntry = null;
-
-if (preg_match('/DELIVERY_DocEntry:(\d+)/', $requestComments, $matches)) {
-    $deliveryDocEntry = intval($matches[1]);
-    
-    if ($deliveryDocEntry) {
-        $deliveryTransferQuery = "StockTransfers({$deliveryDocEntry})?\$expand=StockTransferLines";
-        $deliveryTransferData = $sap->get($deliveryTransferQuery);
-        $deliveryTransferInfo = $deliveryTransferData['response'] ?? null;
-        
-        if ($deliveryTransferInfo) {
-            $dtLines = $deliveryTransferInfo['StockTransferLines'] ?? [];
-            foreach ($dtLines as $dtLine) {
-                $itemCode = $dtLine['ItemCode'] ?? '';
-                $qty = (float)($dtLine['Quantity'] ?? 0);
-                if (isset($deliveryTransferLinesMap[$itemCode])) {
-                    $deliveryTransferLinesMap[$itemCode] += $qty;
-                } else {
-                    $deliveryTransferLinesMap[$itemCode] = $qty;
-                }
-            }
-        }
-    }
-}
 
 // Her kalem için ana depo stok miktarını çek
 $warehouseStockMap = [];
@@ -383,13 +357,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'U_ASB2B_STATUS' => '4',
             'U_ASB2B_TYPE' => 'MAIN',
             'U_ASB2B_User' => $_SESSION["UserName"] ?? '',
+            'U_ASB2B_QutMaster' => (int)$doc, // InventoryTransferRequest DocEntry
             'StockTransferLines' => $transferLines
         ];
 
         
         $result = $sap->post('StockTransfers', $stockTransferPayload);
         
+        // Debug: POST sonucunu logla
+        error_log("[TESLIM AL] StockTransfer POST RESULT: " . json_encode($result));
+        
         if ($result['status'] == 200 || $result['status'] == 201) {
+            // StockTransfer oluşturulduktan sonra DocEntry'yi al ve kontrol et
+            $stockTransferDocEntry = $result['response']['DocEntry'] ?? null;
+            if ($stockTransferDocEntry) {
+                $test = $sap->get("StockTransfers({$stockTransferDocEntry})");
+                error_log("[DEBUG] StockTransfers({$stockTransferDocEntry}): " . json_encode($test));
+                if (isset($test['response']['U_ASB2B_QutMaster'])) {
+                    error_log("[DEBUG] U_ASB2B_QutMaster değeri: " . $test['response']['U_ASB2B_QutMaster']);
+                } else {
+                    error_log("[DEBUG] U_ASB2B_QutMaster bulunamadı!");
+                }
+            }
             // StockTransfer oluşturulduktan sonra DocEntry'yi al
             $stockTransferDocEntry = $result['response']['DocEntry'] ?? null;
             
@@ -398,20 +387,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'U_ASB2B_STATUS' => '4'
             ];
             
-            // Eğer StockTransfer DocEntry varsa, Comments'e ekle (belgeyi bulmak için)
-            if ($stockTransferDocEntry) {
-                $currentComments = $requestData['Comments'] ?? '';
-                $deliveryDocEntryComment = "DELIVERY_DocEntry:{$stockTransferDocEntry}";
-                
-                // Eğer Comments'te zaten DELIVERY_DocEntry varsa, güncelle; yoksa ekle
-                if (preg_match('/DELIVERY_DocEntry:\d+/', $currentComments)) {
-                    $currentComments = preg_replace('/DELIVERY_DocEntry:\d+/', $deliveryDocEntryComment, $currentComments);
-                } else {
-                    $currentComments = !empty($currentComments) ? $deliveryDocEntryComment . ' | ' . $currentComments : $deliveryDocEntryComment;
-                }
-                
-                $updatePayload['Comments'] = $currentComments;
-            }
             
             $updateResult = $sap->patch("InventoryTransferRequests({$doc})", $updatePayload);
             
@@ -1001,9 +976,9 @@ document.addEventListener('DOMContentLoaded', function() {
         input.addEventListener('input', () => calculatePhysical(parseInt(index)));
         input.addEventListener('change', () => calculatePhysical(parseInt(index)));
     });
-});
+  });
     </script>
-</body>
+  </body>
 </html>
 
 
@@ -1013,5 +988,3 @@ document.addEventListener('DOMContentLoaded', function() {
 
 
 </html>
-
-

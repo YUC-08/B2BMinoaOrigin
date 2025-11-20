@@ -772,7 +772,7 @@ body {
                 <table class="data-table">
                     <thead>
                         <tr>
-                            <th>Transfer No</th>
+                            <th>Talep No</th>
                             <th>Talep Tarihi</th>
                             <th>Vade Tarihi</th>
                             <th>Teslimat Belge No</th>

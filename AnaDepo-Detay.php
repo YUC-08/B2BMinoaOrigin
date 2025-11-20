@@ -85,10 +85,6 @@ $dueDate = formatDate($requestData['DueDate'] ?? '');
 $udfStatus = (string)($requestData['U_ASB2B_STATUS'] ?? '1');
 $documentStatus = $requestData['DocumentStatus'] ?? null;
 
-// Debug: Tüm status bilgilerini logla
-error_log("[ANADEPO-DETAY] DocEntry: {$docEntry}");
-error_log("[ANADEPO-DETAY] U_ASB2B_STATUS (raw): " . ($requestData['U_ASB2B_STATUS'] ?? 'NULL'));
-error_log("[ANADEPO-DETAY] DocumentStatus: " . ($documentStatus ?? 'NULL'));
 
 // Status belirleme: Önce U_ASB2B_STATUS'u kullan, ama DocumentStatus'a göre de kontrol et
 $status = $udfStatus;
@@ -104,11 +100,8 @@ if ($documentStatus == 'bost_Closed' && in_array($udfStatus, ['1', '2'])) {
     if (($updateResult['status'] ?? 0) == 200 || ($updateResult['status'] ?? 0) == 204) {
         $status = '3';
         $statusUpdated = true;
-        error_log("[ANADEPO-DETAY] DocumentStatus kapalı - U_ASB2B_STATUS '3' (Sevk Edildi) olarak güncellendi");
     } else {
-        error_log("[ANADEPO-DETAY] UDF güncelleme başarısız: HTTP " . ($updateResult['status'] ?? 'NO STATUS'));
         if (isset($updateResult['response']['error'])) {
-            error_log("[ANADEPO-DETAY] UDF güncelleme hatası: " . json_encode($updateResult['response']['error']));
         }
         // Hata olsa bile status'u güncelle (kullanıcıya doğru bilgi göster)
         $status = '3';
@@ -116,11 +109,9 @@ if ($documentStatus == 'bost_Closed' && in_array($udfStatus, ['1', '2'])) {
 } elseif ($documentStatus == 'bost_Open' && in_array($udfStatus, ['3', '4'])) {
     // DocumentStatus açık ama UDF kapalı durumda - UDF'yi öncelikli kabul et (değişiklik yapılmış olabilir)
     $status = $udfStatus;
-    error_log("[ANADEPO-DETAY] DocumentStatus açık ama UDF kapalı - UDF öncelikli, status={$status}");
 }
 
 $statusText = getStatusText($status);
-error_log("[ANADEPO-DETAY] Final Status: {$status} ({$statusText})");
 
 // Eğer status güncellendiyse, sayfayı yeniden yükle (fresh data için)
 if ($statusUpdated) {
@@ -181,7 +172,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reset_status'])) {
         header("Location: AnaDepo-Detay.php?doc={$doc}");
         exit;
     } else {
-        error_log("[TEST RESET] Status reset başarısız: " . ($resetResult['status'] ?? 'NO STATUS'));
     }
 }
 
@@ -193,6 +183,50 @@ $deliveryTransferInfo = null;
 
 // Sadece Sevk Edildi (3) ve Tamamlandı (4) durumlarında bağlı StockTransfer belgelerini çek
 if ($status == '3' || $status == '4') {
+    // Teslimat miktarını U_ASB2B_QutMaster ile hesapla
+    $docEntryInt = (int)$docEntry;
+    
+    // U_ASB2B_QutMaster ile filtrele (expand kullanmadan, satırları ayrı çekeceğiz)
+    $deliveryFilter = "U_ASB2B_QutMaster eq {$docEntryInt}";
+    $deliveryQuery = "StockTransfers?\$filter=" . urlencode($deliveryFilter);
+    $deliveryData = $sap->get($deliveryQuery);
+    $deliveryList = $deliveryData['response']['value'] ?? [];
+    
+    // Her StockTransfer için satırları ayrı çek (expand çalışmıyor)
+    foreach ($deliveryList as $idx => $st) {
+        $stDocEntry = $st['DocEntry'] ?? null;
+        $dtLines = [];
+        if ($stDocEntry) {
+            $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
+            $stLinesData = $sap->get($stLinesQuery);
+            
+            // Response yapısını kontrol et: value içinde mi, yoksa direkt StockTransferLines içinde mi?
+            $response = $stLinesData['response'] ?? [];
+            if (isset($response['value']) && is_array($response['value'])) {
+                // OData collection response
+                $dtLines = $response['value'];
+            } elseif (isset($response['StockTransferLines']) && is_array($response['StockTransferLines'])) {
+                // Direct StockTransferLines property
+                $dtLines = $response['StockTransferLines'];
+            } else {
+                // Fallback: response'un kendisi array ise
+                $dtLines = is_array($response) ? $response : [];
+            }
+            
+            $deliveryList[$idx]['StockTransferLines'] = $dtLines;
+        }
+        
+        foreach ($dtLines as $dtLine) {
+            $itemCode = $dtLine['ItemCode'] ?? '';
+            $qty = (float)($dtLine['Quantity'] ?? 0);
+            if ($itemCode === '') continue;
+            if (!isset($deliveryTransferLinesMap[$itemCode])) {
+                $deliveryTransferLinesMap[$itemCode] = 0;
+            }
+            $deliveryTransferLinesMap[$itemCode] += $qty;
+        }
+    }
+    
     // 1. Ana deponun sevk ettiği belge (BaseType = 1250000001 => InventoryTransferRequest)
     $stockTransferFilter = "BaseType eq 1250000001 and BaseEntry eq {$docEntry}";
     $stockTransferQuery 	= "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
@@ -214,81 +248,6 @@ if ($status == '3' || $status == '4') {
         }
     }
     
-    // 2. Kullanıcının teslim aldığı belge (FromWarehouse = ToWarehouse, ToWarehouse = Şube ana deposu, U_ASB2B_TYPE = 'MAIN', U_ASB2B_STATUS = '4')
-    // Önce InventoryTransferRequest'ten ToWarehouse'u al
-    $toWarehouse = $requestData['ToWarehouse'] ?? '';
-    $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
-    $branch = $_SESSION["WhsCode"] ?? $_SESSION["Branch2"]["Name"] ?? '';
-    $deliveryTransfers = [];
-    
-    if (!empty($toWarehouse) && !empty($uAsOwnr) && !empty($branch)) {
-        // Şubenin ana deposunu bul (U_ASB2B_MAIN=1)
-        $targetWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '1'";
-        $targetWarehouseQuery = "Warehouses?\$filter=" . urlencode($targetWarehouseFilter);
-        $targetWarehouseData = $sap->get($targetWarehouseQuery);
-        $targetWarehouses = $targetWarehouseData['response']['value'] ?? [];
-        $targetWarehouse = !empty($targetWarehouses) ? $targetWarehouses[0]['WarehouseCode'] : null;
-        
-        if (!empty($targetWarehouse)) {
-            // Kullanıcının teslim aldığı StockTransfer belgesini bul
-            // Önce InventoryTransferRequest'in Comments'inden DELIVERY_DocEntry'yi oku
-            $deliveryDocEntry = null;
-            $requestComments = $requestData['Comments'] ?? '';
-            
-            if (preg_match('/DELIVERY_DocEntry:(\d+)/', $requestComments, $matches)) {
-                $deliveryDocEntry = intval($matches[1]);
-            }
-            
-            if ($deliveryDocEntry) {
-                // DocEntry ile doğrudan belgeyi bul (en güvenilir yöntem)
-                $deliveryTransferQuery = "StockTransfers({$deliveryDocEntry})?\$expand=StockTransferLines";
-                $deliveryTransferData = $sap->get($deliveryTransferQuery);
-                $deliveryTransferInfo = $deliveryTransferData['response'] ?? null;
-                
-                if ($deliveryTransferInfo) {
-                    $deliveryTransfers = [$deliveryTransferInfo];
-                }
-            } else {
-                // Fallback: Warehouse ve type ile filtrele (eski yöntem)
-                $deliveryTransferFilter = "FromWarehouse eq '{$toWarehouse}' and ToWarehouse eq '{$targetWarehouse}' and U_ASB2B_TYPE eq 'MAIN'";
-                $deliveryTransferQuery = "StockTransfers?\$filter=" . urlencode($deliveryTransferFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
-                $deliveryTransferData = $sap->get($deliveryTransferQuery);
-                $deliveryTransfers = $deliveryTransferData['response']['value'] ?? [];
-            }
-            
-            if (!empty($deliveryTransfers)) {
-                $deliveryTransferInfo = $deliveryTransfers[0];
-                
-                // Teslim alınan miktarları map'e ekle
-                $dtLines = $deliveryTransferInfo['StockTransferLines'] ?? [];
-                foreach ($dtLines as $dtLine) {
-                    $itemCode = $dtLine['ItemCode'] ?? '';
-                    $qty = (float)($dtLine['Quantity'] ?? 0);
-                    // Eğer aynı item için birden fazla satır varsa, topla
-                    if (isset($deliveryTransferLinesMap[$itemCode])) {
-                        $deliveryTransferLinesMap[$itemCode] += $qty;
-                    } else {
-                        $deliveryTransferLinesMap[$itemCode] = $qty;
-                    }
-                }
-            }
-        }
-    }
-    
-    // DEBUG Bilgisi
-    if (empty($stockTransfers)) {
-        error_log("DEBUG: DocEntry {$docEntry} için sevk StockTransfer bulunamadı. Filtre: {$stockTransferFilter}");
-    } else {
-        error_log("DEBUG: DocEntry {$docEntry} için sevk StockTransfer DocEntry: {$stockTransferInfo['DocEntry']}");
-    }
-    
-    if (empty($deliveryTransfers)) {
-        error_log("DEBUG: DocEntry {$docEntry} için teslimat StockTransfer bulunamadı. ToWarehouse: {$toWarehouse}, TargetWarehouse: " . ($targetWarehouse ?? 'NULL'));
-    } else {
-        $deliveryTransferDocEntry = $deliveryTransferInfo['DocEntry'] ?? 'UNKNOWN';
-        error_log("DEBUG: DocEntry {$docEntry} için teslimat StockTransfer DocEntry: {$deliveryTransferDocEntry}, Lines count: " . count($deliveryTransferInfo['StockTransferLines'] ?? []));
-        error_log("DEBUG: Teslimat miktarları: " . json_encode($deliveryTransferLinesMap));
-    }
     
 }
 
@@ -338,6 +297,7 @@ body {
     position: sticky;
     top: 0;
     z-index: 100;
+    margin-top: 0;
     flex-wrap: wrap;
     gap: 12px;
     height: 80px;
