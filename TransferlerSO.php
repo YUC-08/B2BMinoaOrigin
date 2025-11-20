@@ -978,7 +978,7 @@ function loadItems() {
                             ${debug.filterWithoutWhs ? `<strong>Filter (WhsCode olmadan):</strong> ${debug.filterWithoutWhs}<br>` : ''}
                             <strong>Query:</strong> ${debug.itemsQuery || 'YOK'}
                         </small></td></tr>`;
-    } else {
+        } else {
                     msg = '<tr><td colspan="10" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
                 }
                 document.getElementById('itemsTableBody').innerHTML = msg;
@@ -998,7 +998,7 @@ function renderItems(items) {
         tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
         return;
     }
-    
+
     // Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
     function formatQuantity(qty) {
         const num = parseFloat(qty);
@@ -1030,7 +1030,7 @@ function renderItems(items) {
                 // Çevrimli: 3 KT (30 AD) formatında
                 const adKarşılığı = sepetQty * baseQty;
                 conversionText = `${formatQuantity(sepetQty)} ${uomCode} (${formatQuantity(adKarşılığı)} AD)`;
-            } else {
+    } else {
                 // Çevrimsiz: Sadece miktar + birim
                 conversionText = `${formatQuantity(sepetQty)} ${uomCode}`;
             }

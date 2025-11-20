@@ -69,6 +69,23 @@ if (empty($targetWarehouse)) {
     die("Hedef depo (U_ASB2B_MAIN=1) bulunamadı!");
 }
 
+// Fire & Zayi deposunu bul (U_ASB2B_MAIN='3' veya özel bir UDF ile işaretlenmiş olabilir)
+$fireZayiWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '3'";
+$fireZayiWarehouseQuery = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter);
+$fireZayiWarehouseData = $sap->get($fireZayiWarehouseQuery);
+$fireZayiWarehouses = $fireZayiWarehouseData['response']['value'] ?? [];
+$fireZayiWarehouse = !empty($fireZayiWarehouses) ? $fireZayiWarehouses[0]['WarehouseCode'] : null;
+
+// Eğer U_ASB2B_MAIN='3' ile bulunamazsa, alternatif olarak U_ASB2B_FIREZAYI='Y' gibi bir UDF ile arayabiliriz
+if (empty($fireZayiWarehouse)) {
+    // Alternatif: U_ASB2B_FIREZAYI='Y' ile işaretlenmiş depo
+    $fireZayiWarehouseFilter2 = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_FIREZAYI eq 'Y'";
+    $fireZayiWarehouseQuery2 = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter2);
+    $fireZayiWarehouseData2 = $sap->get($fireZayiWarehouseQuery2);
+    $fireZayiWarehouses2 = $fireZayiWarehouseData2['response']['value'] ?? [];
+    $fireZayiWarehouse = !empty($fireZayiWarehouses2) ? $fireZayiWarehouses2[0]['WarehouseCode'] : null;
+}
+
 // Sevk ve Teslimat miktarları için haritalama
 $stockTransferLinesMap = []; // Ana deponun sevk ettiği miktar
 $deliveryTransferLinesMap = []; // Kullanıcının teslim aldığı miktar (varsa)
@@ -154,8 +171,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $damagedQty = floatval($_POST['damaged_qty'][$index] ?? 0);
         if ($damagedQty < 0) $damagedQty = 0;
         
-        // Fiziksel miktar = Teslimat + EksikFazla - Kusurlu
-        $fizikselMiktar = $teslimatMiktari + $eksikFazlaQty - $damagedQty;
+        // Fiziksel miktar = Teslimat + EksikFazla (Kusurlu miktar fiziksel'i etkilemez)
+        $fizikselMiktar = $teslimatMiktari + $eksikFazlaQty;
         
         // Fiziksel miktar negatif olamaz, 0 olabilir
         if ($fizikselMiktar < 0) {
@@ -190,8 +207,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $headerComments[] = "{$itemCode} ({$itemName}): " . implode(", ", $commentParts);
         }
         
-        // Fiziksel miktar > 0 ise StockTransfer için hazırla (0 ise sadece Comments'e eklendi, StockTransfer oluşturulmayacak)
-        if ($fizikselMiktar > 0) {
+        // Normal transfer miktarı = Fiziksel - Kusurlu (Kusurlu miktar normal transferden çıkarılır)
+        $normalTransferMiktar = $fizikselMiktar - $damagedQty;
+        if ($normalTransferMiktar < 0) {
+            $normalTransferMiktar = 0;
+        }
+        
+        // Normal transfer miktarı > 0 ise StockTransfer için hazırla (0 ise sadece Comments'e eklendi, StockTransfer oluşturulmayacak)
+        if ($normalTransferMiktar > 0) {
             $itemCost = 0;
             try {
                 $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$toWarehouse}'";
@@ -220,9 +243,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
             }
             
+            // Normal transfer satırı (Fiziksel - Kusurlu miktar)
             $lineData = [
                 'ItemCode' => $itemCode,
-                'Quantity' => $fizikselMiktar, // Fiziksel miktar = Teslimat + EksikFazla - Kusurlu
+                'Quantity' => $normalTransferMiktar, // Normal transfer = Fiziksel - Kusurlu
                 'FromWarehouseCode' => $toWarehouse,
                 'WarehouseCode' => $targetWarehouse
             ];
@@ -254,6 +278,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // 0 ise kaydetme
             
             $transferLines[] = $lineData;
+        }
+        
+        
+        if ($damagedQty > 0) {
+            if (empty($fireZayiWarehouse)) {
+                
+                $errorMsg = "Kusurlu miktar var ancak Fire & Zayi deposu bulunamadı! Lütfen sistem yöneticisine başvurun.";
+                break; 
+            }
+            $itemCost = 0;
+            try {
+                $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$toWarehouse}'";
+                $itemWhResult = $sap->get($itemWhQuery);
+                $itemWhData = $itemWhResult['response'] ?? null;
+                
+                if ($itemWhData && isset($itemWhData['value']) && !empty($itemWhData['value'])) {
+                    $whInfo = $itemWhData['value'][0];
+                    $itemCost = floatval($whInfo['AveragePrice'] ?? $whInfo['LastPrice'] ?? 0);
+                }
+                
+                if ($itemCost == 0) {
+                    $itemQuery = "Items('{$itemCode}')?\$select=ItemCode,StandardPrice,LastPurchasePrice,AvgPrice";
+                    $itemResult = $sap->get($itemQuery);
+                    $itemData = $itemResult['response'] ?? null;
+                    
+                    if ($itemData) {
+                        $itemCost = floatval($itemData['AvgPrice'] ?? $itemData['StandardPrice'] ?? $itemData['LastPurchasePrice'] ?? 0);
+                    }
+                }
+                
+                if ($itemCost == 0) {
+                    $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
+                }
+            } catch (Exception $e) {
+                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
+            }
+            
+            // Fire & Zayi deposuna transfer satırı
+            $fireZayiLineData = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $damagedQty, // Kusurlu miktar
+                'FromWarehouseCode' => $toWarehouse,
+                'WarehouseCode' => $fireZayiWarehouse // Fire & Zayi deposu
+            ];
+            
+            // Fire & Zayi satırı için UDF'ler
+            $fireZayiLineData['U_ASB2B_Damaged'] = 'K'; // Kusurlu
+            if (!empty($notes)) {
+                $fireZayiLineData['U_ASB2B_Comments'] = $notes . ' (Fire & Zayi)';
+            } else {
+                $fireZayiLineData['U_ASB2B_Comments'] = 'Fire & Zayi';
+            }
+            
+            $transferLines[] = $fireZayiLineData;
         }
     }
     
@@ -288,9 +366,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $headerCommentsText = !empty($headerComments) ? implode(" | ", $headerComments) : '';
         
+        // FromWarehouse: teslim al transferde kullanılacak olan "ToWarehouse" (requestData'dan gelen)
+        // ToWarehouse: teslim al transferde kullanılacak gideceği depo (targetWarehouse)
         $stockTransferPayload = [
-            'FromWarehouse' => $toWarehouse,
-            'ToWarehouse' => $targetWarehouse,
+            'FromWarehouse' => $toWarehouse, // requestData'dan gelen ToWarehouse
+            'ToWarehouse' => $targetWarehouse, // U_ASB2B_MAIN=1 olan depo
             'DocDate' => $docDate,
             'Comments' => $headerCommentsText,
             'U_ASB2B_BRAN' => $branch,
@@ -499,6 +579,14 @@ body {
             letter-spacing: 0.5px;
         }
 
+        .data-table th:nth-child(3),
+        .data-table th:nth-child(4),
+        .data-table th:nth-child(5),
+        .data-table th:nth-child(6),
+        .data-table th:nth-child(7) {
+            text-align: center;
+        }
+
         .data-table tbody tr {
             border-bottom: 1px solid #e5e7eb;
             transition: background-color 0.2s;
@@ -511,6 +599,14 @@ body {
         .data-table td {
             padding: 1rem;
             font-size: 0.95rem;
+        }
+
+        .data-table td:nth-child(3),
+        .data-table td:nth-child(4),
+        .data-table td:nth-child(5),
+        .data-table td:nth-child(6),
+        .data-table td:nth-child(7) {
+            text-align: center;
         }
 
         .table-cell-center {
@@ -649,7 +745,7 @@ body {
                         <th>Kalem Kodu</th>
                         <th>Kalem Tanımı</th>
                         <th>Talep Miktarı</th>
-                        <th>Teslimat Miktarı</th>
+                        <th>İrsaliye Miktarı</th>
                         <th>Eksik/Fazla Miktar</th>
                         <th>Kusurlu Miktar</th>
                         <th>Fiziksel</th>
@@ -669,6 +765,7 @@ body {
                         $itemCode = $line['ItemCode'] ?? '';
                         $quantity = $line['Quantity'] ?? 0; // Talep Miktarı
                         $remaining = $line['RemainingOpenQuantity'] ?? 0;
+                        $uomCode = $line['UoMCode'] ?? 'AD'; // Ölçü birimi
                         
                         // Teslim Miktarı (daha önce teslim alınmışsa)
                         $teslimMiktari = $deliveryTransferLinesMap[$itemCode] ?? 0;
@@ -683,17 +780,23 @@ body {
                             <td><?= htmlspecialchars($itemCode) ?></td>
                             <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
                             <td class="table-cell-center">
-                                <input type="text" 
-                                       value="<?= htmlspecialchars($quantity) ?>" 
-                                       readonly 
-                                       class="qty-input">
+                                <div style="display: flex; align-items: center; justify-content: center; gap: 4px;">
+                                    <input type="text" 
+                                           value="<?= htmlspecialchars($quantity) ?>" 
+                                           readonly 
+                                           class="qty-input">
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
+                                </div>
                             </td>
                             <td class="table-cell-center">
-                                <input type="text" 
-                                       id="teslimat_miktari_<?= $index ?>"
-                                       value="<?= htmlspecialchars($teslimatMiktari) ?>" 
-                                       readonly 
-                                       class="qty-input">
+                                <div style="display: flex; align-items: center; justify-content: center; gap: 4px;">
+                                    <input type="text" 
+                                           id="teslimat_miktari_<?= $index ?>"
+                                           value="<?= htmlspecialchars($teslimatMiktari) ?>" 
+                                           readonly 
+                                           class="qty-input">
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
+                                </div>
                             </td>
                             <td class="table-cell-center">
                                 <div class="quantity-controls">
@@ -723,11 +826,14 @@ body {
                                 </div>
                             </td>
                             <td class="table-cell-center">
-                                <input type="text" 
-                                       id="fiziksel_<?= $index ?>"
-                                       value="0" 
-                                       readonly 
-                                       class="qty-input">
+                                <div style="display: flex; align-items: center; justify-content: center; gap: 4px;">
+                                    <input type="text" 
+                                           id="fiziksel_<?= $index ?>"
+                                           value="0" 
+                                           readonly 
+                                           class="qty-input">
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
+                                </div>
                             </td>
                             <td>
                                 <textarea name="notes[<?= $index ?>]" rows="2" class="notes-textarea" placeholder="Not..."></textarea>
@@ -831,8 +937,8 @@ function calculatePhysical(index) {
     const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
     const kusurlu = parseFloat(damagedInput.value) || 0;
     
-    // Fiziksel = Teslimat + EksikFazla - Kusurlu
-    let fiziksel = teslimat + eksikFazla - kusurlu;
+    // Fiziksel = Teslimat + EksikFazla (Kusurlu miktar fiziksel'i etkilemez)
+    let fiziksel = teslimat + eksikFazla;
     
     // Fiziksel miktar negatif olamaz, 0 olabilir
     if (fiziksel < 0) {
@@ -877,3 +983,13 @@ document.addEventListener('DOMContentLoaded', function() {
     </script>
 </body>
 </html>
+
+
+</html>
+
+
+
+
+</html>
+
+

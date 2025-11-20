@@ -493,11 +493,23 @@ body {
     border-bottom: 2px solid #e5e7eb;
 }
 
+.data-table th:nth-child(3),
+.data-table th:nth-child(4),
+.data-table th:nth-child(5) {
+    text-align: center;
+}
+
 .data-table td {
     padding: 16px 20px;
     border-bottom: 1px solid #f3f4f6;
     font-size: 14px;
     color: #374151;
+}
+
+.data-table td:nth-child(3),
+.data-table td:nth-child(4),
+.data-table td:nth-child(5) {
+    text-align: center;
 }
 
 .data-table tbody tr {
@@ -649,8 +661,8 @@ body {
                             <div class="detail-value"><?= htmlspecialchars($docEntry) ?></div>
                         </div>
                         <div class="detail-item">
-                            <label>Tahmini Teslimat Tarihi:</label>
-                            <div class="detail-value"><?= htmlspecialchars($dueDate) ?></div>
+                            <label>Talep Tarihi:</label>
+                            <div class="detail-value"><?= htmlspecialchars($docDate) ?></div>
                         </div>
                         <div class="detail-item">
                             <label>Teslimat Belge No:</label>
@@ -675,8 +687,8 @@ body {
                             </div>
                         </div>
                         <div class="detail-item">
-                            <label>Talep Tarihi:</label>
-                            <div class="detail-value"><?= htmlspecialchars($docDate) ?></div>
+                            <label>Tahmini Teslimat Tarihi:</label>
+                            <div class="detail-value"><?= htmlspecialchars($dueDate) ?></div>
                         </div>
                         <div class="detail-item">
                             <label>Gönderen Şube:</label>
@@ -741,10 +753,8 @@ body {
                             <th>Kalem Numarası</th>
                             <th>Kalem Tanımı</th>
                             <th>Talep Miktarı</th>
-                            <?php if ($status == '3' || $status == '4'): ?>
-                                <th>Sevk Miktarı</th>
-                                <th>Teslimat Miktarı</th>
-                            <?php endif; ?>
+                            <th>Sevk Miktarı</th>
+                            <th>Teslimat Miktarı</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -795,40 +805,32 @@ body {
                                         $quantityDisplay .= ' ' . htmlspecialchars($uomCode);
                                     }
                                     
-                                    // Sevk Miktarı formatı: "1 AD" (0 ise sadece "0")
-                                    $shippedDisplay = '';
-                                    if ($status == '3' || $status == '4') {
-                                        $shippedFormatted = formatQuantity($shipped);
-                                        if ($shipped > 0) {
-                                            $shippedDisplay = $shippedFormatted . ' ' . htmlspecialchars($uomCode);
-                                        } else {
-                                            $shippedDisplay = '0';
-                                        }
+                                    // Sevk Miktarı formatı: "1 AD" (0 ise sadece "0") - Her zaman göster
+                                    $shippedFormatted = formatQuantity($shipped);
+                                    if ($shipped > 0) {
+                                        $shippedDisplay = $shippedFormatted . ' ' . htmlspecialchars($uomCode);
+                                    } else {
+                                        $shippedDisplay = '0';
                                     }
                                     
-                                    // Teslimat Miktarı formatı: "1 AD" (0 ise sadece "0")
-                                    $deliveredDisplay = '';
-                                    if ($status == '3' || $status == '4') {
-                                        $deliveredFormatted = formatQuantity($delivered);
-                                        if ($delivered > 0) {
-                                            $deliveredDisplay = $deliveredFormatted . ' ' . htmlspecialchars($uomCode);
-                                        } else {
-                                            $deliveredDisplay = '0';
-                                        }
+                                    // Teslimat Miktarı formatı: "1 AD" (0 ise sadece "0") - Her zaman göster
+                                    $deliveredFormatted = formatQuantity($delivered);
+                                    if ($delivered > 0) {
+                                        $deliveredDisplay = $deliveredFormatted . ' ' . htmlspecialchars($uomCode);
+                                    } else {
+                                        $deliveredDisplay = '0';
                                     }
                                 ?>
                                 <tr>
                                     <td><?= htmlspecialchars($itemCode) ?></td>
                                     <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
                                     <td><?= $quantityDisplay ?></td>
-                                    <?php if ($status == '3' || $status == '4'): ?>
-                                        <td><?= $shippedDisplay ?></td>
-                                        <td><?= $deliveredDisplay ?></td>
-                                    <?php endif; ?>
+                                    <td><?= $shippedDisplay ?></td>
+                                    <td><?= $deliveredDisplay ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="<?= ($status == '3' || $status == '4') ? '5' : '3' ?>" style="text-align:center;color:#888;">Kalem bulunamadı.</td></tr>
+                            <tr><td colspan="5" style="text-align:center;color:#888;">Kalem bulunamadı.</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>

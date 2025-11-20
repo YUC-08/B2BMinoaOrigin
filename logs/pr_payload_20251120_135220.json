@@ -1,0 +1,26 @@
+{
+    "DocDate": "2025-11-20",
+    "DocDueDate": "2025-11-27",
+    "RequriedDate": "2025-11-27",
+    "Comments": "",
+    "U_ASB2B_BRAN": "300",
+    "U_AS_OWNR": "KT",
+    "U_ASB2B_STATUS": "1",
+    "U_ASB2B_User": "deniz",
+    "DocumentLines": [
+        {
+            "ItemCode": "90230",
+            "Quantity": 5,
+            "UoMCode": "AD",
+            "WarehouseCode": "200-KT-1",
+            "VendorNum": "P100001"
+        },
+        {
+            "ItemCode": "90231",
+            "Quantity": 5,
+            "UoMCode": "AD",
+            "WarehouseCode": "200-KT-1",
+            "VendorNum": "P100001"
+        }
+    ]
+}

@@ -116,20 +116,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if (isset($_POST['is_unregistered']) && $_POST['is_unregistered'] === '1') {
         $vendorCode = trim($_POST['vendor_code'] ?? '');
         $irsaliyeNo = trim($_POST['irsaliye_no'] ?? '');
-        $teslimatBelgeNo = trim($_POST['teslimat_belge_no'] ?? '');
         
         // CardCode ekle (Tedarikçi/Muhatap)
         if (!empty($vendorCode)) {
             $payload['CardCode'] = $vendorCode;
         }
         
-        // İrsaliye No ve Teslimat Belge No'yu Comments'e ekle
+        // İrsaliye No'yu Comments'e ekle
         $unregisteredInfo = [];
         if (!empty($irsaliyeNo)) {
             $unregisteredInfo[] = "İrsaliye No: {$irsaliyeNo}";
-        }
-        if (!empty($teslimatBelgeNo)) {
-            $unregisteredInfo[] = "Teslimat Belge No: {$teslimatBelgeNo}";
         }
         if (!empty($unregisteredInfo)) {
             $payload['Comments'] = $comments . ' | ' . implode(' | ', $unregisteredInfo);
@@ -1046,10 +1042,6 @@ body {
                             <label style="display: block; font-weight: 600; color: #1e40af; margin-bottom: 0.5rem;">İrsaliye Numarası *</label>
                             <input type="text" id="irsaliyeNo" required placeholder="İrsaliye numarasını giriniz" style="width: 100%; padding: 0.5rem; border: 2px solid #3b82f6; border-radius: 6px; font-size: 0.875rem; background: white; color: #1f2937;">
                         </div>
-                        <div>
-                            <label style="display: block; font-weight: 600; color: #1e40af; margin-bottom: 0.5rem;">Teslimat Belge Numarası *</label>
-                            <input type="text" id="teslimatBelgeNo" required placeholder="Teslimat belge numarasını giriniz" style="width: 100%; padding: 0.5rem; border: 2px solid #3b82f6; border-radius: 6px; font-size: 0.875rem; background: white; color: #1f2937;">
-                        </div>
                     </div>
                 </div>
             </section>
@@ -1137,7 +1129,6 @@ body {
                                 <div style="font-size: 0.8rem; color: #1e3a8a;">
                                     <div><strong>Tedarikçi:</strong> <span id="sepetVendorDisplay">-</span></div>
                                     <div><strong>İrsaliye No:</strong> <span id="sepetIrsaliyeDisplay">-</span></div>
-                                    <div><strong>Teslimat Belge No:</strong> <span id="sepetTeslimatDisplay">-</span></div>
                                 </div>
                             </div>
                             <?php endif; ?>
@@ -1864,21 +1855,19 @@ function saveRequest() {
     formData.append('required_date', requiredDate);
     
     // Kayıt dışı mod için ekstra bilgiler
-    if (isUnregisteredMode) {
-        const vendorCode = document.getElementById('vendorSelect')?.value || '';
-        const irsaliyeNo = document.getElementById('irsaliyeNo')?.value || '';
-        const teslimatBelgeNo = document.getElementById('teslimatBelgeNo')?.value || '';
-        
-        if (!vendorCode || !irsaliyeNo || !teslimatBelgeNo) {
-            alert('Lütfen tüm kayıt dışı bilgilerini doldurun! (Tedarikçi, İrsaliye No, Teslimat Belge No)');
-            return;
+        if (isUnregisteredMode) {
+            const vendorCode = document.getElementById('vendorSelect')?.value || '';
+            const irsaliyeNo = document.getElementById('irsaliyeNo')?.value || '';
+            
+            if (!vendorCode || !irsaliyeNo) {
+                alert('Lütfen tüm kayıt dışı bilgilerini doldurun! (Tedarikçi, İrsaliye No)');
+                return;
+            }
+            
+            formData.append('is_unregistered', '1');
+            formData.append('vendor_code', vendorCode);
+            formData.append('irsaliye_no', irsaliyeNo);
         }
-        
-        formData.append('is_unregistered', '1');
-        formData.append('vendor_code', vendorCode);
-        formData.append('irsaliye_no', irsaliyeNo);
-        formData.append('teslimat_belge_no', teslimatBelgeNo);
-    }
     
     const confirmMsg = isUnregisteredMode 
         ? 'Kayıt dışı gelen mal için talebi oluşturmak istediğinize emin misiniz?'
@@ -1916,12 +1905,10 @@ function updateUnregisteredInfoInSepet() {
     
     const vendorSelect = document.getElementById('vendorSelect');
     const irsaliyeNo = document.getElementById('irsaliyeNo');
-    const teslimatBelgeNo = document.getElementById('teslimatBelgeNo');
     
-    if (vendorSelect && irsaliyeNo && teslimatBelgeNo) {
+    if (vendorSelect && irsaliyeNo) {
         const vendorDisplay = document.getElementById('sepetVendorDisplay');
         const irsaliyeDisplay = document.getElementById('sepetIrsaliyeDisplay');
-        const teslimatDisplay = document.getElementById('sepetTeslimatDisplay');
         
         if (vendorDisplay) {
             const selectedOption = vendorSelect.options[vendorSelect.selectedIndex];
@@ -1929,9 +1916,6 @@ function updateUnregisteredInfoInSepet() {
         }
         if (irsaliyeDisplay) {
             irsaliyeDisplay.textContent = irsaliyeNo.value || '-';
-        }
-        if (teslimatDisplay) {
-            teslimatDisplay.textContent = teslimatBelgeNo.value || '-';
         }
     }
 }
@@ -1944,16 +1928,12 @@ document.addEventListener('DOMContentLoaded', function() {
     if (isUnregisteredMode) {
         const vendorSelect = document.getElementById('vendorSelect');
         const irsaliyeNo = document.getElementById('irsaliyeNo');
-        const teslimatBelgeNo = document.getElementById('teslimatBelgeNo');
         
         if (vendorSelect) {
             vendorSelect.addEventListener('change', updateUnregisteredInfoInSepet);
         }
         if (irsaliyeNo) {
             irsaliyeNo.addEventListener('input', updateUnregisteredInfoInSepet);
-        }
-        if (teslimatBelgeNo) {
-            teslimatBelgeNo.addEventListener('input', updateUnregisteredInfoInSepet);
         }
     }
 });
