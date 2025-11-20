@@ -675,16 +675,16 @@ body {
                             </div>
                         </div>
                         <div class="detail-item">
+                            <label>Talep Tarihi:</label>
+                            <div class="detail-value"><?= htmlspecialchars($docDate) ?></div>
+                        </div>
+                        <div class="detail-item">
                             <label>Gönderen Şube:</label>
                             <div class="detail-value"><?= htmlspecialchars($gonderSubeDisplay) ?></div>
                         </div>
                         <div class="detail-item">
                             <label>Alıcı Şube:</label>
-                            <div class="detail-value"><?= htmlspecialchars($aliciSubeDisplay) ?></div>
-                        </div>
-                        <div class="detail-item">
-                            <label>Talep Tarihi:</label>
-                            <div class="detail-value"><?= htmlspecialchars($docDate) ?></div>
+                            <div class="detail-value"><?= htmlspecialchars($aliciSubeDisplay) ?></div> 
                         </div>
                         <div class="detail-item">
                             <label>Teslimat Tarihi:</label>

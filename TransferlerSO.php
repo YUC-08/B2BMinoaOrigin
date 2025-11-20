@@ -70,9 +70,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     
     if (empty($fromWarehouse) || empty($toWarehouse)) {
         echo json_encode(['success' => false, 'message' => 'Depo bilgileri bulunamadı! FromWarehouse: ' . ($fromWarehouse ?: 'BULUNAMADI') . ', ToWarehouse: ' . ($toWarehouse ?: 'BULUNAMADI')]);
-        exit;
-    }
-    
+    exit;
+}
+
     $stockTransferLines = [];
     foreach ($selectedItems as $item) {
         $userQuantity = floatval($item['quantity'] ?? 0);
@@ -627,7 +627,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
                 <button class="btn btn-secondary" id="nextBtn" onclick="changePage(1)" disabled>Sonraki →</button>
             </div>
                     </section>
-                </div>
+        </div>
                 <div class="main-content-right sepet-panel" id="sepetPanel" style="display: none;">
                     <section class="card">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
@@ -855,10 +855,10 @@ function updateFilterDisplay(type) {
         input.value = '';
         selected.forEach(value => {
             const tag = document.createElement('span');
-            tag.className = 'multi-select-tag';
+                tag.className = 'multi-select-tag';
             const escapedValue = value.replace(/'/g, "\\'");
             tag.innerHTML = `${value} <span class="remove" onclick="selectOption('${type}', '${escapedValue}', '${escapedValue}')">×</span>`;
-            tagsContainer.appendChild(tag);
+                tagsContainer.appendChild(tag);
         });
     }
     
@@ -875,7 +875,7 @@ function removeFilter(type, value) {
                          type === 'itemGroup' ? selectedItemGroups : selectedBranches;
     const index = selectedArray.indexOf(value);
     if (index > -1) selectedArray.splice(index, 1);
-    updateFilterDisplay(type);
+        updateFilterDisplay(type);
     currentPage = 0;
     loadItems();
 }
@@ -978,7 +978,7 @@ function loadItems() {
                             ${debug.filterWithoutWhs ? `<strong>Filter (WhsCode olmadan):</strong> ${debug.filterWithoutWhs}<br>` : ''}
                             <strong>Query:</strong> ${debug.itemsQuery || 'YOK'}
                         </small></td></tr>`;
-                } else {
+    } else {
                     msg = '<tr><td colspan="10" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
                 }
                 document.getElementById('itemsTableBody').innerHTML = msg;
@@ -1020,14 +1020,23 @@ function renderItems(items) {
         const stockQty = item.MainQty || item._stock || 0;
         const minQty = item.MinQty || 0;
         const uomCode = item.UomCode || item.UoMCode || '-';
-        const uomConvert = parseFloat(item.UomConvert || item.UOMConvert || 1);
+        const baseQty = parseFloat(item.BaseQty || 1.0);
         const sepetQty = selectedItems[itemCode]?.quantity || 0;
         
+        // Dönüşüm gösterimi: Eğer çevrimli ise (BaseQty !== 1), hem birim hem de AD karşılığı
         let conversionText = '-';
-        if (uomConvert !== 1) {
-            conversionText = sepetQty > 0 ? `${formatQuantity(sepetQty)}x${formatQuantity(uomConvert)}` : formatQuantity(uomConvert);
-        } else if (sepetQty > 0) {
-            conversionText = formatQuantity(sepetQty);
+        if (sepetQty > 0) {
+            if (baseQty !== 1 && baseQty > 0) {
+                // Çevrimli: 3 KT (30 AD) formatında
+                const adKarşılığı = sepetQty * baseQty;
+                conversionText = `${formatQuantity(sepetQty)} ${uomCode} (${formatQuantity(adKarşılığı)} AD)`;
+            } else {
+                // Çevrimsiz: Sadece miktar + birim
+                conversionText = `${formatQuantity(sepetQty)} ${uomCode}`;
+            }
+        } else if (baseQty !== 1 && baseQty > 0) {
+            // Sepette yok ama çevrim bilgisi var
+            conversionText = `1 ${uomCode} = ${formatQuantity(baseQty)} AD`;
         }
         
         return `
@@ -1051,8 +1060,9 @@ function renderItems(items) {
                                onchange="updateQuantity('${itemCode}', this.value)"
                                oninput="updateQuantity('${itemCode}', this.value)">
                         <button type="button" class="qty-btn" onclick="changeQuantity('${itemCode}', 1)">+</button>
-                </div>
-            </td>
+                    </div>
+                    ${sepetQty > 0 ? `<div style="text-align: center; margin-top: 4px; font-size: 0.85rem; color: #6b7280; font-weight: 500;">${formatQuantity(sepetQty)} ${uomCode}${baseQty !== 1 && baseQty > 0 ? ` (${formatQuantity(sepetQty * baseQty)} AD)` : ''}</div>` : ''}
+                </td>
                 <td>${uomCode}</td>
                 <td style="text-align: center; font-weight: 600; color: #3b82f6;">${conversionText}</td>
         </tr>
@@ -1087,7 +1097,7 @@ function updateQuantity(itemCode, quantity) {
                 fromWhsName: itemData ? (itemData.FromWhsName || '') : '',
                 fromWhsCode: itemData ? (itemData.FromWhsCode || '') : ''
             };
-        } else {
+    } else {
             selectedItems[itemCode].quantity = qty;
         }
     } else {
@@ -1108,7 +1118,7 @@ function toggleSepet() {
     if (isOpen) {
         panel.style.display = 'none';
         container.classList.remove('sepet-open');
-    } else {
+        } else {
         panel.style.display = 'block';
         container.classList.add('sepet-open');
         updateSepet();
@@ -1132,10 +1142,25 @@ function updateSepet() {
         return;
     }
     
-    list.innerHTML = Object.values(selectedItems).map(item => `
+    list.innerHTML = Object.values(selectedItems).map(item => {
+        const qty = parseFloat(item.quantity) || 0;
+        const baseQty = parseFloat(item.baseQty || 1.0);
+        const uomCode = item.uomCode || 'AD';
+        
+        // Miktar + birim gösterimi
+        let qtyDisplay = `${formatQuantity(qty)} ${uomCode}`;
+        
+        // Eğer çevrimli ise (BaseQty !== 1), AD karşılığını da göster
+        if (baseQty !== 1 && baseQty > 0) {
+            const adKarşılığı = qty * baseQty;
+            qtyDisplay += ` <span style="font-size: 0.85rem; color: #6b7280; font-weight: normal;">(${formatQuantity(adKarşılığı)} AD)</span>`;
+        }
+        
+        return `
         <div class="sepet-item">
             <div class="sepet-item-info">
                 <div class="sepet-item-name">${item.itemCode} - ${item.itemName}</div>
+                <div style="margin-bottom: 0.5rem; font-size: 0.9rem; color: #3b82f6; font-weight: 600;">${qtyDisplay}</div>
                 <div class="sepet-item-qty">
                     <button type="button" class="qty-btn" onclick="changeQuantity('${item.itemCode}', -1)">-</button>
                     <input type="number" value="${item.quantity}" min="0" step="0.01"
@@ -1146,7 +1171,8 @@ function updateSepet() {
             </div>
             <button type="button" class="remove-sepet-btn" onclick="removeFromSepet('${item.itemCode}')">Kaldır</button>
         </div>
-    `).join('');
+    `;
+    }).join('');
 }
 
 function removeFromSepet(itemCode) {

@@ -144,15 +144,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $headerComments = [];
     
     foreach ($lines as $index => $line) {
-        $deliveredQty = floatval($_POST['delivered_qty'][$index] ?? 0);
-        $missingQty = floatval($_POST['missing_qty'][$index] ?? 0);
+        // Teslimat miktarı (read-only, talep miktarından geliyor)
+        $teslimatMiktari = floatval($line['Quantity'] ?? 0);
+        
+        // Eksik/Fazla miktar (cebirsel - negatif/pozitif olabilir)
+        $eksikFazlaQty = floatval($_POST['eksik_fazla_qty'][$index] ?? 0);
+        
+        // Kusurlu miktar (min 0)
         $damagedQty = floatval($_POST['damaged_qty'][$index] ?? 0);
+        if ($damagedQty < 0) $damagedQty = 0;
+        
+        // Fiziksel miktar = Teslimat + EksikFazla - Kusurlu
+        $fizikselMiktar = $teslimatMiktari + $eksikFazlaQty - $damagedQty;
+        
+        // Fiziksel miktar negatif olamaz, 0 olabilir
+        if ($fizikselMiktar < 0) {
+            $fizikselMiktar = 0;
+        }
+        
         $notes = trim($_POST['notes'][$index] ?? '');
         
-        if ($deliveredQty > 0) {
-            $itemCode = $line['ItemCode'] ?? '';
-            
-            
+        $itemCode = $line['ItemCode'] ?? '';
+        $itemName = $line['ItemDescription'] ?? $itemCode;
+        $commentParts = [];
+        
+        // Eksik/Fazla miktar (cebirsel gösterim)
+        if ($eksikFazlaQty != 0) {
+            $eksikFazlaStr = $eksikFazlaQty > 0 ? "+{$eksikFazlaQty}" : (string)$eksikFazlaQty;
+            $commentParts[] = "Eksik/Fazla: {$eksikFazlaStr}";
+        }
+        
+        // Kusurlu miktar
+        if ($damagedQty > 0) {
+            $commentParts[] = "Kusurlu: {$damagedQty}";
+        }
+        
+        // Fiziksel miktar
+        $commentParts[] = "Fiziksel: {$fizikselMiktar}";
+        
+        if (!empty($notes)) {
+            $commentParts[] = "Not: {$notes}";
+        }
+        
+        if (!empty($commentParts)) {
+            $headerComments[] = "{$itemCode} ({$itemName}): " . implode(", ", $commentParts);
+        }
+        
+        // Fiziksel miktar > 0 ise StockTransfer için hazırla (0 ise sadece Comments'e eklendi, StockTransfer oluşturulmayacak)
+        if ($fizikselMiktar > 0) {
             $itemCost = 0;
             try {
                 $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$toWarehouse}'";
@@ -183,7 +222,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             $lineData = [
                 'ItemCode' => $itemCode,
-                'Quantity' => $deliveredQty,
+                'Quantity' => $fizikselMiktar, // Fiziksel miktar = Teslimat + EksikFazla - Kusurlu
                 'FromWarehouseCode' => $toWarehouse,
                 'WarehouseCode' => $targetWarehouse
             ];
@@ -192,42 +231,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $lineData['U_ASB2B_Comments'] = $notes;
             }
             
+            // Kusurlu miktar > 0 ise 'K', eksik/fazla negatif ise 'E', yoksa '-'
             if ($damagedQty > 0) {
                 $lineData['U_ASB2B_Damaged'] = 'K';
-            } elseif ($missingQty > 0) {
+            } elseif ($eksikFazlaQty < 0) {
                 $lineData['U_ASB2B_Damaged'] = 'E';
             } else {
                 $lineData['U_ASB2B_Damaged'] = '-';
             }
             
+            // U_ASB2B_LOST enum değerleri: '0' (veya '-'), '1' (Fire), '2' (Zayi)
+            // Eksik/Fazla miktar negatif ise (eksik varsa) → '2' (Zayi)
+            // Eksik/Fazla miktar pozitif ise (fazla varsa) → '1' (Fire)
+            // Eksik/Fazla miktar 0 ise → kaydetme
+            if ($eksikFazlaQty < 0) {
+                // Eksik varsa → Zayi
+                $lineData['U_ASB2B_LOST'] = '2';
+            } elseif ($eksikFazlaQty > 0) {
+                // Fazla varsa → Fire
+                $lineData['U_ASB2B_LOST'] = '1';
+            }
+            // 0 ise kaydetme
+            
             $transferLines[] = $lineData;
-            
-            $itemCode = $line['ItemCode'] ?? '';
-            $itemName = $line['ItemDescription'] ?? $itemCode;
-            $commentParts = [];
-            
-            if ($missingQty > 0) {
-                $commentParts[] = "Eksik: {$missingQty}";
-            }
-            if ($damagedQty > 0) {
-                $commentParts[] = "Kusurlu: {$damagedQty}";
-            }
-            if (!empty($notes)) {
-                $commentParts[] = "Not: {$notes}";
-            }
-            
-            if (!empty($commentParts)) {
-                $headerComments[] = "{$itemCode} ({$itemName}): " . implode(", ", $commentParts);
-            }
         }
     }
     
-    error_log('[TESLIM AL DEBUG] POST delivered_qty: ' . print_r($_POST['delivered_qty'] ?? [], true));
-    error_log('[TESLIM AL DEBUG] TransferLines count: ' . count($transferLines));
-    error_log('[TESLIM AL DEBUG] Lines count: ' . count($lines));
     
-    if (empty($transferLines)) {
-        $errorMsg = "Teslim miktarı girilen kalem bulunamadı! Lütfen en az bir kalem için teslim miktarı girin.";
+    // Eğer transferLines boşsa ama headerComments varsa, sadece Comments güncelle (fiziksel miktar 0 olan kalemler için)
+    if (empty($transferLines) && !empty($headerComments)) {
+        // Sadece Comments güncelle, StockTransfer oluşturma
+        $headerCommentsText = implode(" | ", $headerComments);
+        $currentComments = $requestData['Comments'] ?? '';
+        $newComments = !empty($currentComments) ? $headerCommentsText . ' | ' . $currentComments : $headerCommentsText;
+        
+        $updatePayload = [
+            'U_ASB2B_STATUS' => '4',
+            'Comments' => $newComments
+        ];
+        
+        $updateResult = $sap->patch("InventoryTransferRequests({$doc})", $updatePayload);
+        
+        if ($updateResult['status'] == 200 || $updateResult['status'] == 204) {
+            header("Location: AnaDepo.php?msg=ok");
+            exit;
+        } else {
+            $errorMsg = "Durum güncellenemedi! HTTP " . ($updateResult['status'] ?? 'NO STATUS');
+            if (isset($updateResult['response']['error'])) {
+                $errorMsg .= " - " . json_encode($updateResult['response']['error']);
+            }
+        }
+    } elseif (empty($transferLines)) {
+        $errorMsg = "İşlenecek kalem bulunamadı! Lütfen en az bir kalem için teslim alın.";
     } else {
         $docDate = $requestData['DocDate'] ?? date('Y-m-d');
         
@@ -513,6 +568,23 @@ body {
             background-color: #f3f4f6;
             color: #6b7280;
         }
+        
+        /* Eksik/Fazla miktar alanı için cebirsel gösterim */
+        input[name^="eksik_fazla_qty"] {
+            font-weight: 500;
+        }
+        
+        .eksik-fazla-negatif {
+            color: #dc2626 !important; /* Negatif değerler için kırmızı */
+        }
+        
+        .eksik-fazla-pozitif {
+            color: #16a34a !important; /* Pozitif değerler için yeşil */
+        }
+        
+        .eksik-fazla-sifir {
+            color: #6b7280 !important; /* Sıfır için gri */
+        }
 
         .qty-input-small {
             width: 80px;
@@ -576,12 +648,11 @@ body {
                     <tr>
                         <th>Kalem Kodu</th>
                         <th>Kalem Tanımı</th>
-                        <th>Ana Depo Miktarı</th>
                         <th>Talep Miktarı</th>
-                        <th>Sevk Miktarı</th>
-                        <th>Teslim Miktarı</th>
-                        <th>Eksik Miktar</th>
+                        <th>Teslimat Miktarı</th>
+                        <th>Eksik/Fazla Miktar</th>
                         <th>Kusurlu Miktar</th>
+                        <th>Fiziksel</th>
                         <th>Not</th>
                         <th>Görsel</th>
                     </tr>
@@ -589,68 +660,74 @@ body {
                 <tbody>
                     <?php if (empty($lines)): ?>
                         <tr>
-                            <td colspan="8" style="text-align: center; padding: 2rem; color: #9ca3af;">
+                            <td colspan="9" style="text-align: center; padding: 2rem; color: #9ca3af;">
                                 Kalem bulunamadı. Lütfen sayfayı yenileyin veya ana sayfaya dönün.
                             </td>
                         </tr>
                     <?php else: ?>
                     <?php foreach ($lines as $index => $line): 
-                        $quantity = $line['Quantity'] ?? 0;
+                        $itemCode = $line['ItemCode'] ?? '';
+                        $quantity = $line['Quantity'] ?? 0; // Talep Miktarı
                         $remaining = $line['RemainingOpenQuantity'] ?? 0;
-                        $delivered = ($remaining < $quantity) ? ($quantity - $remaining) : $quantity;
+                        
+                        // Teslim Miktarı (daha önce teslim alınmışsa)
+                        $teslimMiktari = $deliveryTransferLinesMap[$itemCode] ?? 0;
+                        
+                        // Teslimat Miktarı (varsayılan: talep miktarı, daha önce teslim alınmışsa onu göster)
+                        $teslimatMiktari = $quantity; // Varsayılan olarak talep miktarı
+                        if ($teslimMiktari > 0) {
+                            $teslimatMiktari = $teslimMiktari; // Daha önce teslim alınmışsa onu göster
+                        }
                     ?>
                         <tr>
-                            <td><?= htmlspecialchars($line['ItemCode'] ?? '-') ?></td>
+                            <td><?= htmlspecialchars($itemCode) ?></td>
                             <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
                             <td class="table-cell-center">
-                                <input type="number" 
+                                <input type="text" 
                                        value="<?= htmlspecialchars($quantity) ?>" 
                                        readonly 
-                                       step="0.01"
+                                       class="qty-input">
+                            </td>
+                            <td class="table-cell-center">
+                                <input type="text" 
+                                       id="teslimat_miktari_<?= $index ?>"
+                                       value="<?= htmlspecialchars($teslimatMiktari) ?>" 
+                                       readonly 
                                        class="qty-input">
                             </td>
                             <td class="table-cell-center">
                                 <div class="quantity-controls">
-                                    <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'delivered', -1, <?= htmlspecialchars($quantity) ?>)">-</button>
+                                    <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, -1)">-</button>
                                     <input type="number" 
-                                           name="delivered_qty[<?= $index ?>]" 
-                                           id="delivered_qty_<?= $index ?>"
-                                           value="<?= htmlspecialchars($delivered) ?>" 
-                                           min="0" 
-                                           max="<?= htmlspecialchars($quantity) ?>"
-                                           step="0.01"
-                                           class="qty-input"
-                                           required>
-                                    <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'delivered', 1, <?= htmlspecialchars($quantity) ?>)">+</button>
-                                </div>
-                            </td>
-                            <td class="table-cell-center">
-                                <div class="quantity-controls">
-                                    <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'missing', -1, <?= htmlspecialchars($quantity) ?>)">-</button>
-                                    <input type="number" 
-                                           name="missing_qty[<?= $index ?>]" 
-                                           id="missing_qty_<?= $index ?>"
+                                           name="eksik_fazla_qty[<?= $index ?>]" 
+                                           id="eksik_fazla_qty_<?= $index ?>"
                                            value="0" 
-                                           min="0" 
-                                           max="<?= htmlspecialchars($quantity) ?>"
                                            step="0.01"
-                                           class="qty-input qty-input-small">
-                                    <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'missing', 1, <?= htmlspecialchars($quantity) ?>)">+</button>
+                                           class="qty-input qty-input-small"
+                                           onchange="calculatePhysical(<?= $index ?>)">
+                                    <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, 1)">+</button>
                                 </div>
                             </td>
                             <td class="table-cell-center">
                                 <div class="quantity-controls">
-                                    <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'damaged', -1, <?= htmlspecialchars($quantity) ?>)">-</button>
+                                    <button type="button" class="qty-btn" onclick="changeDamaged(<?= $index ?>, -1)">-</button>
                                     <input type="number" 
                                            name="damaged_qty[<?= $index ?>]" 
                                            id="damaged_qty_<?= $index ?>"
                                            value="0" 
-                                           min="0" 
-                                           max="<?= htmlspecialchars($quantity) ?>"
+                                           min="0"
                                            step="0.01"
-                                           class="qty-input qty-input-small">
-                                    <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'damaged', 1, <?= htmlspecialchars($quantity) ?>)">+</button>
+                                           class="qty-input qty-input-small"
+                                           onchange="calculatePhysical(<?= $index ?>)">
+                                    <button type="button" class="qty-btn" onclick="changeDamaged(<?= $index ?>, 1)">+</button>
                                 </div>
+                            </td>
+                            <td class="table-cell-center">
+                                <input type="text" 
+                                       id="fiziksel_<?= $index ?>"
+                                       value="0" 
+                                       readonly 
+                                       class="qty-input">
                             </td>
                             <td>
                                 <textarea name="notes[<?= $index ?>]" rows="2" class="notes-textarea" placeholder="Not..."></textarea>
@@ -672,108 +749,129 @@ body {
     </main>
 
     <script>
+// Sayfa yüklendiğinde fiziksel miktarları hesapla ve renkleri güncelle
+document.addEventListener('DOMContentLoaded', function() {
+    const eksikFazlaInputs = document.querySelectorAll('input[name^="eksik_fazla_qty"]');
+    eksikFazlaInputs.forEach(function(input) {
+        const index = input.id.replace('eksik_fazla_qty_', '');
+        updateEksikFazlaColor(input);
+        calculatePhysical(parseInt(index));
+    });
+});
+
 function validateForm() {
-    let hasDeliveredQty = false;
-    const deliveredInputs = document.querySelectorAll('input[name^="delivered_qty"]');
+    // Form doğrulama - fiziksel miktar >= 0 olmalı (negatif olamaz)
+    let hasNegativeQty = false;
+    const fizikselInputs = document.querySelectorAll('input[id^="fiziksel_"]');
     
-    deliveredInputs.forEach(function(input) {
+    fizikselInputs.forEach(function(input) {
         const value = parseFloat(input.value) || 0;
-        if (value > 0) {
-            hasDeliveredQty = true;
+        if (value < 0) {
+            hasNegativeQty = true;
         }
     });
     
-    if (!hasDeliveredQty) {
-        alert('Lütfen en az bir kalem için teslim miktarı girin!');
+    if (hasNegativeQty) {
+        alert('Fiziksel miktar negatif olamaz! Lütfen eksik/fazla ve kusurlu miktarları kontrol edin.');
         return false;
     }
     
     return true;
 }
 
-function changeQuantity(index, type, delta, maxValue = null) {
-    const inputId = type === 'delivered' ? 'delivered_qty_' + index : type + '_qty_' + index;
-    const input = document.getElementById(inputId);
+// Eksik/Fazla miktar değiştirme (cebirsel - negatif/pozitif olabilir)
+function changeEksikFazla(index, delta) {
+    const input = document.getElementById('eksik_fazla_qty_' + index);
+    if (!input) return;
+    
+    let value = parseFloat(input.value) || 0;
+    value += delta;
+    input.value = value;
+    updateEksikFazlaColor(input);
+    calculatePhysical(index);
+}
+
+// Eksik/Fazla miktar alanının rengini güncelle
+function updateEksikFazlaColor(input) {
+    if (!input) return;
+    const value = parseFloat(input.value) || 0;
+    input.classList.remove('eksik-fazla-negatif', 'eksik-fazla-pozitif', 'eksik-fazla-sifir');
+    
+    if (value < 0) {
+        input.classList.add('eksik-fazla-negatif');
+    } else if (value > 0) {
+        input.classList.add('eksik-fazla-pozitif');
+    } else {
+        input.classList.add('eksik-fazla-sifir');
+    }
+}
+
+// Kusurlu miktar değiştirme (min 0)
+function changeDamaged(index, delta) {
+    const input = document.getElementById('damaged_qty_' + index);
     if (!input) return;
     
     let value = parseFloat(input.value) || 0;
     value += delta;
     if (value < 0) value = 0;
-    if (maxValue !== null && value > maxValue) {
-        value = maxValue;
-        alert('Maksimum değer: ' + maxValue);
-    }
-    
-    input.value = value.toFixed(2);
-    
-    if (type !== 'delivered') {
-        updateRelatedFields(index);
-    }
+    input.value = value;
+    calculatePhysical(index);
 }
 
-function updateRelatedFields(index) {
-    const row = document.getElementById('missing_qty_' + index).closest('tr');
-    const orderQtyInput = row.querySelector('input[readonly]');
-    const orderQty = parseFloat(orderQtyInput.value) || 0;
-    
-    const deliveredInput = document.getElementById('delivered_qty_' + index);
-    const missingInput = document.getElementById('missing_qty_' + index);
-    const missingQty = parseFloat(missingInput.value) || 0;
+// Fiziksel miktar hesaplama: Teslimat + EksikFazla - Kusurlu
+function calculatePhysical(index) {
+    const teslimatInput = document.getElementById('teslimat_miktari_' + index);
+    const eksikFazlaInput = document.getElementById('eksik_fazla_qty_' + index);
     const damagedInput = document.getElementById('damaged_qty_' + index);
-    const damagedQty = parseFloat(damagedInput.value) || 0;
+    const fizikselInput = document.getElementById('fiziksel_' + index);
     
-    const totalDeficit = missingQty + damagedQty;
-    if (totalDeficit > orderQty) {
-        const excess = totalDeficit - orderQty;
-        if (missingQty > 0) {
-            const newMissing = Math.max(0, missingQty - excess);
-            missingInput.value = newMissing.toFixed(2);
-            updateRelatedFields(index);
-            return;
-        }
-        if (damagedQty > 0) {
-            const newDamaged = Math.max(0, damagedQty - excess);
-            damagedInput.value = newDamaged.toFixed(2);
-            updateRelatedFields(index);
-            return;
-        }
+    if (!teslimatInput || !eksikFazlaInput || !damagedInput || !fizikselInput) return;
+    
+    const teslimat = parseFloat(teslimatInput.value) || 0;
+    const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
+    const kusurlu = parseFloat(damagedInput.value) || 0;
+    
+    // Fiziksel = Teslimat + EksikFazla - Kusurlu
+    let fiziksel = teslimat + eksikFazla - kusurlu;
+    
+    // Fiziksel miktar negatif olamaz, 0 olabilir
+    if (fiziksel < 0) {
+        fiziksel = 0;
     }
     
-    const calculatedDelivered = orderQty - missingQty - damagedQty;
-    const newDelivered = calculatedDelivered >= 0 ? calculatedDelivered : 0;
-    
-    if (deliveredInput) {
-        deliveredInput.value = newDelivered.toFixed(2);
+    // Format: Tam sayı ise küsurat gösterme, değilse virgül ile göster
+    let formattedValue;
+    if (fiziksel == Math.floor(fiziksel)) {
+        formattedValue = Math.floor(fiziksel).toString();
+    } else {
+        formattedValue = fiziksel.toFixed(2).replace('.', ',').replace(/0+$/, '').replace(/,$/, '');
     }
+    
+    fizikselInput.value = formattedValue;
 }
 
+// Eksik/Fazla ve Kusurlu miktar değişikliklerinde fiziksel miktarı güncelle
 document.addEventListener('DOMContentLoaded', function() {
-    const rows = document.querySelectorAll('tbody tr');
-    rows.forEach((row, index) => {
-        const missingInput = document.getElementById('missing_qty_' + index);
-        const damagedInput = document.getElementById('damaged_qty_' + index);
-        const deliveredInput = document.getElementById('delivered_qty_' + index);
-        
-        if (missingInput) {
-            missingInput.addEventListener('input', () => updateRelatedFields(index));
-            missingInput.addEventListener('change', () => updateRelatedFields(index));
-        }
-        if (damagedInput) {
-            damagedInput.addEventListener('input', () => updateRelatedFields(index));
-            damagedInput.addEventListener('change', () => updateRelatedFields(index));
-        }
-        if (deliveredInput) {
-            deliveredInput.addEventListener('input', function() {
-                const orderQtyInput = row.querySelector('input[readonly]');
-                const orderQty = parseFloat(orderQtyInput.value) || 0;
-                const deliveredQty = parseFloat(this.value) || 0;
-                
-                if (deliveredQty > orderQty) {
-                    this.value = orderQty.toFixed(2);
-                    alert('Teslimat miktarı sipariş miktarını aşamaz!');
-                }
-            });
-        }
+    const eksikFazlaInputs = document.querySelectorAll('input[name^="eksik_fazla_qty"]');
+    const damagedInputs = document.querySelectorAll('input[name^="damaged_qty"]');
+    
+    eksikFazlaInputs.forEach(function(input) {
+        const index = input.id.replace('eksik_fazla_qty_', '');
+        updateEksikFazlaColor(input);
+        input.addEventListener('input', () => {
+            updateEksikFazlaColor(input);
+            calculatePhysical(parseInt(index));
+        });
+        input.addEventListener('change', () => {
+            updateEksikFazlaColor(input);
+            calculatePhysical(parseInt(index));
+        });
+    });
+    
+    damagedInputs.forEach(function(input) {
+        const index = input.id.replace('damaged_qty_', '');
+        input.addEventListener('input', () => calculatePhysical(parseInt(index)));
+        input.addEventListener('change', () => calculatePhysical(parseInt(index)));
     });
 });
     </script>
