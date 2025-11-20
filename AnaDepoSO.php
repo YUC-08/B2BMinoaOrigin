@@ -130,7 +130,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
     $search = trim($_GET['search'] ?? '');
     $itemNames = isset($_GET['item_names']) ? json_decode($_GET['item_names'], true) : [];
     $itemGroups = isset($_GET['item_groups']) ? json_decode($_GET['item_groups'], true) : [];
-    $stockStatus = trim($_GET['stock_status'] ?? '');
+    $stockStatus = trim($_GET['stock_status'] ?? ''); // Ana Depo Stok Durumu
+    $branStockStatus = trim($_GET['bran_stock_status'] ?? ''); // Şube Stok Durumu
     
     // YENİ: view.svc/ASB2B_MainWhsItem_B1SLQuery kullanılıyor
     // FromWhsName ile filtreleme
@@ -176,12 +177,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
         }
     }
     
-    // Stok durumu filtresi (MainQty alanı kullanılıyor)
+    // Ana Depo Stok Durumu filtresi (MainQty alanı kullanılıyor)
     if (!empty($stockStatus)) {
         if ($stockStatus === 'var') {
             $filter .= " and MainQty gt 0";
         } else if ($stockStatus === 'yok') {
             $filter .= " and MainQty le 0";
+        }
+    }
+    
+    // Şube Stok Durumu filtresi (BranQty alanı kullanılıyor)
+    if (!empty($branStockStatus)) {
+        if ($branStockStatus === 'var') {
+            $filter .= " and BranQty gt 0";
+        } else if ($branStockStatus === 'yok') {
+            $filter .= " and BranQty le 0";
         }
     }
     
@@ -337,6 +347,9 @@ body {
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
+    width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
 }
 
 
@@ -396,13 +409,18 @@ body {
 /* Filtre bölümü */
 .filter-section {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 15px;
     margin-bottom: 20px;
     padding: 20px;
     background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
     border-radius: 8px;
     border: 1px solid #e0e0e0;
+}
+
+.main-layout-container.sepet-open .filter-section {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
 }
 
 .filter-group {
@@ -619,6 +637,12 @@ body {
     width: 100%;
     border-collapse: collapse;
     font-size: 0.9rem;
+    table-layout: auto;
+}
+
+.data-table-wrapper {
+    overflow-x: auto;
+    width: 100%;
 }
 
 .data-table thead {
@@ -667,6 +691,8 @@ body {
     gap: 6px;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .qty-btn {
@@ -752,6 +778,8 @@ body {
     gap: 24px;
     transition: all 0.3s ease;
     padding: 0;
+    width: 100%;
+    overflow: hidden;
 }
 
 .main-content-left {
@@ -760,18 +788,23 @@ body {
     display: flex;
     flex-direction: column;
     gap: 24px;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .main-layout-container.sepet-open .main-content-left {
-    flex: 1;
+    flex: 1.5;
+    min-width: 0;
 }
 
 .main-content-right.sepet-panel {
-    flex: 1;
+    flex: 0 0 420px;
     min-width: 400px;
-    max-width: 500px;
+    max-width: 420px;
     display: flex;
     flex-direction: column;
+    overflow-y: auto;
+    max-height: calc(100vh - 120px);
 }
 
 .main-content-right.sepet-panel .card {
@@ -879,6 +912,21 @@ body {
         padding: 16px 20px;
     }
     
+    .main-layout-container {
+        flex-direction: column;
+    }
+    
+    .main-content-right.sepet-panel {
+        flex: 1;
+        min-width: 100%;
+        max-width: 100%;
+        max-height: 50vh;
+    }
+    
+    .main-layout-container.sepet-open .main-content-left {
+        flex: 1;
+    }
+    
     .filter-section {
         grid-template-columns: 1fr;
     }
@@ -961,12 +1009,27 @@ body {
                         <div class="multi-select-container">
                             <div class="multi-select-input" onclick="toggleDropdown('stockStatus')">
                                 <div id="stockStatusTags"></div>
-                                <input type="text" id="filterStockStatus" class="filter-input" placeholder="STOK DURUMU" readonly>
+                                <input type="text" id="filterStockStatus" class="filter-input" placeholder="ANA DEPO STOK DURUMU" readonly>
                             </div>
                             <div class="multi-select-dropdown" id="stockStatusDropdown">
                                 <div class="multi-select-option" data-value="" onclick="selectOption('stockStatus', '', 'Tümü')">Tümü</div>
                                 <div class="multi-select-option" data-value="Var" onclick="selectOption('stockStatus', 'Var', 'Var')">Var</div>
                                 <div class="multi-select-option" data-value="Yok" onclick="selectOption('stockStatus', 'Yok', 'Yok')">Yok</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="filter-group">
+                        
+                        <div class="multi-select-container">
+                            <div class="multi-select-input" onclick="toggleDropdown('branStockStatus')">
+                                <div id="branStockStatusTags"></div>
+                                <input type="text" id="filterBranStockStatus" class="filter-input" placeholder="ŞUBE STOK DURUMU" readonly>
+                            </div>
+                            <div class="multi-select-dropdown" id="branStockStatusDropdown">
+                                <div class="multi-select-option" data-value="" onclick="selectOption('branStockStatus', '', 'Tümü')">Tümü</div>
+                                <div class="multi-select-option" data-value="Var" onclick="selectOption('branStockStatus', 'Var', 'Var')">Var</div>
+                                <div class="multi-select-option" data-value="Yok" onclick="selectOption('branStockStatus', 'Yok', 'Yok')">Yok</div>
                             </div>
                         </div>
                     </div>
@@ -991,13 +1054,16 @@ body {
                     </div>
                 </div>
                 
+                <div class="data-table-wrapper">
                 <table class="data-table">
                     <thead>
                         <tr>
                             <th>Kalem Kodu</th>
                             <th>Kalem Tanımı</th>
                             <th>Kalem Grubu</th>
-                            <th>Anadepo</th>
+                            <th style="display: none;">Şube Stok Durumu</th>
+                            <th style="display: none;">Ana Depo Stok Durumu</th>
+                            <th style="display: none;">Anadepo</th>
                             <th>Anadepo Miktar</th>
                             <th>Minimum</th>
                             <th>Talep Miktarı</th>
@@ -1007,12 +1073,13 @@ body {
                     </thead>
                     <tbody id="itemsTableBody">
                         <tr>
-                            <td colspan="9" style="text-align:center;color:#888;padding:20px;">
+                            <td colspan="11" style="text-align:center;color:#888;padding:20px;">
                                 Filtre seçerek veya arama yaparak kalemleri görüntüleyin.
                             </td>
                         </tr>
                     </tbody>
                 </table>
+                </div>
                 
                 <div class="pagination">
                     <button class="btn btn-secondary" id="prevBtn" onclick="changePage(-1)" disabled>← Önceki</button>
@@ -1045,7 +1112,8 @@ let selectedItems = {};
 let hasMore = false;
 let selectedItemNames = [];
 let selectedItemGroups = [];
-let selectedStockStatus = '';
+let selectedStockStatus = ''; // Ana Depo Stok Durumu
+let selectedBranStockStatus = ''; // Şube Stok Durumu
 let allItemNames = [];
 let allItemGroups = [];
 let filteredItemNames = [];
@@ -1293,13 +1361,24 @@ function selectOption(type, value, text) {
     } else if (type === 'itemGroup') {
         selectedArray = selectedItemGroups;
     } else if (type === 'stockStatus') {
-        // StockStatus için tek seçim (multi-select değil)
+        // Ana Depo Stok Durumu için tek seçim (multi-select değil)
         if (value === '') {
             selectedStockStatus = '';
         } else {
             selectedStockStatus = value.toLowerCase();
         }
         updateFilterDisplay('stockStatus');
+        currentPage = 0;
+        loadItems();
+        return;
+    } else if (type === 'branStockStatus') {
+        // Şube Stok Durumu için tek seçim (multi-select değil)
+        if (value === '') {
+            selectedBranStockStatus = '';
+        } else {
+            selectedBranStockStatus = value.toLowerCase();
+        }
+        updateFilterDisplay('branStockStatus');
         currentPage = 0;
         loadItems();
         return;
@@ -1383,9 +1462,36 @@ function updateFilterDisplay(type) {
                 const value = opt.getAttribute('data-value');
                 if ((selectedStockStatus === '' && value === '') || (selectedStockStatus === value.toLowerCase())) {
                     opt.classList.add('selected');
-    } else {
+                } else {
                     opt.classList.remove('selected');
-}
+                }
+            });
+        }
+        return;
+    } else if (type === 'branStockStatus') {
+        tagsContainer = document.getElementById('branStockStatusTags');
+        input = document.getElementById('filterBranStockStatus');
+        // Şube Stok Durumu için tek değer
+        if (selectedBranStockStatus === '') {
+            input.value = 'Tümü';
+            if (tagsContainer) tagsContainer.innerHTML = '';
+        } else {
+            const text = selectedBranStockStatus === 'var' ? 'Var' : 'Yok';
+            input.value = text;
+            if (tagsContainer) {
+                tagsContainer.innerHTML = `<span class="multi-select-tag">${text} <span class="remove" onclick="selectOption('branStockStatus', '', 'Tümü')">×</span></span>`;
+            }
+        }
+        // Dropdown'daki seçili durumları güncelle
+        const dropdown = document.getElementById('branStockStatusDropdown');
+        if (dropdown) {
+            dropdown.querySelectorAll('.multi-select-option').forEach(opt => {
+                const value = opt.getAttribute('data-value');
+                if ((selectedBranStockStatus === '' && value === '') || (selectedBranStockStatus === value.toLowerCase())) {
+                    opt.classList.add('selected');
+                } else {
+                    opt.classList.remove('selected');
+                }
             });
         }
         return;
@@ -1460,6 +1566,7 @@ function loadItems() {
     if (selectedItemNames.length > 0) url += `&item_names=${encodeURIComponent(JSON.stringify(selectedItemNames))}`;
     if (selectedItemGroups.length > 0) url += `&item_groups=${encodeURIComponent(JSON.stringify(selectedItemGroups))}`;
     if (selectedStockStatus) url += `&stock_status=${encodeURIComponent(selectedStockStatus)}`;
+    if (selectedBranStockStatus) url += `&bran_stock_status=${encodeURIComponent(selectedBranStockStatus)}`;
     
     fetch(url)
         .then(res => res.json())
@@ -1476,7 +1583,7 @@ function loadItems() {
         .catch(err => {
             console.error('Hata:', err);
             document.getElementById('itemsTableBody').innerHTML = 
-                '<tr><td colspan="9" style="text-align:center;color:#dc3545;">Veri yüklenirken hata oluştu.</td></tr>';
+                '<tr><td colspan="11" style="text-align:center;color:#dc3545;">Veri yüklenirken hata oluştu.</td></tr>';
         });
 }
 
@@ -1484,7 +1591,7 @@ function renderItems(items) {
     const tbody = document.getElementById('itemsTableBody');
     
     if (items.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
         return;
     }
     
@@ -1506,12 +1613,17 @@ function renderItems(items) {
         const itemGroup = item.ItemGroup || (item.ItemGroups && item.ItemGroups.length > 0 ? item.ItemGroups[0].ItemsGroupCode : '-'); // YENİ: ItemGroup view'den geliyor
         const hasStock = item._hasStock || false;
         const stockQty = item.MainQty || item._stock || 0; // MainQty kullanılıyor
+        const branQty = item.BranQty || 0; // Şube miktarı
         const minQty = item.MinQty || 0;
         const uomCode = item.UomCode || item.UoMCode || '-'; // YENİ: UomCode view'den geliyor
         const baseQty = parseFloat(item.BaseQty || 1.0); // YENİ: BaseQty view'den geliyor
         const uomConvert = parseFloat(item.UomConvert || item.UOMConvert || 1); // UomConvert view'den geliyor
         const isInSepet = selectedItems.hasOwnProperty(itemCode);
         const sepetQty = isInSepet ? selectedItems[itemCode].quantity : 0;
+        
+        // Stok durumları (VAR/YOK)
+        const branStockStatus = branQty > 0 ? 'VAR' : 'YOK'; // Şube Stok Durumu
+        const mainStockStatus = stockQty > 0 ? 'VAR' : 'YOK'; // Ana Depo Stok Durumu
         
         // Dönüşüm kolonu: BaseQty kullanarak hesaplama gösterimi
         let conversionText = '-';
@@ -1538,7 +1650,9 @@ function renderItems(items) {
                 <td>${itemCode}</td>
                 <td>${itemName}</td>
                 <td>${itemGroup}</td>
-                <td style="text-align: center;"><span class="stock-badge ${hasStock ? 'stock-yes' : 'stock-no'}">${hasStock ? 'Var' : 'Yok'}</span></td>
+                <td style="display: none;">${branStockStatus}</td>
+                <td style="display: none;">${mainStockStatus}</td>
+                <td style="display: none; text-align: center;"><span class="stock-badge ${hasStock ? 'stock-yes' : 'stock-no'}">${hasStock ? 'Var' : 'Yok'}</span></td>
                 <td style="text-align: center;">${formatQuantity(stockQty)}</td>
                 <td style="text-align: center;">${formatQuantity(minQty)}</td>
                 <td>

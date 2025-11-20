@@ -179,6 +179,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $fizikselMiktar = 0;
         }
         
+        // Kusurlu miktar fiziksel miktarı aşamaz
+        if ($damagedQty > $fizikselMiktar) {
+            $damagedQty = $fizikselMiktar;
+        }
+        
         $notes = trim($_POST['notes'][$index] ?? '');
         
         $itemCode = $line['ItemCode'] ?? '';
@@ -912,14 +917,25 @@ function updateEksikFazlaColor(input) {
     }
 }
 
-// Kusurlu miktar değiştirme (min 0)
+// Kusurlu miktar değiştirme (min 0, max fiziksel miktar)
 function changeDamaged(index, delta) {
     const input = document.getElementById('damaged_qty_' + index);
     if (!input) return;
     
+    // Önce fiziksel miktarı hesapla
+    const teslimatInput = document.getElementById('teslimat_miktari_' + index);
+    const eksikFazlaInput = document.getElementById('eksik_fazla_qty_' + index);
+    if (!teslimatInput || !eksikFazlaInput) return;
+    
+    const teslimat = parseFloat(teslimatInput.value) || 0;
+    const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
+    const fizikselMiktar = Math.max(0, teslimat + eksikFazla);
+    
     let value = parseFloat(input.value) || 0;
     value += delta;
     if (value < 0) value = 0;
+    // Kusurlu miktar fiziksel miktarı aşamaz
+    if (value > fizikselMiktar) value = fizikselMiktar;
     input.value = value;
     calculatePhysical(index);
 }
@@ -935,7 +951,7 @@ function calculatePhysical(index) {
     
     const teslimat = parseFloat(teslimatInput.value) || 0;
     const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
-    const kusurlu = parseFloat(damagedInput.value) || 0;
+    let kusurlu = parseFloat(damagedInput.value) || 0;
     
     // Fiziksel = Teslimat + EksikFazla (Kusurlu miktar fiziksel'i etkilemez)
     let fiziksel = teslimat + eksikFazla;
@@ -943,6 +959,12 @@ function calculatePhysical(index) {
     // Fiziksel miktar negatif olamaz, 0 olabilir
     if (fiziksel < 0) {
         fiziksel = 0;
+    }
+    
+    // Kusurlu miktar fiziksel miktarı aşamaz
+    if (kusurlu > fiziksel) {
+        kusurlu = fiziksel;
+        damagedInput.value = kusurlu;
     }
     
     // Format: Tam sayı ise küsurat gösterme, değilse virgül ile göster
