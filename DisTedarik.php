@@ -856,7 +856,7 @@ body {
                                         </a>
                                         <?php if ($hasOrder && isReceivableStatus($statusValue)): ?>
                                             <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?>&orderNos=<?= urlencode($orderNoDisplay) ?>">
-                                                <button class="btn-icon btn-success">✓ Teslim Al</button>
+                                                <button class="btn-icon btn-primary">✓ Teslim Al</button>
                                             </a>
                                         <?php endif; ?>
                                     </td>

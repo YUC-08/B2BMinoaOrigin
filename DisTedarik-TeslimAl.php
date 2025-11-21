@@ -11,6 +11,23 @@ $sap = new SAPConnect();
 $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
 $branch = $_SESSION["Branch2"]["Name"] ?? $_SESSION["WhsCode"] ?? '';
 
+// Fire & Zayi deposunu bul (U_ASB2B_MAIN='3' veya özel bir UDF ile işaretlenmiş olabilir)
+$fireZayiWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '3'";
+$fireZayiWarehouseQuery = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter);
+$fireZayiWarehouseData = $sap->get($fireZayiWarehouseQuery);
+$fireZayiWarehouses = $fireZayiWarehouseData['response']['value'] ?? [];
+$fireZayiWarehouse = !empty($fireZayiWarehouses) ? $fireZayiWarehouses[0]['WarehouseCode'] : null;
+
+// Eğer U_ASB2B_MAIN='3' ile bulunamazsa, alternatif olarak U_ASB2B_FIREZAYI='Y' gibi bir UDF ile arayabiliriz
+if (empty($fireZayiWarehouse)) {
+    // Alternatif: U_ASB2B_FIREZAYI='Y' ile işaretlenmiş depo
+    $fireZayiWarehouseFilter2 = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_FIREZAYI eq 'Y'";
+    $fireZayiWarehouseQuery2 = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter2);
+    $fireZayiWarehouseData2 = $sap->get($fireZayiWarehouseQuery2);
+    $fireZayiWarehouses2 = $fireZayiWarehouseData2['response']['value'] ?? [];
+    $fireZayiWarehouse = !empty($fireZayiWarehouses2) ? $fireZayiWarehouses2[0]['WarehouseCode'] : null;
+}
+
 $requestNo   = $_GET['requestNo'] ?? '';
 $orderNo     = $_GET['orderNo'] ?? '';      // Eski parametre (geriye dönük uyumluluk için)
 $orderNosParam = $_GET['orderNos'] ?? '';   // Yeni parametre (virgülle ayrılmış)
@@ -203,39 +220,144 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $deliveryQty = floatval($_POST['irsaliye_qty'][$index] ?? 0);
         $eksikFazlaQty = floatval($_POST['eksik_fazla'][$index] ?? 0);
         $kusurluQty = floatval($_POST['kusurlu'][$index] ?? 0);
+        if ($kusurluQty < 0) $kusurluQty = 0;
         $not = trim($_POST['not'][$index] ?? '');
+        
+        // Fiziksel miktar = İrsaliye + Eksik/Fazla
+        $fizikselMiktar = $deliveryQty + $eksikFazlaQty;
+        if ($fizikselMiktar < 0) $fizikselMiktar = 0;
+        
+        // Kusurlu miktar fiziksel miktarı aşamaz
+        if ($kusurluQty > $fizikselMiktar) {
+            $kusurluQty = $fizikselMiktar;
+        }
+        
+        // Normal transfer miktarı = Fiziksel - Kusurlu
+        $normalTransferMiktar = $fizikselMiktar - $kusurluQty;
+        if ($normalTransferMiktar < 0) $normalTransferMiktar = 0;
 
-        if ($deliveryQty > 0) {
+        // Normal line (Fiziksel - Kusurlu miktar)
+        if ($normalTransferMiktar > 0) {
             $lineNum = $lineData['LineNum'] ?? 0;
             $linePayload = [
                 'BaseType' => 22, // Purchase Order
                 'BaseEntry' => intval($orderDocEntryKey),
                 'BaseLine'  => intval($lineNum),
-                'Quantity'  => $deliveryQty
+                'Quantity'  => $normalTransferMiktar
             ];
             
-             // UDF alanlarını ekle (Response'dan bulunan alanlar)
-            // U_ASB2B_LOST: Eksik/Fazla miktar (sayısal değer)
-            if ($eksikFazlaQty != 0) {
-                $linePayload['U_ASB2B_LOST'] = $eksikFazlaQty;
-            }
+            // Normal line'da eksik/fazla ve kusurlu miktarlar için ayrı line'lar oluşturulacak
+            // Bu yüzden normal line'da U_ASB2B_Damaged '-' olarak kalır
+            $linePayload['U_ASB2B_Damaged'] = '-';
             
-            // U_ASB2B_Damaged: Kusurlu durumu (enum: '-' = yok, 'E' = Eksik, 'K' = Kusurlu)
-            // Kusurlu miktar > 0 ise 'K', Eksik/Fazla < 0 ise 'E', yoksa '-'
-            if ($kusurluQty > 0) {
-                $linePayload['U_ASB2B_Damaged'] = 'K'; // Kusurlu
-            } elseif ($eksikFazlaQty < 0) {
-                $linePayload['U_ASB2B_Damaged'] = 'E'; // Eksik
-            } else {
-                $linePayload['U_ASB2B_Damaged'] = '-'; // Yok
-            }
-            
-            // U_ASB2B_Comments: Not
+            // Normal line'da eksik/fazla ve kusurlu miktarlar için ayrı line'lar oluşturulacak
+            // Normal line'ın Comments'ine eksik/fazla bilgisini de ekliyoruz
+            $commentsParts = [];
             if (!empty($not)) {
-                $linePayload['U_ASB2B_Comments'] = $not;
+                $commentsParts[] = $not;
+            }
+            
+            // Eksik/Fazla miktar bilgisini Comments'e ekle
+            if ($eksikFazlaQty < 0) {
+                $zayiMiktar = abs($eksikFazlaQty); // Mutlak değer
+                $commentsParts[] = "EEksik: {$zayiMiktar} adet";
+            } elseif ($eksikFazlaQty > 0) {
+                $commentsParts[] = "Fazla: {$eksikFazlaQty} adet";
+            }
+            
+            // Comments'i birleştir
+            if (!empty($commentsParts)) {
+                $linePayload['U_ASB2B_Comments'] = implode(' | ', $commentsParts);
             }
             
             $ordersData[$orderNoKey]['DocumentLines'][] = $linePayload;
+        }
+        
+        // Fire & Zayi deposu bulunamazsa geçici olarak 200-KT-2 kullan
+        $targetFireZayiWarehouse = $fireZayiWarehouse;
+        if (empty($targetFireZayiWarehouse)) {
+            $targetFireZayiWarehouse = '200-KT-2'; // Geçici olarak sabit değer
+        }
+        
+        // Eksik miktar varsa → Ayrı line oluştur (Fire & Zayi deposuna - Zayi)
+        if ($eksikFazlaQty < 0) {
+            $zayiMiktar = abs($eksikFazlaQty); // Mutlak değer
+            
+            // Fire & Zayi deposuna transfer satırı (Zayi)
+            // Bu line Purchase Order'dan bağımsız olduğu için BaseLine, BaseType, BaseEntry kullanmıyoruz
+            $zayiLinePayload = [
+                'ItemCode' => $itemCode, // Kalem kodu
+                'Quantity'  => $zayiMiktar, // Zayi miktar
+                'WarehouseCode' => $targetFireZayiWarehouse // Fire & Zayi deposu (200-KT-2)
+            ];
+            
+            // Zayi satırı için UDF'ler
+            $zayiLinePayload['U_ASB2B_LOST'] = '2'; // Zayi
+            $zayiLinePayload['U_ASB2B_Damaged'] = 'E'; // Eksik
+            
+            // Zayi satırı Comments'i
+            $zayiCommentsParts = [];
+            if (!empty($not)) {
+                $zayiCommentsParts[] = $not;
+            }
+            $zayiCommentsParts[] = "Eksik: {$zayiMiktar} adet";
+            $zayiCommentsParts[] = 'Fire & Zayi';
+            
+            $zayiLinePayload['U_ASB2B_Comments'] = implode(' | ', $zayiCommentsParts);
+            
+            $ordersData[$orderNoKey]['DocumentLines'][] = $zayiLinePayload;
+        }
+        
+        // Fazla miktar varsa → Ayrı line oluştur (Fire & Zayi deposuna - Fire)
+        if ($eksikFazlaQty > 0) {
+            // Fire & Zayi deposuna transfer satırı (Fire)
+            // Bu line Purchase Order'dan bağımsız olduğu için BaseLine, BaseType, BaseEntry kullanmıyoruz
+            $fireLinePayload = [
+                'ItemCode' => $itemCode, // Kalem kodu
+                'Quantity'  => $eksikFazlaQty, // Fazla miktar
+                'WarehouseCode' => $targetFireZayiWarehouse // Fire & Zayi deposu (200-KT-2)
+            ];
+            
+            // Fire satırı için UDF'ler
+            $fireLinePayload['U_ASB2B_LOST'] = '1'; // Fire
+            
+            // Fire satırı Comments'i
+            $fireCommentsParts = [];
+            if (!empty($not)) {
+                $fireCommentsParts[] = $not;
+            }
+            $fireCommentsParts[] = "Fazla: {$eksikFazlaQty} adet";
+            $fireCommentsParts[] = 'Fire & Zayi';
+            
+            $fireLinePayload['U_ASB2B_Comments'] = implode(' | ', $fireCommentsParts);
+            
+            $ordersData[$orderNoKey]['DocumentLines'][] = $fireLinePayload;
+        }
+        
+        // Kusurlu miktar varsa → Ayrı line oluştur (Fire & Zayi deposuna)
+        if ($kusurluQty > 0) {
+            // Fire & Zayi deposuna transfer satırı
+            // Bu line Purchase Order'dan bağımsız olduğu için BaseLine, BaseType, BaseEntry kullanmıyoruz
+            $fireZayiLinePayload = [
+                'ItemCode' => $itemCode, // Kalem kodu
+                'Quantity'  => $kusurluQty, // Kusurlu miktar
+                'WarehouseCode' => $targetFireZayiWarehouse // Fire & Zayi deposu (200-KT-2)
+            ];
+            
+            // Fire & Zayi satırı için UDF'ler
+            $fireZayiLinePayload['U_ASB2B_Damaged'] = 'K'; // Kusurlu
+            
+            // Fire & Zayi satırı Comments'i
+            $fireZayiCommentsParts = [];
+            if (!empty($not)) {
+                $fireZayiCommentsParts[] = $not;
+            }
+            $fireZayiCommentsParts[] = "Kusurlu: {$kusurluQty} adet";
+            $fireZayiCommentsParts[] = 'Fire & Zayi';
+            
+            $fireZayiLinePayload['U_ASB2B_Comments'] = implode(' | ', $fireZayiCommentsParts);
+            
+            $ordersData[$orderNoKey]['DocumentLines'][] = $fireZayiLinePayload;
         }
     }
 

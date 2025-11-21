@@ -49,9 +49,25 @@ $isUnregisteredMode = isset($_GET['mode']) && $_GET['mode'] === 'unregistered';
 // Kayıt dışı mod için tedarikçi listesi çek
 $vendors = [];
 if ($isUnregisteredMode) {
-    $vendorsQuery = "BusinessPartners?\$select=CardCode,CardName&\$filter=CardType eq 'S'&\$top=500";
+    
+    // Query string'i parçalara ayırarak oluşturuyoruz
+    $filterValue = "CardType eq 'cSupplier'";
+    $vendorsQuery = 'BusinessPartners?$select=CardCode,CardName&$filter=' . urlencode($filterValue) . '&$orderby=CardName&$top=500';
     $vendorsData = $sap->get($vendorsQuery);
+    
+    // Debug: Response'u logla
+    error_log("[DisTedarikSO] Tedarikçi Query: " . $vendorsQuery);
+    error_log("[DisTedarikSO] HTTP Status: " . ($vendorsData['status'] ?? 'NO STATUS'));
+    error_log("[DisTedarikSO] Response Keys: " . (isset($vendorsData['response']) ? implode(', ', array_keys($vendorsData['response'])) : 'NO RESPONSE'));
+    
     $vendors = $vendorsData['response']['value'] ?? [];
+    
+    // Debug: Eğer tedarikçi gelmediyse logla
+    if (empty($vendors)) {
+        error_log("[DisTedarikSO] Tedarikçi listesi boş. Full Response: " . json_encode($vendorsData, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    } else {
+        error_log("[DisTedarikSO] Tedarikçi sayısı: " . count($vendors));
+    }
 }
 
 // POST işlemi: PurchaseRequests oluştur
@@ -1025,6 +1041,30 @@ body {
                 </div>
             </section>
 
+            <!-- Debug Panel -->
+            <?php if ($isUnregisteredMode): ?>
+            <div class="card" style="background: #fef3c7; border: 2px solid #f59e0b; margin-bottom: 1.5rem;">
+                <h3 style="color: #92400e; margin-bottom: 1rem;">🔍 Debug - Tedarikçi Bilgileri</h3>
+                <div style="font-family: monospace; font-size: 0.85rem; color: #78350f;">
+                    <p><strong>Query:</strong> <?= htmlspecialchars($vendorsQuery ?? 'N/A') ?></p>
+                    <p><strong>HTTP Status:</strong> <?= htmlspecialchars($vendorsData['status'] ?? 'NO STATUS') ?></p>
+                    <p><strong>Response Keys:</strong> <?= isset($vendorsData['response']) ? htmlspecialchars(implode(', ', array_keys($vendorsData['response']))) : 'NO RESPONSE' ?></p>
+                    <p><strong>Tedarikçi Sayısı:</strong> <?= count($vendors) ?></p>
+                    <?php if (!empty($vendors)): ?>
+                        <p><strong>İlk 3 Tedarikçi:</strong></p>
+                        <ul>
+                            <?php foreach (array_slice($vendors, 0, 3) as $vendor): ?>
+                                <li><?= htmlspecialchars($vendor['CardCode'] ?? '') ?> - <?= htmlspecialchars($vendor['CardName'] ?? '') ?></li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php else: ?>
+                        <p style="color: #dc2626;"><strong>Hata:</strong> Tedarikçi bulunamadı!</p>
+                        <pre style="background: white; padding: 0.5rem; border-radius: 4px; overflow-x: auto; max-height: 200px; overflow-y: auto;"><?= htmlspecialchars(json_encode($vendorsData ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <?php endif; ?>
+            
             <!-- Kayıt Dışı Mod için Bilgi Alanları -->
             <?php if ($isUnregisteredMode): ?>
             <section class="card" style="background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border: 2px solid #3b82f6; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);">
@@ -1033,12 +1073,40 @@ body {
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
                         <div>
                             <label style="display: block; font-weight: 600; color: #1e40af; margin-bottom: 0.5rem;">Tedarikçi / Muhatap *</label>
-                            <select id="vendorSelect" required style="width: 100%; padding: 0.5rem; border: 2px solid #3b82f6; border-radius: 6px; font-size: 0.875rem; background: white; color: #1f2937;">
-                                <option value="">Seçiniz...</option>
-                                <?php foreach ($vendors as $vendor): ?>
-                                    <option value="<?= htmlspecialchars($vendor['CardCode']) ?>"><?= htmlspecialchars($vendor['CardCode'] . ' - ' . $vendor['CardName']) ?></option>
-                                <?php endforeach; ?>
-                            </select>
+                            <div style="position: relative;">
+                                <div class="vendor-select-container" style="position: relative;">
+                                    <input type="text" 
+                                           id="vendorInput" 
+                                           required
+                                           placeholder="Tedarikçi ara veya seçiniz..." 
+                                           autocomplete="off"
+                                           style="width: 100%; padding: 0.5rem; border: 2px solid #3b82f6; border-radius: 6px; font-size: 0.875rem; background: white; color: #1f2937;"
+                                           onkeyup="filterVendors(this.value)"
+                                           onfocus="showVendorDropdown()"
+                                           onclick="showVendorDropdown()">
+                                    <input type="hidden" id="vendorCode" name="vendor_code" required>
+                                    <div id="vendorDropdown" class="vendor-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 2px solid #3b82f6; border-radius: 6px; max-height: 300px; overflow-y: auto; z-index: 1000; margin-top: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                                        <?php if (empty($vendors)): ?>
+                                            <div style="padding: 1rem; text-align: center; color: #6b7280;">
+                                                Tedarikçi bulunamadı. Lütfen sayfayı yenileyin.
+                                            </div>
+                                        <?php else: ?>
+                                            <?php foreach ($vendors as $vendor): ?>
+                                                <div class="vendor-option" 
+                                                     data-code="<?= htmlspecialchars($vendor['CardCode'] ?? '') ?>"
+                                                     data-name="<?= htmlspecialchars($vendor['CardName'] ?? '') ?>"
+                                                     onclick="selectVendor('<?= htmlspecialchars($vendor['CardCode'] ?? '') ?>', '<?= htmlspecialchars($vendor['CardName'] ?? '') ?>')"
+                                                     onmouseenter="this.style.backgroundColor='#f3f4f6'"
+                                                     onmouseleave="this.style.backgroundColor='white'"
+                                                     style="padding: 0.75rem; cursor: pointer; border-bottom: 1px solid #e5e7eb; transition: background-color 0.2s;">
+                                                    <div style="font-weight: 600; color: #1f2937;"><?= htmlspecialchars($vendor['CardName'] ?? '') ?></div>
+                                                    <div style="font-size: 0.8rem; color: #6b7280;"><?= htmlspecialchars($vendor['CardCode'] ?? '') ?></div>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                         <div>
                             <label style="display: block; font-weight: 600; color: #1e40af; margin-bottom: 0.5rem;">İrsaliye Numarası *</label>
@@ -1888,7 +1956,7 @@ function saveRequest() {
     
     // Kayıt dışı mod için ekstra bilgiler
         if (isUnregisteredMode) {
-            const vendorCode = document.getElementById('vendorSelect')?.value || '';
+            const vendorCode = document.getElementById('vendorCode')?.value || '';
             const irsaliyeNo = document.getElementById('irsaliyeNo')?.value || '';
             
             if (!vendorCode || !irsaliyeNo) {
@@ -1929,22 +1997,76 @@ function saveRequest() {
 }
 
 // Kayıt dışı mod için sepet panelinde bilgileri güncelle
+// Tedarikçi dropdown fonksiyonları
+function showVendorDropdown() {
+    const dropdown = document.getElementById('vendorDropdown');
+    if (dropdown) {
+        dropdown.style.display = 'block';
+    }
+}
+
+function hideVendorDropdown() {
+    const dropdown = document.getElementById('vendorDropdown');
+    if (dropdown) {
+        dropdown.style.display = 'none';
+    }
+}
+
+function filterVendors(searchText) {
+    const dropdown = document.getElementById('vendorDropdown');
+    if (!dropdown) return;
+    
+    const options = dropdown.querySelectorAll('.vendor-option');
+    const searchLower = normalizeForSearch(searchText);
+    
+    options.forEach(option => {
+        const name = option.getAttribute('data-name') || '';
+        const code = option.getAttribute('data-code') || '';
+        const nameNormalized = normalizeForSearch(name);
+        const codeNormalized = normalizeForSearch(code);
+        
+        if (searchLower === '' || nameNormalized.includes(searchLower) || codeNormalized.includes(searchLower)) {
+            option.style.display = 'block';
+        } else {
+            option.style.display = 'none';
+        }
+    });
+    
+    // Dropdown'ı göster
+    showVendorDropdown();
+}
+
+function selectVendor(cardCode, cardName) {
+    const vendorInput = document.getElementById('vendorInput');
+    const vendorCode = document.getElementById('vendorCode');
+    
+    if (vendorInput) {
+        vendorInput.value = cardName;
+    }
+    if (vendorCode) {
+        vendorCode.value = cardCode;
+    }
+    
+    hideVendorDropdown();
+    updateUnregisteredInfoInSepet();
+}
+
 function updateUnregisteredInfoInSepet() {
     const urlParams = new URLSearchParams(window.location.search);
     const isUnregisteredMode = urlParams.get('mode') === 'unregistered';
     
     if (!isUnregisteredMode) return;
     
-    const vendorSelect = document.getElementById('vendorSelect');
+    const vendorInput = document.getElementById('vendorInput');
+    const vendorCode = document.getElementById('vendorCode');
     const irsaliyeNo = document.getElementById('irsaliyeNo');
     
-    if (vendorSelect && irsaliyeNo) {
+    if (vendorInput && vendorCode && irsaliyeNo) {
         const vendorDisplay = document.getElementById('sepetVendorDisplay');
         const irsaliyeDisplay = document.getElementById('sepetIrsaliyeDisplay');
         
         if (vendorDisplay) {
-            const selectedOption = vendorSelect.options[vendorSelect.selectedIndex];
-            vendorDisplay.textContent = selectedOption ? selectedOption.text : '-';
+            vendorDisplay.textContent = vendorInput.value || '-';
         }
         if (irsaliyeDisplay) {
             irsaliyeDisplay.textContent = irsaliyeNo.value || '-';
@@ -1958,11 +2080,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const isUnregisteredMode = urlParams.get('mode') === 'unregistered';
     
     if (isUnregisteredMode) {
-        const vendorSelect = document.getElementById('vendorSelect');
+        const vendorInput = document.getElementById('vendorInput');
         const irsaliyeNo = document.getElementById('irsaliyeNo');
         
-        if (vendorSelect) {
-            vendorSelect.addEventListener('change', updateUnregisteredInfoInSepet);
+        if (vendorInput) {
+            vendorInput.addEventListener('input', updateUnregisteredInfoInSepet);
         }
         if (irsaliyeNo) {
             irsaliyeNo.addEventListener('input', updateUnregisteredInfoInSepet);
@@ -1972,11 +2094,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Close dropdowns when clicking outside
 document.addEventListener('click', function(e) {
-    if (!e.target.closest('.multi-select-container') && !e.target.closest('.single-select-container')) {
+    if (!e.target.closest('.multi-select-container') && !e.target.closest('.single-select-container') && !e.target.closest('.vendor-select-container')) {
         document.querySelectorAll('.multi-select-dropdown').forEach(d => d.classList.remove('show'));
         document.querySelectorAll('.multi-select-input').forEach(d => d.classList.remove('active'));
         document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
         document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
+        hideVendorDropdown();
     }
 });
     </script>
