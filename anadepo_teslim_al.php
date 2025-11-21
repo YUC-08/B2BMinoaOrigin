@@ -227,34 +227,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'ItemCode' => $itemCode,
                 'Quantity' => $normalTransferMiktar, // Normal transfer = Fiziksel - Kusurlu
                 'FromWarehouseCode' => $toWarehouse,
-                'WarehouseCode' => $targetWarehouse
+                'WarehouseCode' => $targetWarehouse,
+                'U_ASB2B_QutMaster' => (int)$doc // InventoryTransferRequest DocEntry
             ];
             
-            if (!empty($notes)) {
-                $lineData['U_ASB2B_Comments'] = $notes;
-            }
-            
-            // Kusurlu miktar > 0 ise 'K', eksik/fazla negatif ise 'E', yoksa '-'
-            if ($damagedQty > 0) {
-                $lineData['U_ASB2B_Damaged'] = 'K';
-            } elseif ($eksikFazlaQty < 0) {
+            // 1. line'da (normal transfer) sadece eksik varsa 'E', kusurlu varsa 'K' yazma
+            // Kusurlu miktar sadece 2. line'da (Fire & Zayi deposuna) yazılacak
+            if ($eksikFazlaQty < 0) {
                 $lineData['U_ASB2B_Damaged'] = 'E';
             } else {
                 $lineData['U_ASB2B_Damaged'] = '-';
             }
             
-            // U_ASB2B_LOST enum değerleri: '0' (veya '-'), '1' (Fire), '2' (Zayi)
+            // U_ASB2B_LOST: Enum değerleri ('0', '1', '2')
             // Eksik/Fazla miktar negatif ise (eksik varsa) → '2' (Zayi)
             // Eksik/Fazla miktar pozitif ise (fazla varsa) → '1' (Fire)
             // Eksik/Fazla miktar 0 ise → kaydetme
+            $commentsParts = [];
+            if (!empty($notes)) {
+                $commentsParts[] = $notes;
+            }
+            
+            // Kusurlu miktarı Comments'e ekle
+            if ($damagedQty > 0) {
+                $commentsParts[] = "Kusurlu: {$damagedQty} adet";
+            }
+            
             if ($eksikFazlaQty < 0) {
                 // Eksik varsa → Zayi
                 $lineData['U_ASB2B_LOST'] = '2';
+                $zayiMiktar = abs($eksikFazlaQty); // Mutlak değer
+                $commentsParts[] = "Zayi: {$zayiMiktar} adet";
             } elseif ($eksikFazlaQty > 0) {
                 // Fazla varsa → Fire
                 $lineData['U_ASB2B_LOST'] = '1';
             }
             // 0 ise kaydetme
+            
+            // Comments'i birleştir
+            if (!empty($commentsParts)) {
+                $lineData['U_ASB2B_Comments'] = implode(' | ', $commentsParts);
+            }
             
             $transferLines[] = $lineData;
         }
@@ -299,16 +312,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'ItemCode' => $itemCode,
                 'Quantity' => $damagedQty, // Kusurlu miktar
                 'FromWarehouseCode' => $toWarehouse,
-                'WarehouseCode' => $fireZayiWarehouse // Fire & Zayi deposu
+                'WarehouseCode' => $fireZayiWarehouse, // Fire & Zayi deposu
+                'U_ASB2B_QutMaster' => (int)$doc // InventoryTransferRequest DocEntry
             ];
             
             // Fire & Zayi satırı için UDF'ler
             $fireZayiLineData['U_ASB2B_Damaged'] = 'K'; // Kusurlu
+            
+            // Fire & Zayi satırı Comments'i
+            $fireZayiCommentsParts = [];
             if (!empty($notes)) {
-                $fireZayiLineData['U_ASB2B_Comments'] = $notes . ' (Fire & Zayi)';
-            } else {
-                $fireZayiLineData['U_ASB2B_Comments'] = 'Fire & Zayi';
+                $fireZayiCommentsParts[] = $notes;
             }
+            $fireZayiCommentsParts[] = "Kusurlu: {$damagedQty} adet";
+            $fireZayiCommentsParts[] = 'Fire & Zayi';
+            
+            $fireZayiLineData['U_ASB2B_Comments'] = implode(' | ', $fireZayiCommentsParts);
             
             $transferLines[] = $fireZayiLineData;
         }
