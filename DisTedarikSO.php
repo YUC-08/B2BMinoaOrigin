@@ -221,12 +221,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
         }
     }
     
-    // Stok durumu filtresi (MainQty alanı kullanılıyor)
+    // Şube Stok Durumu filtresi (BranQty alanı kullanılıyor)
     if (!empty($stockStatus)) {
         if ($stockStatus === 'var') {
-            $filter .= " and MainQty gt 0";
+            $filter .= " and BranQty gt 0";
         } else if ($stockStatus === 'yok') {
-            $filter .= " and MainQty le 0";
+            $filter .= " and BranQty le 0";
         }
     }
     
@@ -702,6 +702,8 @@ body {
     gap: 6px;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .qty-btn {
@@ -1011,7 +1013,7 @@ body {
                         <div class="multi-select-container">
                             <div class="multi-select-input" onclick="toggleDropdown('stockStatus')">
                                 <div id="stockStatusTags"></div>
-                                <input type="text" id="filterStockStatus" class="filter-input" placeholder="STOK DURUMU" readonly>
+                                <input type="text" id="filterStockStatus" class="filter-input" placeholder="ŞUBE STOK DURUMU" readonly>
                             </div>
                             <div class="multi-select-dropdown" id="stockStatusDropdown">
                                 <div class="multi-select-option" data-value="" onclick="selectOption('stockStatus', '', 'Tümü')">Tümü</div>
@@ -1074,19 +1076,17 @@ body {
                             <th>Kalem Kodu</th>
                             <th>Kalem Tanımı</th>
                             <th>Kalem Grubu</th>
-                            <th>Ana Depo Stok Durumu</th>
                             <th>Şube Miktarı</th>
-                            <th>Minimum Miktar</th>
+                            <th>Minimum</th>
                             <th>Sipariş Miktarı</th>
                             <th>Birim</th>
                             <th>Dönüşüm</th>
-                            <th>Ana Depo</th>
                             <th>Varsayılan Tedarikçi</th>
                         </tr>
                     </thead>
                     <tbody id="itemsTableBody">
                         <tr>
-                            <td colspan="11" style="text-align:center;color:#888;padding:20px;">
+                            <td colspan="9" style="text-align:center;color:#888;padding:20px;">
                                 Filtre seçerek veya arama yaparak kalemleri görüntüleyin.
                             </td>
                         </tr>
@@ -1609,7 +1609,7 @@ function loadItems() {
         .catch(err => {
             console.error('Hata:', err);
             document.getElementById('itemsTableBody').innerHTML = 
-                '<tr><td colspan="11" style="text-align:center;color:#dc3545;">Veri yüklenirken hata oluştu. Console\'u kontrol edin.</td></tr>';
+                '<tr><td colspan="9" style="text-align:center;color:#dc3545;">Veri yüklenirken hata oluştu. Console\'u kontrol edin.</td></tr>';
         });
 }
 
@@ -1617,7 +1617,7 @@ function renderItems(items) {
     const tbody = document.getElementById('itemsTableBody');
     
     if (items.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
         return;
     }
     
@@ -1648,17 +1648,18 @@ function renderItems(items) {
         const isInSepet = selectedItems.hasOwnProperty(itemCode);
         const sepetQty = isInSepet ? selectedItems[itemCode].quantity : 0;
         
-        // Dönüşüm kolonu: Eğer sipariş miktarı varsa "miktar x UomConvert", yoksa sadece UomConvert
+        // Dönüşüm kolonu: BaseQty kullanarak hesaplama gösterimi
         let conversionText = '-';
-        if (uomConvert && uomConvert !== 1) {
+        if (baseQty && baseQty !== 1 && baseQty > 0) {
             if (sepetQty > 0) {
-                // Sipariş miktarı × UomConvert formatında göster
-                conversionText = `${formatQuantity(sepetQty)}x${formatQuantity(uomConvert)}`;
+                // Talep miktarı × BaseQty = AD karşılığı formatında göster
+                const adKarşılığı = sepetQty * baseQty;
+                conversionText = `${formatQuantity(sepetQty)}x${formatQuantity(baseQty)} = ${formatQuantity(adKarşılığı)} AD`;
             } else {
-                // Sipariş miktarı yoksa sadece UomConvert göster
-                conversionText = formatQuantity(uomConvert);
+                // Sipariş miktarı yoksa örnek göster: 1xBaseQty = BaseQty AD
+                conversionText = `1x${formatQuantity(baseQty)} = ${formatQuantity(baseQty)} AD`;
             }
-        } else if (uomConvert === 1) {
+        } else if (baseQty === 1) {
             // Standart (1 adet) ise sadece miktarı göster veya boş bırak
             if (sepetQty > 0) {
                 conversionText = formatQuantity(sepetQty);
@@ -1672,7 +1673,6 @@ function renderItems(items) {
                 <td>${itemCode}</td>
                 <td>${itemName}</td>
                 <td>${itemGroup}</td>
-                <td>${formatQuantity(mainQty)}</td>
                 <td>${formatQuantity(branQty)}</td>
                 <td>${formatQuantity(minQty)}</td>
                 <td>
@@ -1691,7 +1691,6 @@ function renderItems(items) {
                 </td>
                 <td>${uomCode}</td>
                 <td style="text-align: center; font-weight: 600; color: #3b82f6;">${conversionText}</td>
-                <td>${fromWhsName}</td>
                 <td>${defaultVendor}</td>
             </tr>
         `;
@@ -1735,17 +1734,19 @@ function updateQuantity(itemCode, quantity) {
             };
         } else {
             selectedItems[itemCode].quantity = qty;
-    }
-} else {
+        }
+    } else {
         // Sepetten çıkar
         if (selectedItems[itemCode]) {
             delete selectedItems[itemCode];
         }
     }
     
-    // Dönüşüm kolonunu güncellemek için tabloyu yeniden render et
-    renderItems(itemsData);
     updateSepet();
+    // Dönüşüm kolonunu güncellemek için tabloyu yeniden render et
+    if (itemsData && itemsData.length > 0) {
+        renderItems(itemsData);
+    }
 }
 
 function toggleSepet() {
@@ -1769,6 +1770,18 @@ function updateSepet() {
     const badge = document.getElementById('sepetBadge');
     const itemCount = Object.keys(selectedItems).length;
     
+    // Miktar formatı: 10.00 → 10, 10.5 → 10,5, 10.25 → 10,25
+    function formatQuantity(qty) {
+        const num = parseFloat(qty);
+        if (isNaN(num)) return '0';
+        // Tam sayı ise küsurat gösterme
+        if (num % 1 === 0) {
+            return num.toString();
+        }
+        // Küsurat varsa virgül ile göster
+        return num.toString().replace('.', ',');
+    }
+    
     // Badge güncelle
     if (itemCount > 0) {
         badge.textContent = itemCount;
@@ -1783,14 +1796,32 @@ function updateSepet() {
         return;
     }
     
-    list.innerHTML = Object.values(selectedItems).map(item => `
+    list.innerHTML = Object.values(selectedItems).map(item => {
+        const qty = parseFloat(item.quantity) || 0;
+        const baseQty = parseFloat(item.baseQty || 1.0);
+        const uomCode = item.uomCode || 'AD';
+        
+        // Miktar + birim gösterimi
+        let qtyDisplay = `${formatQuantity(qty)} ${uomCode}`;
+        
+        // Eğer çevrimli ise (BaseQty !== 1), AD karşılığını da göster
+        let conversionInfo = '';
+        if (baseQty !== 1 && baseQty > 0) {
+            const adKarşılığı = qty * baseQty;
+            qtyDisplay += ` <span style="font-size: 0.85rem; color: #6b7280; font-weight: normal;">(${formatQuantity(adKarşılığı)} AD)</span>`;
+            conversionInfo = `<div style="font-size: 0.8rem; color: #3b82f6; margin-top: 4px;">Dönüşüm: ${formatQuantity(qty)}x${formatQuantity(baseQty)} = ${formatQuantity(adKarşılığı)} AD</div>`;
+        }
+        
+        return `
         <div class="sepet-item">
             <div class="sepet-item-info">
                 <div class="sepet-item-name">${item.itemCode} - ${item.itemName}</div>
+                <div style="margin-bottom: 0.5rem; font-size: 0.9rem; color: #3b82f6; font-weight: 600;">${qtyDisplay}</div>
+                ${conversionInfo}
                 <div class="sepet-item-qty">
                     <button type="button" class="qty-btn" onclick="changeQuantity('${item.itemCode}', -1)">-</button>
                     <input type="number" 
-                           value="${item.quantity}" 
+                           value="${qty}" 
                            min="0" 
                            step="0.01"
                            onchange="updateQuantity('${item.itemCode}', this.value)"
@@ -1800,7 +1831,8 @@ function updateSepet() {
         </div>
             <button type="button" class="remove-sepet-btn" onclick="removeFromSepet('${item.itemCode}')">Kaldır</button>
         </div>
-    `).join('');
+        `;
+    }).join('');
 }
 
 function removeFromSepet(itemCode) {

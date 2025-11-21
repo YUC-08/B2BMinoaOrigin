@@ -311,6 +311,7 @@ body {
     line-height: 1.6;
 }
 
+/* Main content - adjusted for sidebar */
 .main-content {
     width: 100%;
     background: whitesmoke;
@@ -318,156 +319,311 @@ body {
     min-height: 100vh;
 }
 
-.page-header {
-    background: white;
-    padding: 20px 2rem;
-    border-radius: 0 0 0 20px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin: 0;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    height: 80px;
-    box-sizing: border-box;
-}
+        /* Modern page header matching AnaDepoSO style */
+        .page-header {
+            background: white;
+            padding: 20px 2rem;
+            border-radius: 0 0 0 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            height: 80px;
+            box-sizing: border-box;
+        }
 
-.page-header h2 {
-    color: #1e40af;
-    font-size: 1.75rem;
-    font-weight: 600;
-    margin: 0;
-}
+        .page-header h2 {
+            color: #1e40af;
+            font-size: 1.75rem;
+            font-weight: 600;
+        }
 
-.content-wrapper {
-    padding: 24px 32px;
-    max-width: 1400px;
-    margin: 0 auto;
-}
+        /* Modern button styles */
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+        }
 
-.card {
-    background: white;
-    border-radius: 12px;
-    padding: 1.5rem;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    margin: 0 32px 24px 32px;
-}
+        .btn-primary {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            color: white;
+        }
 
-.alert {
-    padding: 1rem 1.5rem;
-    border-radius: 8px;
-    margin: 0 32px 1.5rem 32px;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+        }
 
-.alert-danger {
-    background: #fee2e2;
-    border: 1px solid #ef4444;
-    color: #991b1b;
-}
+        .btn-secondary {
+            background: white;
+            color: #3b82f6;
+            border: 2px solid #3b82f6;
+        }
 
-.form-group {
-    margin-bottom: 1.5rem;
-}
+        .btn-secondary:hover {
+            background: #eff6ff;
+            transform: translateY(-2px);
+        }
 
-.form-group label {
-    display: block;
-    margin-bottom: 0.5rem;
-    font-weight: 600;
-    color: #374151;
-}
+        /* Modern card styling */
+        .content-wrapper {
+            padding: 24px 32px;
+        }
 
-.form-group input {
-    width: 100%;
-    padding: 0.5rem;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    font-size: 0.875rem;
-}
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            padding: 2rem;
+            margin: 24px 32px 2rem 32px;
+        }
 
-.data-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.875rem;
-}
+        /* Modern alert styling */
+        .alert {
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            margin: 24px 32px 1.5rem 32px;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
 
-.data-table th {
-    background: #f9fafb;
-    padding: 12px;
-    text-align: left;
-    font-weight: 600;
-    color: #374151;
-    border-bottom: 2px solid #e5e7eb;
-}
+        .alert-danger {
+            background: #fee2e2;
+            border: 1px solid #ef4444;
+            color: #991b1b;
+        }
 
-.data-table td {
-    padding: 12px;
-    border-bottom: 1px solid #e5e7eb;
-}
+        /* Modern info box */
+        .info-box {
+            background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+            border: 1px solid #3b82f6;
+            border-radius: 8px;
+            padding: 1rem 1.5rem;
+            margin: 0 32px 1.5rem 32px;
+            color: #1e40af;
+        }
 
-.qty-input {
-    width: 100px;
-    padding: 0.5rem;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    text-align: center;
-}
+        .info-box strong {
+            font-weight: 600;
+        }
 
-.qty-btn {
-    padding: 0.5rem 0.75rem;
-    border: 1px solid #d1d5db;
-    background: white;
-    border-radius: 6px;
-    cursor: pointer;
-    font-weight: 600;
-}
+        /* Modern table styling */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
 
-.quantity-controls {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
+        .data-table thead {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            color: white;
+        }
 
-.btn {
-    padding: 0.75rem 1.5rem;
-    border: none;
-    border-radius: 6px;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    text-decoration: none;
-    display: inline-block;
-}
+        .data-table th {
+            padding: 1rem;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
 
-.btn-primary {
-    background: #3b82f6;
-    color: white;
-}
+        .data-table th:nth-child(4),
+        .data-table th:nth-child(5),
+        .data-table th:nth-child(6),
+        .data-table th:nth-child(7),
+        .data-table th:nth-child(8) {
+            text-align: center;
+        }
 
-.btn-primary:hover {
-    background: #2563eb;
-}
+        .data-table tbody tr {
+            border-bottom: 1px solid #e5e7eb;
+            transition: background-color 0.2s;
+        }
 
-.btn-secondary {
-    background: #6b7280;
-    color: white;
-}
+        .data-table tbody tr:hover {
+            background-color: #f8fafc;
+        }
 
-.btn-secondary:hover {
-    background: #4b5563;
-}
+        .data-table td {
+            padding: 1rem;
+            font-size: 0.95rem;
+        }
 
-.form-actions {
-    margin-top: 2rem;
-    text-align: right;
-    display: flex;
-    gap: 1rem;
-    justify-content: flex-end;
-}
+        .data-table td:nth-child(4),
+        .data-table td:nth-child(5),
+        .data-table td:nth-child(6),
+        .data-table td:nth-child(7),
+        .data-table td:nth-child(8) {
+            text-align: center;
+        }
+
+        .table-cell-center {
+            text-align: center;
+        }
+
+        /* Modern quantity controls */
+        .quantity-controls {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .qty-btn {
+            padding: 0.5rem 1rem;
+            border: 2px solid #3b82f6;
+            background: white;
+            color: #3b82f6;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 1rem;
+            min-width: 40px;
+            transition: all 0.2s;
+        }
+
+        .qty-btn:hover {
+            background: #3b82f6;
+            color: white;
+            transform: scale(1.05);
+        }
+
+        .qty-btn:active {
+            transform: scale(0.95);
+        }
+
+        .copy-arrow-btn {
+            min-width: 35px;
+            padding: 0.5rem;
+            font-size: 1.2rem;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .copy-arrow-btn:hover:not(:disabled) {
+            background: #3b82f6;
+            color: white;
+            transform: scale(1.1);
+        }
+
+        .copy-arrow-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .qty-input {
+            width: 100px;
+            text-align: center;
+            padding: 0.5rem;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            transition: border-color 0.2s;
+        }
+
+        .qty-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .qty-input[readonly] {
+            background-color: #f3f4f6;
+            color: #6b7280;
+        }
+        
+        /* Eksik/Fazla miktar alanı için cebirsel gösterim */
+        input[name^="eksik_fazla"] {
+            font-weight: 500;
+        }
+        
+        .eksik-fazla-negatif {
+            color: #dc2626 !important; /* Negatif değerler için kırmızı */
+        }
+        
+        .eksik-fazla-pozitif {
+            color: #16a34a !important; /* Pozitif değerler için yeşil */
+        }
+        
+        .eksik-fazla-sifir {
+            color: #6b7280 !important; /* Sıfır için gri */
+        }
+
+        .qty-input-small {
+            width: 80px;
+        }
+
+        .notes-textarea {
+            width: 100%;
+            min-width: 150px;
+            padding: 0.5rem;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            resize: vertical;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+
+        .notes-textarea:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .file-input {
+            font-size: 0.875rem;
+            padding: 0.25rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 0.5rem;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            transition: border-color 0.2s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        /* Form actions styling */
+        .form-actions {
+            margin-top: 2rem;
+            text-align: right;
+            display: flex;
+            gap: 1rem;
+            justify-content: flex-end;
+        }
     </style>
 </head>
 <body>
@@ -555,6 +711,7 @@ body {
                             <th>İrsaliye Miktarı</th>
                             <th>Eksik/Fazla Miktar</th>
                             <th>Kusurlu Miktar</th>
+                            <th>Fiziksel</th>
                             <th>Not</th>
                             <th>Görsel</th>
                         </tr>
@@ -586,13 +743,23 @@ body {
                             <td><?= htmlspecialchars($line['ItemCode'] ?? '-') ?></td>
                             <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
                             <td>
-                                <input type="number"
-                                       value="<?= htmlspecialchars($quantityDisplay) ?>"
-                                       readonly
-                                       step="0.01"
-                                       class="qty-input"
-                                       style="<?= $disabledStyle ?>"
-                                       title="<?= htmlspecialchars($quantityTooltip) ?>">
+                                <div style="display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+                                    <input type="number"
+                                           id="siparis_<?= $index ?>"
+                                           value="<?= htmlspecialchars($quantityDisplay) ?>"
+                                           readonly
+                                           step="0.01"
+                                           class="qty-input"
+                                           style="<?= $disabledStyle ?>"
+                                           title="<?= htmlspecialchars($quantityTooltip) ?>">
+                                    <button type="button" 
+                                            class="qty-btn copy-arrow-btn" 
+                                            onclick="copySiparisToIrsaliye(<?= $index ?>, <?= $quantityDisplay ?>, <?= $remainingQty ?>);" 
+                                            <?= $disabledAttr ?> 
+                                            title="Sipariş miktarını irsaliye miktarına kopyala">
+                                        →
+                                    </button>
+                                </div>
                                 <?php if (!empty($quantityTooltip)): ?>
                                     <small style="display: block; color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem;">
                                         Sipariş: <?= $orderQuantity ?>
@@ -617,7 +784,7 @@ body {
                                 </div>
                                 <?php if ($isLineDisabled): ?>
                                     <small style="color: #dc2626; display: block; margin-top: 0.25rem;">
-                                        <?= $isClosed ? 'Sipariş kapalı' : 'RemainingQty: ' . $remainingQty ?>
+                                        <?= $isClosed ? 'Sipariş kapalı' : '' ?>
                                     </small>
                                 <?php else: ?>
                                     <small id="warning_<?= $index ?>" style="color: #dc2626; display: none; margin-top: 0.25rem; font-weight: 600;">
@@ -630,21 +797,22 @@ body {
                             </td>
                             <td>
                                 <div class="quantity-controls">
-                                    <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'eksik', -1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">-</button>
+                                    <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, -1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">-</button>
                                     <input type="number"
                                            name="eksik_fazla[<?= $index ?>]"
                                            id="eksik_<?= $index ?>"
                                            value="0"
                                            step="0.01"
                                            class="qty-input"
+                                           onchange="calculatePhysical(<?= $index ?>)"
                                            <?= $disabledAttr ?>
                                            style="<?= $disabledStyle ?>">
-                                    <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'eksik', 1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">+</button>
+                                    <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, 1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">+</button>
                                 </div>
                             </td>
                             <td>
                                 <div class="quantity-controls">
-                                    <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'kusurlu', -1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">-</button>
+                                    <button type="button" class="qty-btn" onclick="changeKusurlu(<?= $index ?>, -1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">-</button>
                                     <input type="number"
                                            name="kusurlu[<?= $index ?>]"
                                            id="kusurlu_<?= $index ?>"
@@ -652,9 +820,20 @@ body {
                                            min="0"
                                            step="0.01"
                                            class="qty-input"
+                                           onchange="calculatePhysical(<?= $index ?>)"
                                            <?= $disabledAttr ?>
                                            style="<?= $disabledStyle ?>">
-                                    <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'kusurlu', 1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">+</button>
+                                    <button type="button" class="qty-btn" onclick="changeKusurlu(<?= $index ?>, 1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">+</button>
+                                </div>
+                            </td>
+                            <td class="table-cell-center">
+                                <div style="display: flex; align-items: center; justify-content: center; gap: 4px;">
+                                    <input type="text"
+                                           id="fiziksel_<?= $index ?>"
+                                           value="0"
+                                           readonly
+                                           class="qty-input"
+                                           style="<?= $disabledStyle ?>">
                                 </div>
                             </td>
                             <td>
@@ -693,6 +872,16 @@ body {
 </main>
 
 <script>
+// Sayfa yüklendiğinde fiziksel miktarları hesapla
+document.addEventListener('DOMContentLoaded', function() {
+    const eksikFazlaInputs = document.querySelectorAll('input[name^="eksik_fazla"]');
+    eksikFazlaInputs.forEach(function(input) {
+        const index = input.id.replace('eksik_', '');
+        updateEksikFazlaColor(input);
+        calculatePhysical(parseInt(index));
+    });
+});
+
 function changeQuantity(index, type, delta) {
     const input = document.getElementById(type + '_' + index);
     if (!input) return;
@@ -701,7 +890,142 @@ function changeQuantity(index, type, delta) {
     value += delta;
     if (value < 0) value = 0;
     input.value = value;
+    
+    if (type === 'irsaliye') {
+        calculatePhysical(index);
+        checkRemainingQty(index, parseFloat(input.getAttribute('data-remaining-qty')) || 0);
+    }
 }
+
+// Sipariş miktarını irsaliye miktarına kopyala
+function copySiparisToIrsaliye(index, siparisMiktari, remainingQty) {
+    const irsaliyeInput = document.getElementById('irsaliye_' + index);
+    if (!irsaliyeInput || irsaliyeInput.disabled) return;
+    
+    irsaliyeInput.value = siparisMiktari;
+    calculatePhysical(index);
+    checkRemainingQty(index, remainingQty);
+}
+
+// Eksik/Fazla miktar değiştirme (cebirsel - negatif/pozitif olabilir)
+function changeEksikFazla(index, delta) {
+    const input = document.getElementById('eksik_' + index);
+    if (!input) return;
+    
+    let value = parseFloat(input.value) || 0;
+    value += delta;
+    input.value = value;
+    updateEksikFazlaColor(input);
+    calculatePhysical(index);
+}
+
+// Eksik/Fazla miktar alanının rengini güncelle
+function updateEksikFazlaColor(input) {
+    if (!input) return;
+    const value = parseFloat(input.value) || 0;
+    input.classList.remove('eksik-fazla-negatif', 'eksik-fazla-pozitif', 'eksik-fazla-sifir');
+    
+    if (value < 0) {
+        input.classList.add('eksik-fazla-negatif');
+    } else if (value > 0) {
+        input.classList.add('eksik-fazla-pozitif');
+    } else {
+        input.classList.add('eksik-fazla-sifir');
+    }
+}
+
+// Kusurlu miktar değiştirme (min 0, max fiziksel miktar)
+function changeKusurlu(index, delta) {
+    const input = document.getElementById('kusurlu_' + index);
+    if (!input) return;
+    
+    // Önce fiziksel miktarı hesapla
+    const irsaliyeInput = document.getElementById('irsaliye_' + index);
+    const eksikFazlaInput = document.getElementById('eksik_' + index);
+    if (!irsaliyeInput || !eksikFazlaInput) return;
+    
+    const irsaliye = parseFloat(irsaliyeInput.value) || 0;
+    const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
+    const fizikselMiktar = Math.max(0, irsaliye + eksikFazla);
+    
+    let value = parseFloat(input.value) || 0;
+    value += delta;
+    if (value < 0) value = 0;
+    // Kusurlu miktar fiziksel miktarı aşamaz
+    if (value > fizikselMiktar) value = fizikselMiktar;
+    input.value = value;
+    calculatePhysical(index);
+}
+
+// Fiziksel miktar hesaplama: İrsaliye + EksikFazla
+function calculatePhysical(index) {
+    const irsaliyeInput = document.getElementById('irsaliye_' + index);
+    const eksikFazlaInput = document.getElementById('eksik_' + index);
+    const kusurluInput = document.getElementById('kusurlu_' + index);
+    const fizikselInput = document.getElementById('fiziksel_' + index);
+    
+    if (!irsaliyeInput || !eksikFazlaInput || !kusurluInput || !fizikselInput) return;
+    
+    const irsaliye = parseFloat(irsaliyeInput.value) || 0;
+    const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
+    let kusurlu = parseFloat(kusurluInput.value) || 0;
+    
+    // Fiziksel = İrsaliye + EksikFazla
+    let fiziksel = irsaliye + eksikFazla;
+    
+    // Fiziksel miktar negatif olamaz, 0 olabilir
+    if (fiziksel < 0) {
+        fiziksel = 0;
+    }
+    
+    // Kusurlu miktar fiziksel miktarı aşamaz
+    if (kusurlu > fiziksel) {
+        kusurlu = fiziksel;
+        kusurluInput.value = kusurlu;
+    }
+    
+    // Format: Tam sayı ise küsurat gösterme, değilse virgül ile göster
+    let formattedValue;
+    if (fiziksel == Math.floor(fiziksel)) {
+        formattedValue = Math.floor(fiziksel).toString();
+    } else {
+        formattedValue = fiziksel.toFixed(2).replace('.', ',').replace(/0+$/, '').replace(/,$/, '');
+    }
+    
+    fizikselInput.value = formattedValue;
+}
+
+// Eksik/Fazla ve Kusurlu miktar değişikliklerinde fiziksel miktarı güncelle
+document.addEventListener('DOMContentLoaded', function() {
+    const eksikFazlaInputs = document.querySelectorAll('input[name^="eksik_fazla"]');
+    const kusurluInputs = document.querySelectorAll('input[name^="kusurlu"]');
+    const irsaliyeInputs = document.querySelectorAll('input[name^="irsaliye_qty"]');
+    
+    eksikFazlaInputs.forEach(function(input) {
+        const index = input.id.replace('eksik_', '');
+        updateEksikFazlaColor(input);
+        input.addEventListener('input', () => {
+            updateEksikFazlaColor(input);
+            calculatePhysical(parseInt(index));
+        });
+        input.addEventListener('change', () => {
+            updateEksikFazlaColor(input);
+            calculatePhysical(parseInt(index));
+        });
+    });
+    
+    kusurluInputs.forEach(function(input) {
+        const index = input.id.replace('kusurlu_', '');
+        input.addEventListener('input', () => calculatePhysical(parseInt(index)));
+        input.addEventListener('change', () => calculatePhysical(parseInt(index)));
+    });
+    
+    irsaliyeInputs.forEach(function(input) {
+        const index = input.id.replace('irsaliye_', '');
+        input.addEventListener('input', () => calculatePhysical(parseInt(index)));
+        input.addEventListener('change', () => calculatePhysical(parseInt(index)));
+    });
+});
 
 // Girilen miktar kalan miktarı karşılıyor mu?
 function checkRemainingQty(index, remainingQty) {
@@ -733,6 +1057,44 @@ function validateForm() {
     if (!teslimatNo) {
         alert('⚠️ Lütfen İrsaliye/Teslimat numarası girin!');
         if (teslimatNoInput) teslimatNoInput.focus();
+        return false;
+    }
+
+    // Fiziksel miktar kontrolü - negatif olamaz
+    let hasNegativeQty = false;
+    const fizikselInputs = document.querySelectorAll('input[id^="fiziksel_"]');
+    
+    fizikselInputs.forEach(function(input) {
+        const value = parseFloat(input.value) || 0;
+        if (value < 0) {
+            hasNegativeQty = true;
+        }
+    });
+    
+    if (hasNegativeQty) {
+        alert('Fiziksel miktar negatif olamaz! Lütfen eksik/fazla ve kusurlu miktarları kontrol edin.');
+        return false;
+    }
+
+    // Kusurlu miktar fiziksel miktarı geçemez kontrolü
+    let hasInvalidKusurlu = false;
+    const kusurluInputs = document.querySelectorAll('input[name^="kusurlu"]');
+    
+    kusurluInputs.forEach(function(input) {
+        const index = input.id.replace('kusurlu_', '');
+        const kusurlu = parseFloat(input.value) || 0;
+        const fizikselInput = document.getElementById('fiziksel_' + index);
+        
+        if (fizikselInput) {
+            const fiziksel = parseFloat(fizikselInput.value) || 0;
+            if (kusurlu > fiziksel) {
+                hasInvalidKusurlu = true;
+            }
+        }
+    });
+    
+    if (hasInvalidKusurlu) {
+        alert('Kusurlu miktar fiziksel miktarı geçemez! Lütfen kusurlu miktarları kontrol edin.');
         return false;
     }
 

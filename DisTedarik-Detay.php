@@ -136,6 +136,41 @@ function formatDate($date) {
     return date('d.m.Y', strtotime($date));
 }
 
+// Alıcı Şube bilgisini çek
+// Önce detailData'dan kontrol et, yoksa session'dan branch bilgisiyle çek
+$toWarehouse = $detailData['ToWarehouse'] ?? '';
+$aliciSube = $detailData['U_ASWHST'] ?? ''; // Alıcı Şube adı
+$toWarehouseName = '';
+
+// Eğer detailData'da ToWarehouse yoksa, session'dan branch bilgisiyle çek (DisTedarikSO.php'deki gibi)
+if (empty($toWarehouse) && !empty($uAsOwnr) && !empty($branch)) {
+    $toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '2'";
+    $toWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($toWarehouseFilter);
+    $toWarehouseData = $sap->get($toWarehouseQuery);
+    $toWarehouses = $toWarehouseData['response']['value'] ?? [];
+    if (!empty($toWarehouses)) {
+        $toWarehouse = $toWarehouses[0]['WarehouseCode'] ?? '';
+        $toWarehouseName = $toWarehouses[0]['WarehouseName'] ?? '';
+    }
+}
+
+// Eğer hala WarehouseName yoksa, ayrı bir query ile çek
+if (!empty($toWarehouse) && empty($toWarehouseName)) {
+    $toWhsQuery = "Warehouses('{$toWarehouse}')?\$select=WarehouseCode,WarehouseName";
+    $toWhsData = $sap->get($toWhsQuery);
+    $toWarehouseName = $toWhsData['response']['WarehouseName'] ?? '';
+}
+
+// Alıcı Şube formatı: 200-KT-1 / Kadıköy Rıhtım Depo
+$aliciSubeDisplay = $toWarehouse;
+if (!empty($aliciSube)) {
+    $aliciSubeDisplay = $toWarehouse . ' / ' . $aliciSube;
+} elseif (!empty($toWarehouseName)) {
+    $aliciSubeDisplay = $toWarehouse . ' / ' . $toWarehouseName;
+} elseif (empty($toWarehouse)) {
+    $aliciSubeDisplay = '-';
+}
+
 function getStatusText($status) {
     $statusMap = [
         '0' => 'Sipariş yok',
@@ -224,59 +259,130 @@ body {
     margin-bottom: 24px;
 }
 
+.detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 2px solid #e5e7eb;
+}
+
+.detail-title h3 {
+    font-size: 1.5rem;
+    color: #2c3e50;
+    font-weight: 400;
+}
+
+.detail-title h3 strong {
+    font-weight: 600;
+    color: #3b82f6;
+}
+
+.detail-card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    padding: 24px;
+    margin-bottom: 24px;
+}
+
 .detail-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    grid-template-columns: repeat(2, 1fr);
+    gap: 2rem;
+}
+
+.detail-column {
+    display: flex;
+    flex-direction: column;
     gap: 1.5rem;
-    margin-bottom: 1.5rem;
 }
 
 .detail-item {
     display: flex;
     flex-direction: column;
+    gap: 0.5rem;
 }
 
-.detail-label {
-    font-size: 0.75rem;
+.detail-item label {
+    font-size: 13px;
+    color: #1e3a8a;
     font-weight: 600;
-    color: #6b7280;
     text-transform: uppercase;
-    margin-bottom: 0.25rem;
+    letter-spacing: 0.5px;
 }
 
 .detail-value {
-    font-size: 1rem;
-    color: #1f2937;
+    font-size: 15px;
+    color: #2c3e50;
     font-weight: 500;
+}
+
+.section-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #1e3a8a;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #e5e7eb;
 }
 
 .data-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.875rem;
+    font-size: 14px;
+    table-layout: fixed;
+}
+
+.data-table thead {
+    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
 }
 
 .data-table th {
-    background: #f9fafb;
-    padding: 12px;
+    padding: 16px 20px;
     text-align: left;
     font-weight: 600;
-    color: #374151;
+    font-size: 13px;
+    color: #1e3a8a;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
     border-bottom: 2px solid #e5e7eb;
+    width: 25%;
+}
+
+.data-table th:nth-child(3) {
+    text-align: center;
 }
 
 .data-table td {
-    padding: 12px;
-    border-bottom: 1px solid #e5e7eb;
+    padding: 16px 20px;
+    border-bottom: 1px solid #f3f4f6;
+    font-size: 14px;
+    color: #374151;
+    width: 25%;
+}
+
+.data-table td:nth-child(3) {
+    text-align: center;
+}
+
+.data-table tbody tr {
+    transition: background 0.15s ease;
+}
+
+.data-table tbody tr:hover {
+    background: #f8fafc;
 }
 
 .status-badge {
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
     display: inline-block;
-    padding: 4px 12px;
-    border-radius: 9999px;
-    font-size: 0.875rem;
-    font-weight: 500;
-    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
 }
 
 .status-pending {
@@ -320,22 +426,39 @@ body {
     display: inline-block;
 }
 
-.btn-secondary {
-    background: #6b7280;
-    color: white;
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .btn-primary {
-    background: #3b82f6;
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
     color: white;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
 }
 
 .btn-primary:hover {
-    background: #2563eb;
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+    transform: translateY(-1px);
+}
+
+.btn-secondary {
+    background: white;
+    color: #3b82f6;
+    border: 2px solid #3b82f6;
 }
 
 .btn-secondary:hover {
-    background: #4b5563;
+    background: #f0f9ff;
 }
 
 .header-actions {
@@ -391,90 +514,123 @@ body {
             <?php endif; ?>
             
             <?php if ($detailData): ?>
-                <section class="card">
+                <div class="detail-header">
+                    <div class="detail-title">
+                        <h3>Dış Tedarik Talebi: <strong><?= htmlspecialchars($requestNo) ?></strong></h3>
+                    </div>
+                </div>
+
+                <div class="detail-card">
                     <div class="detail-grid">
-                        <div class="detail-item">
-                            <div class="detail-label">Talep No</div>
-                            <div class="detail-value"><?= htmlspecialchars($requestNo) ?></div>
-                        </div>
-                        <?php if ($isPurchaseOrder): ?>
+                        <!-- Sol Sütun -->
+                        <div class="detail-column">
                             <div class="detail-item">
-                                <div class="detail-label">Sipariş No</div>
-                                <div class="detail-value"><?= htmlspecialchars($orderDocEntry ?? $orderNo) ?></div>
+                                <label>Talep No:</label>
+                                <div class="detail-value"><?= htmlspecialchars($requestNo) ?></div>
                             </div>
                             <div class="detail-item">
-                                <div class="detail-label">Tedarikçi</div>
-                                <div class="detail-value"><?= htmlspecialchars($detailData['CardName'] ?? '-') ?></div>
-                            </div>
-                            <div class="detail-item">
-                                <div class="detail-label">Sipariş Tarihi</div>
+                                <label>Talep Tarihi:</label>
                                 <div class="detail-value"><?= formatDate($detailData['DocDate'] ?? '') ?></div>
                             </div>
                             <div class="detail-item">
-                                <div class="detail-label">Durum</div>
+                                <label>Teslimat Belge No:</label>
+                                <div class="detail-value"><?= htmlspecialchars($detailData['U_ASB2B_NumAtCard'] ?? '-') ?></div>
+                            </div>
+                            <div class="detail-item">
+                                <label>Talep Özeti:</label>
+                                <div class="detail-value"><?= htmlspecialchars($detailData['U_ASB2B_ORDSUM'] ?? '-') ?></div>
+                            </div>
+                            <div class="detail-item">
+                                <label>Talep Notu:</label>
+                                <div class="detail-value"><?= htmlspecialchars($detailData['Comments'] ?? '-') ?></div>
+                            </div>
+                        </div>
+                        
+                        <!-- Sağ Sütun -->
+                        <div class="detail-column">
+                            <div class="detail-item">
+                                <label>Tedarik No:</label>
                                 <div class="detail-value">
-                                    <?php if (isset($orderStatus)): ?>
+                                    <?php
+                                    $siparisNoDisplay = '-';
+                                    if ($isPurchaseOrder) {
+                                        $siparisNoDisplay = htmlspecialchars($orderDocEntry ?? $orderNo ?? '-');
+                                    } elseif (!empty($allOrdersForRequest)) {
+                                        // İlk sipariş numarasını göster
+                                        $firstOrder = $allOrdersForRequest[0];
+                                        $siparisNoDisplay = htmlspecialchars($firstOrder['OrderNo'] ?? '-');
+                                    }
+                                    echo $siparisNoDisplay;
+                                    ?>
+                                </div>
+                            </div>
+                            <div class="detail-item">
+                                <label>Tahmini Teslimat Tarihi:</label>
+                                <div class="detail-value"><?= formatDate($detailData['DocDueDate'] ?? '') ?></div>
+                            </div>
+                            <div class="detail-item">
+                                <label>Talep Durumu:</label>
+                                <div class="detail-value">
+                                    <?php if ($isPurchaseOrder && isset($orderStatus)): ?>
                                         <span class="status-badge <?= getStatusClass($orderStatus) ?>"><?= getStatusText($orderStatus) ?></span>
                                     <?php else: ?>
                                         <span class="status-badge status-unknown">Bilinmiyor</span>
                                     <?php endif; ?>
                                 </div>
                             </div>
+                          
                             <div class="detail-item">
-                                <div class="detail-label">Teslimat Belge No</div>
-                                <div class="detail-value"><?= htmlspecialchars($detailData['U_ASB2B_NumAtCard'] ?? '-') ?></div>
+                                <label>Alıcı Şube:</label>
+                                <div class="detail-value"><?= htmlspecialchars($aliciSubeDisplay ?? '-') ?></div>
                             </div>
                             <div class="detail-item">
-                                <div class="detail-label">Tahmini Teslimat</div>
-                                <div class="detail-value"><?= formatDate($detailData['DocDueDate'] ?? '') ?></div>
+                                <label>Teslimat Tarihi:</label>
+                                <div class="detail-value">-</div>
                             </div>
-                            <div class="detail-item" style="grid-column: 1 / -1;">
-                                <div class="detail-label">Sipariş Notu</div>
-                                <div class="detail-value"><?= htmlspecialchars($detailData['U_ASB2B_ORDSUM'] ?? '-') ?></div>
-                            </div>
-                        <?php else: ?>
-                            <div class="detail-item">
-                                <div class="detail-label">Talep Tarihi</div>
-                                <div class="detail-value"><?= formatDate($detailData['DocDate'] ?? '') ?></div>
-                            </div>
-                            <div class="detail-item" style="grid-column: 1 / -1;">
-                                <div class="detail-label">Açıklama</div>
-                                <div class="detail-value"><?= htmlspecialchars($detailData['Comments'] ?? '-') ?></div>
-                            </div>
-                        <?php endif; ?>
+                        </div>
                     </div>
-                </section>
+                </div>
                 
                 <section class="card">
-                    <h3 style="margin-bottom: 1rem; color: #1e40af;"><?= $isPurchaseOrder ? 'Sipariş' : 'Talep' ?> Detayı (Satırlar)</h3>
+                    <div class="section-title">Talep Detayı</div>
                     <table class="data-table">
                         <thead>
                             <tr>
                                 <th>Kalem Numarası</th>
                                 <th>Kalem Tanımı</th>
-                                <th><?= $isPurchaseOrder ? 'Sipariş' : 'Talep' ?> Miktarı</th>
-                                <th>Birim</th>
-                                <?php if (!$isPurchaseOrder): ?>
-                                    <th>Tedarikçi Kodu</th>
-                                <?php endif; ?>
+                                <th>Teslimat Miktarı</th>
+                                <th>Tedarikçi Kodu</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php if (!empty($lines)): ?>
                                 <?php foreach ($lines as $lineIndex => $line): ?>
+                                    <?php
+                                    $itemCode = $line['ItemCode'] ?? '';
+                                    $uomCode = $line['UoMCode'] ?? 'AD';
+                                    $quantity = (float)($line['Quantity'] ?? 0);
+                                    
+                                    // Teslimat Miktarı: Şimdilik talep miktarını göster (teslim al işlemi yapıldıysa güncellenecek)
+                                    $delivered = $quantity; // TODO: Teslim al işleminden gelen miktarı hesapla
+                                    
+                                    // Teslimat Miktarı formatı: "1 AD" (0 ise sadece "0")
+                                    $deliveredFormatted = formatQuantity($delivered);
+                                    if ($delivered > 0) {
+                                        $deliveredDisplay = $deliveredFormatted . ' ' . htmlspecialchars($uomCode);
+                                    } else {
+                                        $deliveredDisplay = '0';
+                                    }
+                                    ?>
                                     <tr>
-                                        <td><?= htmlspecialchars($line['ItemCode'] ?? '-') ?></td>
+                                        <td><?= htmlspecialchars($itemCode) ?></td>
                                         <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
-                                        <td><?= formatQuantity(floatval($line['Quantity'] ?? 0)) ?></td>
-                                        <td><?= htmlspecialchars($line['UoMCode'] ?? '-') ?></td>
-                                        <?php if (!$isPurchaseOrder): ?>
-                                            <td><?= htmlspecialchars($line['VendorNum'] ?? '-') ?></td>
-                                        <?php endif; ?>
+                                        <td><?= $deliveredDisplay ?></td>
+                                        <td><?= htmlspecialchars($line['VendorNum'] ?? '-') ?></td>
                                     </tr>
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="<?= $isPurchaseOrder ? '4' : '5' ?>" style="text-align: center; padding: 2rem; color: #9ca3af;">Satır bulunamadı.</td>
+                                    <td colspan="4" style="text-align: center; padding: 2rem; color: #9ca3af;">Satır bulunamadı.</td>
                                 </tr>
                             <?php endif; ?>
                         </tbody>
@@ -485,3 +641,4 @@ body {
     </main>
 </body>
 </html>
+

@@ -449,48 +449,61 @@ body {
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
-.filter-actions {
+/* Table Controls */
+.table-controls {
     display: flex;
-    align-items: flex-end;
-    gap: 12px;
-    padding: 0 24px 24px 24px;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 24px;
+    border-bottom: 1px solid #e5e7eb;
 }
 
-.filter-actions .filter-input {
-    flex: 1;
-    padding: 12px 14px;
+.show-entries {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #6b7280;
+}
+
+.entries-select {
+    padding: 8px 12px;
     border: 2px solid #e5e7eb;
-    border-radius: 12px;
-    background: #eef2ff;
-    font-size: 0.95rem;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.filter-actions .filter-input:focus {
-    outline: none;
-    border-color: #2563eb;
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
-    background: #fff;
-}
-
-.filter-actions .btn {
-    border: none;
-    border-radius: 10px;
-    padding: 10px 18px;
-    font-weight: 600;
+    border-radius: 6px;
+    font-size: 14px;
     cursor: pointer;
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    transition: all 0.2s ease;
 }
 
-.filter-actions .btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 12px 20px rgba(37, 99, 235, 0.15);
+.entries-select:hover {
+    border-color: #3b82f6;
 }
 
-.filter-actions .btn-reset {
-    background: #fff;
-    color: #2563eb;
-    border: 1px solid #2563eb;
+.entries-select:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.search-box {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.search-input {
+    padding: 8px 12px;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 14px;
+    min-width: 220px;
+    transition: border-color 0.2s;
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
 .table-controls {
@@ -780,26 +793,31 @@ body {
                         <label>Bitiş Tarihi</label>
                         <input type="date" id="end-date" value="<?= htmlspecialchars($filterEndDate) ?>" onblur="applyFilters()">
                     </div>
-                </div> 
-
-
-                <div class="filter-actions">
-                            <input type="text"
-                                   id="searchInput"
-                                   class="filter-input"
-                                   placeholder="Ara... (örnek: transfer no, kalem, şube)">
-                            <button type="button" class="btn btn-reset" id="resetBtn">Sıfırla</button>
-                            <button type="button" class="btn btn-reset" onclick="location.reload()">🔄 Yenile</button>
-                        </div>
+                </div>
             </section>
             
             <section class="card">
+                <div class="table-controls">
+                    <div class="show-entries">
+                        Sayfada 
+                        <select class="entries-select" id="entriesPerPage" onchange="applyFilters()">
+                            <option value="25" selected>25</option>
+                            <option value="50">50</option>
+                            <option value="75">75</option>
+                        </select>
+                        kayıt göster
+                    </div>
+                    <div class="search-box">
+                        <input type="text" class="search-input" id="tableSearch" placeholder="Ara..." onkeyup="if(event.key==='Enter') performSearch()">
+                        <button class="btn btn-secondary" onclick="performSearch()">🔍</button>
+                    </div>
+                </div>
+
                 <table class="data-table">
                     <thead>
                         <tr>
                             <th>Talep No</th>
-                            <th>Talep No</th>
-                            <th>Talep Tarihi</th>
+                            <th>Sipariş No</th>
                             <th>Talep Tarihi</th>
                             <th>Durum</th>
                             <th>İşlemler</th>
@@ -831,7 +849,6 @@ body {
                                     <td><?= htmlspecialchars($requestNo) ?></td>
                                     <td><?= htmlspecialchars($orderNoDisplay) ?></td>
                                     <td><?= $docDate ?></td>
-                                    <td><?= $orderDate ?></td>
                                     <td><span class="status-badge <?= $statusClass ?>"><?= $statusText ?></span></td>
                                     <td>
                                         <a href="<?= $detailUrl ?>">
@@ -847,7 +864,7 @@ body {
                             <?php endforeach; ?>
                         <?php else: ?>
                             <tr>
-                                <td colspan="6" style="text-align:center;padding:2rem;color:#9ca3af;">Kayıt bulunamadı.</td>
+                                <td colspan="5" style="text-align:center;padding:2rem;color:#9ca3af;">Kayıt bulunamadı.</td>
                             </tr>
                         <?php endif; ?>
                     </tbody>
@@ -901,11 +918,13 @@ function applyFilters() {
     const status = selectedStatus;
     const startDate = document.getElementById('start-date').value;
     const endDate = document.getElementById('end-date').value;
+    const entriesPerPage = document.getElementById('entriesPerPage')?.value || '25';
     
     const params = new URLSearchParams();
     if (status) params.append('status', status);
     if (startDate) params.append('start_date', startDate);
     if (endDate) params.append('end_date', endDate);
+    if (entriesPerPage) params.append('entries', entriesPerPage);
     
     window.location.href = 'DisTedarik.php' + (params.toString() ? '?' + params.toString() : '');
 }
@@ -918,41 +937,70 @@ document.addEventListener('click', function(e) {
 });
     </script>
     <script>
-(function() {
-    const searchInput = document.getElementById('searchInput');
-    const tableBody = document.getElementById('requestTableBody');
-    if (!searchInput || !tableBody) return;
-
-    const getDataRows = () => tableBody.querySelectorAll('tr[data-row]');
-    if (!getDataRows().length) return;
-
-    const noResultRow = document.createElement('tr');
-    noResultRow.id = 'noSearchResultRow';
-    noResultRow.style.display = 'none';
-    noResultRow.innerHTML = '<td colspan="6" style="text-align:center;padding:2rem;color:#9ca3af;">Sonuç bulunamadı.</td>';
-    tableBody.appendChild(noResultRow);
-
-    const normalize = (text) => text.toLocaleLowerCase('tr-TR');
-
-    searchInput.addEventListener('input', function() {
-        const term = normalize(searchInput.value.trim());
-        if (term === '') {
-            getDataRows().forEach(row => row.style.display = '');
-            noResultRow.style.display = 'none';
-            return;
+// Genel arama fonksiyonu - tüm kolonlarda serbest text search
+function performSearch() {
+    const searchInput = document.getElementById('tableSearch');
+    const searchTerm = searchInput.value.toLowerCase().trim();
+    const tableBody = document.querySelector('.data-table tbody');
+    const rows = tableBody.querySelectorAll('tr[data-row]');
+    
+    if (!tableBody || !rows) return;
+    
+    let visibleCount = 0;
+    
+    rows.forEach(row => {
+        // Tüm hücrelerde ara (Talep No, Sipariş No, Talep Tarihi, Durum)
+        const cells = row.querySelectorAll('td');
+        let found = false;
+        
+        if (searchTerm === '') {
+            // Arama boşsa tüm satırları göster
+            row.style.display = '';
+            visibleCount++;
+        } else {
+            cells.forEach(cell => {
+                const cellText = cell.textContent.toLowerCase();
+                if (cellText.includes(searchTerm)) {
+                    found = true;
+                }
+            });
+            
+            if (found) {
+                row.style.display = '';
+                visibleCount++;
+            } else {
+                row.style.display = 'none';
+            }
         }
-
-        let visibleCount = 0;
-        getDataRows().forEach(row => {
-            const haystack = row.getAttribute('data-search') || '';
-            const match = haystack.includes(term);
-            row.style.display = match ? '' : 'none';
-            if (match) visibleCount++;
-        });
-
-        noResultRow.style.display = visibleCount === 0 ? '' : 'none';
     });
-})();
+    
+    // Eğer hiç sonuç yoksa mesaj göster
+    let noResultsRow = tableBody.querySelector('.no-results-message');
+    if (searchTerm !== '' && visibleCount === 0) {
+        if (!noResultsRow) {
+            noResultsRow = document.createElement('tr');
+            noResultsRow.className = 'no-results-message';
+            noResultsRow.innerHTML = '<td colspan="5" style="text-align: center; padding: 20px; color: #888;">Sonuç bulunamadı.</td>';
+            tableBody.appendChild(noResultsRow);
+        }
+        noResultsRow.style.display = '';
+    } else {
+        if (noResultsRow) {
+            noResultsRow.style.display = 'none';
+        }
+    }
+}
+
+// Arama input'una real-time arama ekle
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('tableSearch');
+    if (searchInput) {
+        // Her tuş vuruşunda arama yap (debounce olmadan)
+        searchInput.addEventListener('input', function() {
+            performSearch();
+        });
+    }
+});
     </script>
 </body>
 </html>

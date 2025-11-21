@@ -580,7 +580,7 @@ body {
                 <?php endif; ?>
                 
                 <?php if ($status == '3'): ?>
-                    <button class="btn btn-success"
+                    <button class="btn btn-primary"
                             onclick="window.location.href='anadepo_teslim_al.php?doc=<?= $docEntry ?>'"
                             style="margin-right: 10px;">
                         ✓ Teslim Al
@@ -704,7 +704,7 @@ body {
                 </div>
             <?php endif; ?>
 
-            <div class="section-title">Sipariş Kalemleri</div>
+            <div class="section-title">Talep Kalemleri</div>
 
             <div class="card">
                 <table class="data-table">
