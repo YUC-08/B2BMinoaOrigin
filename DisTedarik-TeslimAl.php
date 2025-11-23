@@ -32,10 +32,6 @@ $requestNo   = $_GET['requestNo'] ?? '';
 $orderNo     = $_GET['orderNo'] ?? '';      // Eski parametre (geriye dönük uyumluluk için)
 $orderNosParam = $_GET['orderNos'] ?? '';   // Yeni parametre (virgülle ayrılmış)
 
-if (empty($requestNo)) {
-    die("Talep numarası eksik.");
-}
-
 // Çoklu sipariş desteği: orderNos parametresini parse et
 $orderNosArray = [];
 if (!empty($orderNosParam)) {
@@ -46,6 +42,7 @@ if (!empty($orderNosParam)) {
     $orderNosArray = [trim($orderNo)];
 }
 
+// Kayıt dışı modda requestNo olmayabilir, sadece orderNos yeterli
 if (empty($orderNosArray)) {
     die("Sipariş numarası eksik. Teslim almak için sipariş oluşturulmuş olmalıdır.");
 }
@@ -104,7 +101,9 @@ if (!empty($orderNosArray)) {
 
         $orderDocEntry = $orderInfoTemp['DocEntry'] ?? intval($orderNoItem);
 
-        // Durum bilgisini çek (view üzerinden)
+        // Durum bilgisini çek (view üzerinden - kayıt dışı modda view'de olmayabilir)
+        $orderStatusTemp = $orderInfoTemp['U_ASB2B_STATUS'] ?? '3'; // Varsayılan: Sevk edildi
+        
         if (!empty($uAsOwnr) && !empty($branch)) {
             $orderNoInt  = intval($orderNoItem);
             $viewFilter  = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_ORNO eq {$orderNoInt}";
@@ -113,14 +112,18 @@ if (!empty($orderNosArray)) {
             $viewRows    = $viewData['response']['value'] ?? [];
 
             if (!empty($viewRows)) {
-                $orderStatusTemp = $viewRows[0]['U_ASB2B_STATUS'] ?? null;
-                if (isReceivableStatus($orderStatusTemp)) {
-                    $allOrders[] = [
-                        'OrderNo' => $orderNoItem,
-                        'Status'  => $orderStatusTemp
-                    ];
-                }
+                $orderStatusTemp = $viewRows[0]['U_ASB2B_STATUS'] ?? $orderStatusTemp;
             }
+        }
+        
+        // DÜZELTME: Kayıt dışı siparişler oluşur oluşmaz kapanabilir (Status 4).
+        // Bu yüzden listeye eklerken Status 4 (Kapalı) olanlara da izin veriyoruz.
+        // View'den veri gelmese bile, PurchaseOrders'dan durum bilgisini kullan
+        if (in_array((string)$orderStatusTemp, ['2', '3', '4'])) {
+            $allOrders[] = [
+                'OrderNo' => $orderNoItem,
+                'Status'  => $orderStatusTemp
+            ];
         }
 
         // Satırları çek
@@ -139,6 +142,14 @@ if (!empty($orderNosArray)) {
 
             // Her satıra sipariş bilgisi ekle
             foreach ($lines as $line) {
+                // DEĞİŞİKLİK: Sipariş SAP'de otomatik kapanmış olabilir (Kayıt dışı olduğu için).
+                // Bu yüzden 'C' (Closed) kontrolünü devre dışı bırakıyoruz ki malı görebilesin.
+                // Kayıt dışı gelen mal zaten kapıda olduğu için siparişin kapalı görünmesi normal olabilir ama teslim alınması lazım.
+                
+                /* if (isset($line['LineStatus']) && $line['LineStatus'] === 'C') {
+                    continue;
+                } */
+                
                 $line['_OrderNo']      = $orderNoItem;
                 $line['_OrderDocEntry'] = $orderDocEntry;
                 $line['_CardCode']     = $orderInfoTemp['CardCode'] ?? '';
@@ -149,12 +160,14 @@ if (!empty($orderNosArray)) {
         // İlk sipariş bilgisini ana orderInfo olarak kullan
         if ($orderInfo === null) {
             $orderInfo   = $orderInfoTemp;
-            $orderStatus = $orderStatusTemp ?? null;
+            $orderStatus = $orderStatusTemp ?? '3'; // Varsayılan: Sevk edildi
         }
     }
-} else {
-    // Güvenlik için, normalde buraya düşmemeli
-    die("Sipariş bilgisi alınamadı.");
+}
+
+// Eğer sipariş bilgisi yoksa hata ver
+if (empty($orderInfo) || empty($allLines)) {
+    die("Sipariş bilgisi veya satırlar alınamadı. Sipariş numarasını kontrol edin: " . implode(', ', $orderNosArray));
 }
 
 // -----------------------------
@@ -411,7 +424,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
 // Header’da göstermek için sipariş text’i
 $orderNoHeaderText = !empty($orderNosArray) ? implode(', ', $orderNosArray) : $orderNo;
-?>
+?> 
 
 <!DOCTYPE html>
 <html lang="tr">
@@ -442,26 +455,26 @@ body {
 }
 
         /* Modern page header matching AnaDepoSO style */
-        .page-header {
-            background: white;
-            padding: 20px 2rem;
-            border-radius: 0 0 0 20px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin: 0;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            height: 80px;
-            box-sizing: border-box;
-        }
+.page-header {
+    background: white;
+    padding: 20px 2rem;
+    border-radius: 0 0 0 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    height: 80px;
+    box-sizing: border-box;
+}
 
-        .page-header h2 {
-            color: #1e40af;
-            font-size: 1.75rem;
-            font-weight: 600;
+.page-header h2 {
+    color: #1e40af;
+    font-size: 1.75rem;
+    font-weight: 600;
         }
 
         /* Modern button styles */
@@ -500,14 +513,14 @@ body {
         }
 
         /* Modern card styling */
-        .content-wrapper {
-            padding: 24px 32px;
-        }
+.content-wrapper {
+    padding: 24px 32px;
+}
 
-        .card {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+.card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
             padding: 2rem;
             margin: 24px 32px 2rem 32px;
         }
@@ -543,21 +556,21 @@ body {
         }
 
         /* Modern table styling */
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
             margin-top: 1rem;
         }
 
         .data-table thead {
             background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
             color: white;
-        }
+}
 
-        .data-table th {
+.data-table th {
             padding: 1rem;
-            text-align: left;
-            font-weight: 600;
+    text-align: left;
+    font-weight: 600;
             font-size: 0.875rem;
             text-transform: uppercase;
             letter-spacing: 0.5px;
@@ -572,7 +585,7 @@ body {
         }
 
         .data-table tbody tr {
-            border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid #e5e7eb;
             transition: background-color 0.2s;
         }
 
@@ -606,12 +619,12 @@ body {
         }
 
         .qty-btn {
-            padding: 0.5rem 1rem;
+    padding: 0.5rem 1rem;
             border: 2px solid #3b82f6;
             background: white;
             color: #3b82f6;
-            border-radius: 6px;
-            cursor: pointer;
+    border-radius: 6px;
+    cursor: pointer;
             font-weight: 600;
             font-size: 1rem;
             min-width: 40px;
@@ -619,8 +632,8 @@ body {
         }
 
         .qty-btn:hover {
-            background: #3b82f6;
-            color: white;
+    background: #3b82f6;
+    color: white;
             transform: scale(1.05);
         }
 
@@ -638,7 +651,7 @@ body {
 
         .copy-arrow-btn:hover:not(:disabled) {
             background: #3b82f6;
-            color: white;
+    color: white;
             transform: scale(1.1);
         }
 
@@ -713,8 +726,8 @@ body {
         }
 
         .form-group {
-            margin-bottom: 1.5rem;
-        }
+    margin-bottom: 1.5rem;
+}
 
         .form-group label {
             display: block;
@@ -742,20 +755,20 @@ body {
         .form-actions {
             margin-top: 2rem;
             text-align: right;
-            display: flex;
-            gap: 1rem;
+    display: flex;
+    gap: 1rem;
             justify-content: flex-end;
-        }
+}
     </style>
 </head>
 <body>
-<?php include 'navbar.php'; ?>
+    <?php include 'navbar.php'; ?>
 
-<main class="main-content">
-    <header class="page-header">
-        <h2>Teslim Al - Talep No: <?= htmlspecialchars($requestNo) ?> | Sipariş No: <?= htmlspecialchars($orderNoHeaderText) ?></h2>
+    <main class="main-content">
+        <header class="page-header">
+        <h2>Teslim Al<?= !empty($requestNo) ? ' - Talep No: ' . htmlspecialchars($requestNo) : '' ?> | Sipariş No: <?= htmlspecialchars($orderNoHeaderText) ?></h2>
         <button class="btn btn-secondary" onclick="window.location.href='DisTedarik.php'">← Geri Dön</button>
-    </header>
+        </header>
 
     <?php if ($warningMsg): ?>
         <div class="card" style="background: #fef3c7; border: 2px solid #f59e0b; margin-bottom: 1.5rem;">
@@ -766,13 +779,13 @@ body {
     <?php if ($errorMsg): ?>
         <div class="card" style="background: #fee2e2; border: 2px solid #dc2626; margin-bottom: 1.5rem;">
             <p style="color: #991b1b; font-weight: 600; margin: 0;"><?= htmlspecialchars($errorMsg) ?></p>
-        </div>
+                    </div>
     <?php endif; ?>
 
     <?php if (empty($lines)): ?>
         <div class="card">
             <p style="color: #ef4444; font-weight: 600; margin-bottom: 1rem;">⚠️ Satır bulunamadı veya sipariş oluşturulmamış!</p>
-        </div>
+                    </div>
     <?php else: ?>
 
         <!-- Sipariş bilgi kartı -->
@@ -781,7 +794,7 @@ body {
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem;">
                 <div>
                     <div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; text-transform: uppercase; margin-bottom: 0.25rem;">Talep No</div>
-                    <div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= htmlspecialchars($requestNo) ?></div>
+                    <div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= !empty($requestNo) ? htmlspecialchars($requestNo) : '-' ?></div>
                 </div>
                 <div>
                     <div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; text-transform: uppercase; margin-bottom: 0.25rem;">Sipariş No</div>
@@ -799,8 +812,8 @@ body {
                     <div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; text-transform: uppercase; margin-bottom: 0.25rem;">Tahmini Teslimat</div>
                     <div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= !empty($orderDocDueDate) ? date('d.m.Y', strtotime(substr($orderDocDueDate, 0, 10))) : '-' ?></div>
                 </div>
-            </div>
-        </div>
+                    </div>
+                </div>
 
         <form method="POST" action="" onsubmit="return validateForm()">
             <input type="hidden" name="action" value="teslim_al">
@@ -819,8 +832,8 @@ body {
                     <?php else: ?>
                         <small style="color: #dc2626; display: block; margin-top: 0.25rem;">⚠️ Bu alan zorunludur!</small>
                     <?php endif; ?>
+                    </div>
                 </div>
-            </div>
 
             <div class="card">
                 <table class="data-table">
@@ -988,12 +1001,12 @@ body {
                         </small>
                     <?php endif; ?>
                 </div>
-            </div>
+                </div>
         </form>
-    <?php endif; ?>
-</main>
+                <?php endif; ?>
+    </main>
 
-<script>
+    <script>
 // Sayfa yüklendiğinde fiziksel miktarları hesapla
 document.addEventListener('DOMContentLoaded', function() {
     const eksikFazlaInputs = document.querySelectorAll('input[name^="eksik_fazla"]');
@@ -1254,6 +1267,6 @@ function validateForm() {
 
     return true;
 }
-</script>
+    </script>
 </body>
 </html>

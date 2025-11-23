@@ -66,7 +66,18 @@ class SAPConnect {
         // Debug: URL'i logla
         error_log("[SAP REQUEST] Full URL: " . substr($url, 0, 200));
         
-        $ch = curl_init($url);
+        // curl_init() için URL'i kullan
+        // $ karakterleri OData query'lerinde geçerli ve curl_init() bunları destekler
+        // PHP 7.4+ sürümlerinde curl_init() $ karakterlerini destekler
+        try {
+            $ch = curl_init($url);
+            if ($ch === false) {
+                throw new Exception("curl_init() returned false");
+            }
+        } catch (Exception $e) {
+            error_log("[SAP REQUEST] curl_init() failed: " . $e->getMessage() . " | URL: " . substr($url, 0, 200));
+            return ["status" => 0, "response" => ["raw" => "URL rejected: " . $e->getMessage(), "error" => "URL rejected: " . $e->getMessage()]];
+        }
 
         $headers = ["Content-Type: application/json"];
         if ($this->sessionId) {
@@ -91,12 +102,19 @@ class SAPConnect {
         $response = curl_exec($ch);  //SAP'ye isteği yollar, cevabı JSON olarak alır.
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE); //SAP'nin HTTP yanıt kodunu alır. //(örnek: 200 = başarılı, 400 = hatalı istek, 301 = session timeout)
         $curlError = curl_error($ch);
+        $curlErrno = curl_errno($ch);
         curl_close($ch); 
 
         // cURL hatası varsa
         if (!empty($curlError)) {
-            error_log("[SAP REQUEST] cURL Error: " . $curlError . " | URL: " . $url);
-            return ["status" => 0, "response" => ["raw" => $curlError, "error" => $curlError]];
+            error_log("[SAP REQUEST] cURL Error (errno: {$curlErrno}): " . $curlError . " | URL: " . $url);
+            return ["status" => 0, "response" => ["raw" => $curlError, "error" => $curlError, "errno" => $curlErrno]];
+        }
+        
+        // Eğer curl_exec() false döndüyse ve hata mesajı yoksa
+        if ($response === false && empty($curlError)) {
+            error_log("[SAP REQUEST] curl_exec() returned false but no error message | URL: " . $url);
+            return ["status" => 0, "response" => ["raw" => "curl_exec() returned false", "error" => "curl_exec() returned false"]];
         }
 
         // HTTP Code 0 ise (bağlantı hatası)

@@ -110,42 +110,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
     
-    // Spec'e göre: POST /b1s/v2/PurchaseRequests
+    // Kayıt dışı mod kontrolü
+    $isUnregistered = isset($_POST['is_unregistered']) && $_POST['is_unregistered'] === '1';
+    $targetEndpoint = 'PurchaseRequests'; // Varsayılan: Talep
+    
     $requiredDate = $_POST['required_date'] ?? date('Y-m-d', strtotime('+7 days'));
-    $comments = $_POST['comments'] ?? 'Satınalma talebi';
+    $comments = $_POST['comments'] ?? ($isUnregistered ? 'Kayıt dışı gelen mal' : 'Satınalma talebi');
     $docDate = date('Y-m-d'); // Doküman tarihi
-    $docDueDate = $requiredDate; // Vade tarihi (RequriedDate ile aynı)
+    $docDueDate = $isUnregistered ? $docDate : $requiredDate; // Kayıt dışı ise bugün, değilse requiredDate
     
     $payload = [
-        'DocDate' => $docDate, // Doküman tarihi
-        'DocDueDate' => $docDueDate, // Vade tarihi
-        'RequriedDate' => $requiredDate, // Teslimat istenen tarih (kullanıcıdan alınan)
-        'Comments' => $comments, // Ekrandaki açıklama
-        'U_ASB2B_BRAN' => $branch, // Login şubesi
-        'U_AS_OWNR' => $uAsOwnr, // Login kitabevi
-        'U_ASB2B_STATUS' => '1', // Her zaman 1 = Yeni/Onay bekleniyor
-        'U_ASB2B_User' => $userName, // Login kullanıcı adı
-        'DocumentLines' => $documentLines // ✅ SAP'de PurchaseRequests için DocumentLines kullanılmalı
+        'DocDate' => $docDate,
+        'DocDueDate' => $docDueDate,
+        'Comments' => $comments,
+        'U_ASB2B_BRAN' => $branch,
+        'U_AS_OWNR' => $uAsOwnr,
+        'U_ASB2B_User' => $userName,
+        'DocumentLines' => $documentLines
     ];
     
-    // Kayıt dışı mod için ekstra bilgiler
-    if (isset($_POST['is_unregistered']) && $_POST['is_unregistered'] === '1') {
+    // Kayıt dışı mod için PurchaseOrders oluştur
+    if ($isUnregistered) {
+        $targetEndpoint = 'PurchaseOrders';
         $vendorCode = trim($_POST['vendor_code'] ?? '');
         $irsaliyeNo = trim($_POST['irsaliye_no'] ?? '');
         
-        // CardCode ekle (Tedarikçi/Muhatap)
-        if (!empty($vendorCode)) {
-            $payload['CardCode'] = $vendorCode;
+        // CardCode zorunlu
+        if (empty($vendorCode)) {
+            echo json_encode(['success' => false, 'message' => 'Sipariş için Tedarikçi seçimi zorunludur!']);
+            exit;
         }
         
+        $payload['CardCode'] = $vendorCode;
+        $payload['U_ASB2B_NumAtCard'] = $irsaliyeNo; // İrsaliye No
+        $payload['U_ASB2B_STATUS'] = '3'; // Sevk edildi (mal geldi)
+        
         // İrsaliye No'yu Comments'e ekle
-        $unregisteredInfo = [];
         if (!empty($irsaliyeNo)) {
-            $unregisteredInfo[] = "İrsaliye No: {$irsaliyeNo}";
+            $payload['Comments'] = $comments . ' | İrsaliye No: ' . $irsaliyeNo;
         }
-        if (!empty($unregisteredInfo)) {
-            $payload['Comments'] = $comments . ' | ' . implode(' | ', $unregisteredInfo);
-        }
+    } else {
+        // Normal mod: PurchaseRequests
+        $payload['RequriedDate'] = $requiredDate;
+        $payload['U_ASB2B_STATUS'] = '1'; // Onay bekleniyor
     }
     
     // Debug: Payload'ı logla
@@ -158,12 +165,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)
     );
     
-    $result = $sap->post('PurchaseRequests', $payload);
+    $result = $sap->post($targetEndpoint, $payload);
     
     if ($result['status'] == 200 || $result['status'] == 201) {
-        echo json_encode(['success' => true, 'message' => 'Dış Tedarik talebi başarıyla oluşturuldu!', 'data' => $result]);
+        $newDocEntry = $result['response']['DocEntry'] ?? null;
+        $newDocNum = $result['response']['DocNum'] ?? null;
+        
+        // Yönlendirme mantığı
+        $redirectUrl = 'DisTedarik.php'; // Varsayılan: Listeye dön
+        
+        // Kayıt dışı ise -> Direkt Teslim Al sayfasına git
+        if ($isUnregistered && !empty($newDocEntry)) {
+            $redirectUrl = 'DisTedarik-TeslimAl.php?orderNos=' . urlencode($newDocEntry);
+        }
+        
+        $message = $isUnregistered 
+            ? 'Satın alma siparişi başarıyla oluşturuldu! Teslim al sayfasına yönlendiriliyorsunuz...'
+            : 'Dış Tedarik talebi başarıyla oluşturuldu!';
+        
+        echo json_encode([
+            'success' => true, 
+            'message' => $message, 
+            'redirect' => $redirectUrl,
+            'data' => $result
+        ]);
     } else {
-        $errorMsg = 'Talep oluşturulamadı: HTTP ' . ($result['status'] ?? 'NO STATUS');
+        $errorMsg = ($isUnregistered ? 'Sipariş' : 'Talep') . ' oluşturulamadı: HTTP ' . ($result['status'] ?? 'NO STATUS');
         if (isset($result['response']['error'])) {
             $errorMsg .= ' - ' . json_encode($result['response']['error']);
         }
@@ -962,13 +989,13 @@ body {
                 <?php if (!$isUnregisteredMode): ?>
                 <button class="btn btn-secondary" onclick="window.location.href='DisTedarikSO.php?mode=unregistered'" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; border: none; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">📦 Kayıt Dışı Gelen Mal</button>
                 <?php else: ?>
-                <button class="btn btn-secondary" onclick="window.location.href='DisTedarikSO.php'" style="background: #3b82f6; color: white; border: none;">📝 Normal Talep Oluştur</button>
+                <button class="btn btn-secondary" onclick="window.location.href='DisTedarikSO.php'" style="background: #3b82f6; color: white; border: none;">📝 Sipariş Talebi Oluştur </button>
                 <?php endif; ?>
                 <button class="btn btn-primary sepet-btn" id="sepetToggleBtn" onclick="toggleSepet()" style="position: relative;">
                     🛒 Sepet
                     <span class="sepet-badge" id="sepetBadge" style="display: none;">0</span>
                 </button>
-                <button class="btn btn-secondary" onclick="window.location.href='DisTedarik.php'">← Geri Dön</button>
+                <button class="btn btn-secondary" onclick="window.location.href='DisTedarik.php'">← Geri Dön</button> 
             </div>
         </header>
 
@@ -976,16 +1003,6 @@ body {
             <?php if (empty($toWarehouse)): ?>
                 <div class="alert alert-warning">
                     <strong>Uyarı:</strong> Hedef depo bilgisi bulunamadı! Lütfen SAP'de "U_ASB2B_MAIN=2" olarak tanımlanmış bir depo olduğundan emin olun.
-                </div>
-            <?php else: ?>
-                <!-- Spec'e göre: Gideceği depo (talep eden depo) bilgisi -->
-                <div class="card" style="background: #eff6ff; border: 2px solid #3b82f6; margin-bottom: 1.5rem;">
-                    <div style="display: flex; align-items: center; gap: 1rem;">
-                        <div>
-                            <div style="font-size: 0.75rem; font-weight: 600; color: #1e40af; text-transform: uppercase; margin-bottom: 0.25rem;">Gideceği Depo (Talep Edilen Depo)</div>
-                            <div style="font-size: 1.25rem; color: #1e3a8a; font-weight: 700;"><?= htmlspecialchars($toWarehouse) ?></div>
-                        </div>
-                    </div>
                 </div>
             <?php endif; ?>
 
@@ -1970,7 +1987,7 @@ function saveRequest() {
         }
     
     const confirmMsg = isUnregisteredMode 
-        ? 'Kayıt dışı gelen mal için talebi oluşturmak istediğinize emin misiniz?'
+        ? 'Kayıt dışı gelen mal için satın alma siparişi oluşturmak istediğinize emin misiniz?'
         : 'Talebi oluşturmak istediğinize emin misiniz?';
     
     if (!confirm(confirmMsg)) {
@@ -1983,16 +2000,23 @@ function saveRequest() {
     })
     .then(res => res.json())
     .then(data => {
+        console.log('Response:', data); // Debug
         if (data.success) {
-            alert(isUnregisteredMode ? 'Kayıt dışı gelen mal talebi başarıyla oluşturuldu!' : 'Talep başarıyla oluşturuldu!');
-            window.location.href = 'DisTedarik.php';
+            // PHP'den gelen adrese git
+            if (data.redirect) {
+                console.log('Redirecting to:', data.redirect); // Debug
+                window.location.href = data.redirect;
+            } else {
+                alert(data.message || (isUnregisteredMode ? 'Satın alma siparişi başarıyla oluşturuldu!' : 'Talep başarıyla oluşturuldu!'));
+                window.location.href = 'DisTedarik.php';
+            }
         } else {
             alert('Hata: ' + (data.message || 'Bilinmeyen hata'));
         }
     })
     .catch(err => {
         console.error('Hata:', err);
-        alert('Talep oluşturulurken hata oluştu!');
+        alert((isUnregisteredMode ? 'Sipariş' : 'Talep') + ' oluşturulurken hata oluştu!');
     });
 }
 

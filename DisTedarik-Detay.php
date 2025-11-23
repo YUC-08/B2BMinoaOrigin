@@ -10,7 +10,8 @@ $sap = new SAPConnect();
 $requestNo = $_GET['requestNo'] ?? '';
 $orderNo = $_GET['orderNo'] ?? null;
 
-if (empty($requestNo)) {
+// RequestNo veya orderNo olmalı (Kayıt dışı modda sadece orderNo olabilir)
+if (empty($requestNo) && empty($orderNo)) {
     header("Location: DisTedarik.php");
     exit;
 }
@@ -24,6 +25,11 @@ $allOrdersForRequest = [];
 $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
 $branch = $_SESSION["Branch2"]["Name"] ?? $_SESSION["WhsCode"] ?? '';
 
+// Eğer sadece orderNo varsa (RequestNo yok), direkt PurchaseOrder moduna geç
+if (empty($requestNo) && !empty($orderNo)) {
+    $isPurchaseOrder = true;
+}
+
 if ($isPurchaseOrder) {
     // Sipariş detayı
     $orderQuery = 'PurchaseOrders(' . intval($orderNo) . ')';
@@ -35,6 +41,11 @@ if ($isPurchaseOrder) {
         
         $canReceive = false;
         $orderStatus = null;
+        // Durum bilgisini önce PurchaseOrders'dan al (Kayıt dışı modda view'de olmayabilir)
+        $orderStatus = $detailData['U_ASB2B_STATUS'] ?? '3'; // Varsayılan: Sevk edildi
+        $canReceive = isReceivableStatus($orderStatus);
+        
+        // View'den de kontrol et (varsa)
         if (!empty($uAsOwnr) && !empty($branch)) {
             $orderNoInt = intval($orderNo);
             $viewFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_ORNO eq {$orderNoInt}";
@@ -43,7 +54,7 @@ if ($isPurchaseOrder) {
             $viewRows = $viewData['response']['value'] ?? [];
             
             if (!empty($viewRows)) {
-                $orderStatus = $viewRows[0]['U_ASB2B_STATUS'] ?? null;
+                $orderStatus = $viewRows[0]['U_ASB2B_STATUS'] ?? $orderStatus;
                 $canReceive = isReceivableStatus($orderStatus);
             }
         }
@@ -58,11 +69,22 @@ if ($isPurchaseOrder) {
             } elseif (isset($resp['DocumentLines']) && is_array($resp['DocumentLines'])) {
                 $lines = $resp['DocumentLines'];
             }
+            
+            // Sipariş modundaysak, gelen satırların sipariş numarasını manuel set et
+            foreach ($lines as &$l) {
+                $l['_OrderNo'] = $orderNo;
+            }
+            unset($l); // Referansı temizle
         }
     } else {
         $errorMsg = "Sipariş detayları alınamadı!";
     }
 } else {
+    // Her satır için hangi sipariş numarasına ait olduğunu tutmak için
+    // BaseEntry ve BaseLine ile eşleştirme yapacağız
+    $lineToOrderMap = []; // "BaseEntry-BaseLine" => OrderNo mapping
+    $allOrdersMap = []; // OrderNo => OrderInfo mapping
+    
     if (!empty($uAsOwnr) && !empty($branch)) {
         $requestNoInt = intval($requestNo);
         $viewFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and RequestNo eq {$requestNoInt}";
@@ -70,44 +92,160 @@ if ($isPurchaseOrder) {
         $viewData = $sap->get($viewQuery);
         $viewRows = $viewData['response']['value'] ?? [];
         
+        // Önce tüm sipariş numaralarını topla
+        $uniqueOrderNos = [];
         foreach ($viewRows as $row) {
             $orderNoFromView = $row['U_ASB2B_ORNO'] ?? null;
             if (!empty($orderNoFromView) && $orderNoFromView !== null && $orderNoFromView !== '' && $orderNoFromView !== '-') {
-                $status = $row['U_ASB2B_STATUS'] ?? null;
-                $statusText = getStatusText($status);
-                $canReceive = isReceivableStatus($status);
+                if (!in_array($orderNoFromView, $uniqueOrderNos)) {
+                    $uniqueOrderNos[] = $orderNoFromView;
+                }
+            }
+        }
+        
+        // Her sipariş için bilgileri çek ve satır eşleştirmesi yap
+        foreach ($uniqueOrderNos as $orderNoItem) {
+            $orderQuery = 'PurchaseOrders(' . intval($orderNoItem) . ')';
+            $orderData = $sap->get($orderQuery);
+            
+            if (($orderData['status'] ?? 0) == 200 && isset($orderData['response'])) {
+                $orderInfo = $orderData['response'];
+                $orderDocEntry = $orderInfo['DocEntry'] ?? intval($orderNoItem);
                 
-                $allOrdersForRequest[] = [
-                    'OrderNo' => $orderNoFromView,
-                    'OrderDate' => $row['U_ASB2B_ORDT'] ?? null,
-                    'Status' => $status,
-                    'StatusText' => $statusText,
-                    'CanReceive' => $canReceive
-                ];
+                // Sipariş bilgisini kaydet
+                $status = null;
+                $canReceive = false;
+                foreach ($viewRows as $row) {
+                    if (($row['U_ASB2B_ORNO'] ?? null) == $orderNoItem) {
+                        $status = $row['U_ASB2B_STATUS'] ?? null;
+                        $canReceive = isReceivableStatus($status);
+                        break;
+                    }
+                }
+                
+                if (!isset($allOrdersMap[$orderNoItem])) {
+                    $allOrdersForRequest[] = [
+                        'OrderNo' => $orderNoItem,
+                        'OrderDate' => $orderInfo['DocDate'] ?? null,
+                        'Status' => $status,
+                        'StatusText' => getStatusText($status),
+                        'CanReceive' => $canReceive
+                    ];
+                    $allOrdersMap[$orderNoItem] = [
+                        'OrderNo' => $orderNoItem,
+                        'OrderDate' => $orderInfo['DocDate'] ?? null,
+                        'Status' => $status,
+                        'StatusText' => getStatusText($status),
+                        'CanReceive' => $canReceive
+                    ];
+                }
+                
+                // Sipariş satırlarını çek ve BaseEntry-BaseLine eşleştirmesi yap
+                $orderLinesQuery = "PurchaseOrders({$orderDocEntry})/DocumentLines";
+                $orderLinesData = $sap->get($orderLinesQuery);
+                
+                if (($orderLinesData['status'] ?? 0) == 200 && isset($orderLinesData['response'])) {
+                    $orderLinesResp = $orderLinesData['response'];
+                    $orderLines = [];
+                    if (isset($orderLinesResp['value']) && is_array($orderLinesResp['value'])) {
+                        $orderLines = $orderLinesResp['value'];
+                    } elseif (isset($orderLinesResp['DocumentLines']) && is_array($orderLinesResp['DocumentLines'])) {
+                        $orderLines = $orderLinesResp['DocumentLines'];
+                    }
+                    
+                    // Her sipariş satırı için BaseEntry ve BaseLine ile eşleştirme yap
+                    foreach ($orderLines as $orderLine) {
+                        $baseEntry = $orderLine['BaseEntry'] ?? null;
+                        $baseLine = $orderLine['BaseLine'] ?? null;
+                        
+                        // BaseEntry PurchaseRequest'in DocEntry'si olmalı
+                        if (!empty($baseEntry) && $baseEntry == intval($requestNo)) {
+                            $key = $baseEntry . '-' . $baseLine;
+                            $lineToOrderMap[$key] = $orderNoItem;
+                        }
+                    }
+                }
             }
         }
     }
     
+    // Talep detaylarını çek (her zaman gerekli - header bilgileri için)
     $requestQuery = 'PurchaseRequests(' . intval($requestNo) . ')';
     $requestData = $sap->get($requestQuery);
     
     if (($requestData['status'] ?? 0) == 200 && isset($requestData['response'])) {
         $detailData = $requestData['response'];
-        $requestDocEntry = $detailData['DocEntry'] ?? intval($requestNo);
+    } else {
+        $errorMsg = "Talep detayları alınamadı!";
+    }
+    
+    // Eğer orderNo parametresi varsa, SADECE o siparişe ait satırları göster
+    if (!empty($orderNo)) {
+        $orderQuery = 'PurchaseOrders(' . intval($orderNo) . ')';
+        $orderData = $sap->get($orderQuery);
         
-        $linesQuery = "PurchaseRequests({$requestDocEntry})/DocumentLines";
-        $linesData = $sap->get($linesQuery);
-        
-        if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
-            $resp = $linesData['response'];
-            if (isset($resp['value']) && is_array($resp['value'])) {
-                $lines = $resp['value'];
-            } elseif (isset($resp['DocumentLines']) && is_array($resp['DocumentLines'])) {
-                $lines = $resp['DocumentLines'];
+        if (($orderData['status'] ?? 0) == 200 && isset($orderData['response'])) {
+            $orderDetailData = $orderData['response'];
+            $orderDocEntry = $orderDetailData['DocEntry'] ?? intval($orderNo);
+            
+            $linesQuery = "PurchaseOrders({$orderDocEntry})/DocumentLines";
+            $linesData = $sap->get($linesQuery);
+            
+            if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
+                $resp = $linesData['response'];
+                if (isset($resp['value']) && is_array($resp['value'])) {
+                    $lines = $resp['value'];
+                } elseif (isset($resp['DocumentLines']) && is_array($resp['DocumentLines'])) {
+                    $lines = $resp['DocumentLines'];
+                }
+                
+                // Sipariş modundaysak, gelen satırların sipariş numarasını manuel set et
+                // Önce kapalı satırları filtrele, sonra _OrderNo set et
+                $lines = array_filter($lines, function($l) {
+                    // LineStatus kontrolü - kapalı satırları filtrele
+                    return !isset($l['LineStatus']) || $l['LineStatus'] !== 'C';
+                });
+                
+                // Her satıra sipariş numarasını ekle
+                foreach ($lines as &$l) {
+                    $l['_OrderNo'] = $orderNo;
+                }
+                unset($l); // Referansı temizle
             }
         }
     } else {
-        $errorMsg = "Talep detayları alınamadı!";
+        // Eğer sipariş seçilmediyse, talep satırlarını göster ve her satır için sipariş numarasını ekle
+        if (!empty($detailData)) {
+            $requestDocEntry = $detailData['DocEntry'] ?? intval($requestNo);
+            
+            $linesQuery = "PurchaseRequests({$requestDocEntry})/DocumentLines";
+            $linesData = $sap->get($linesQuery);
+            
+            if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
+                $resp = $linesData['response'];
+                $tempLines = [];
+                if (isset($resp['value']) && is_array($resp['value'])) {
+                    $tempLines = $resp['value'];
+                } elseif (isset($resp['DocumentLines']) && is_array($resp['DocumentLines'])) {
+                    $tempLines = $resp['DocumentLines'];
+                }
+                
+                // Her satır için sipariş numarasını ekle
+                $requestDocEntry = $detailData['DocEntry'] ?? intval($requestNo);
+                foreach ($tempLines as $lineIndex => $line) {
+                    // LineNum 0-based veya 1-based olabilir, her iki durumu da kontrol et
+                    $lineNum = $line['LineNum'] ?? null;
+                    if ($lineNum === null) {
+                        // LineNum yoksa, satır index'ini kullan (0-based)
+                        $lineNum = $lineIndex;
+                    }
+                    $key = $requestDocEntry . '-' . $lineNum;
+                    // Bu satırın hangi sipariş numarasına ait olduğunu bul
+                    $line['_OrderNo'] = $lineToOrderMap[$key] ?? null;
+                    $lines[] = $line;
+                }
+            }
+        }
     }
 }
 
@@ -348,10 +486,10 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.5px;
     border-bottom: 2px solid #e5e7eb;
-    width: 25%;
+    width: 20%;
 }
 
-.data-table th:nth-child(3) {
+.data-table th:nth-child(4) {
     text-align: center;
 }
 
@@ -360,10 +498,10 @@ body {
     border-bottom: 1px solid #f3f4f6;
     font-size: 14px;
     color: #374151;
-    width: 25%;
+    width: 20%;
 }
 
-.data-table td:nth-child(3) {
+.data-table td:nth-child(4) {
     text-align: center;
 }
 
@@ -483,6 +621,7 @@ body {
                     <?php endif; ?>
                 <?php else: ?>
                     <?php
+                    // Birden fazla sipariş varsa header'da buton gösterme, sipariş listesinde gösterilecek
                     // Sadece tek siparişli taleplerde header'da teslim al butonu göster
                     $hasSingleOrder = count($allOrdersForRequest) === 1;
                     
@@ -549,16 +688,20 @@ body {
                         <!-- Sağ Sütun -->
                         <div class="detail-column">
                             <div class="detail-item">
-                                <label>Tedarik No:</label>
+                                <label>Sipariş No:</label>
                                 <div class="detail-value">
                                     <?php
                                     $siparisNoDisplay = '-';
                                     if ($isPurchaseOrder) {
                                         $siparisNoDisplay = htmlspecialchars($orderDocEntry ?? $orderNo ?? '-');
                                     } elseif (!empty($allOrdersForRequest)) {
-                                        // İlk sipariş numarasını göster
+                                        // Birden fazla sipariş varsa, ilk sipariş numarasını göster
+                                        // Tüm siparişler aşağıda listelenecek
                                         $firstOrder = $allOrdersForRequest[0];
                                         $siparisNoDisplay = htmlspecialchars($firstOrder['OrderNo'] ?? '-');
+                                        if (count($allOrdersForRequest) > 1) {
+                                            $siparisNoDisplay .= ' (' . count($allOrdersForRequest) . ' sipariş)';
+                                        }
                                     }
                                     echo $siparisNoDisplay;
                                     ?>
@@ -591,11 +734,67 @@ body {
                     </div>
                 </div>
                 
+                <?php if (!empty($allOrdersForRequest) && count($allOrdersForRequest) > 1): ?>
                 <section class="card">
-                    <div class="section-title">Talep Detayı</div>
+                    <div class="section-title">Siparişler</div>
                     <table class="data-table">
                         <thead>
                             <tr>
+                                <th>Sipariş No</th>
+                                <th>Sipariş Tarihi</th>
+                                <th>Durum</th>
+                                <th>İşlem</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($allOrdersForRequest as $orderItem): ?>
+                                <?php
+                                $orderNoItem = $orderItem['OrderNo'] ?? '';
+                                $orderDateItem = $orderItem['OrderDate'] ?? '';
+                                $orderStatusItem = $orderItem['Status'] ?? null;
+                                $canReceiveItem = $orderItem['CanReceive'] ?? false;
+                                $isSelectedOrder = (!empty($orderNo) && intval($orderNo) == intval($orderNoItem));
+                                ?>
+                                <tr style="<?= $isSelectedOrder ? 'background: #f0f9ff; border-left: 3px solid #3b82f6;' : '' ?>">
+                                    <td>
+                                        <a href="DisTedarik-Detay.php?requestNo=<?= urlencode($requestNo) ?>&orderNo=<?= urlencode($orderNoItem) ?>" style="color: #3b82f6; text-decoration: none; font-weight: 600;">
+                                            <?= htmlspecialchars($orderNoItem) ?>
+                                        </a>
+                                    </td>
+                                    <td><?= formatDate($orderDateItem) ?></td>
+                                    <td>
+                                        <span class="status-badge <?= getStatusClass($orderStatusItem) ?>">
+                                            <?= getStatusText($orderStatusItem) ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <?php if ($canReceiveItem): ?>
+                                            <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?>&orderNos=<?= urlencode($orderNoItem) ?>">
+                                                <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;">✓ Teslim Al</button>
+                                            </a>
+                                        <?php else: ?>
+                                            <span style="color: #9ca3af; font-size: 12px;">-</span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </section>
+                <?php endif; ?>
+                
+                <section class="card">
+                    <div class="section-title">
+                        <?php if ($isPurchaseOrder || (!empty($orderNo) && !$isPurchaseOrder)): ?>
+                            Sipariş Detayı
+                        <?php else: ?>
+                            Talep Detayı
+                        <?php endif; ?>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Sipariş No</th>
                                 <th>Kalem Numarası</th>
                                 <th>Kalem Tanımı</th>
                                 <th>Teslimat Miktarı</th>
@@ -609,6 +808,24 @@ body {
                                     $itemCode = $line['ItemCode'] ?? '';
                                     $uomCode = $line['UoMCode'] ?? 'AD';
                                     $quantity = (float)($line['Quantity'] ?? 0);
+                                    $lineOrderNo = $line['_OrderNo'] ?? null;
+                                    
+                                    // Eğer URL'den belirli bir sipariş numarası ile geldiysek (Sipariş Detayı Modu)
+                                    if (!empty($orderNo)) {
+                                        // Bu satırın verisi direkt PurchaseOrder'dan geldiyse _OrderNo genellikle boştur, manuel dolduralım
+                                        if (empty($lineOrderNo)) {
+                                            $lineOrderNo = $orderNo;
+                                            $line['_OrderNo'] = $orderNo;
+                                        }
+                                        
+                                        // KRİTİK KONTROL: Eğer listedeki satırın sipariş numarası, URL'deki sipariş numarasıyla eşleşmiyorsa GİZLE.
+                                        // Ancak PurchaseOrder'dan çektiğimiz veride _OrderNo bazen set edilmemiş olabilir.
+                                        // Eğer $isPurchaseOrder true ise, zaten sadece o siparişin satırları gelmiştir, filtreye gerek yok.
+                                        // Eğer talep üzerinden geldiysek filtre şart.
+                                        if (!$isPurchaseOrder && isset($line['_OrderNo']) && $line['_OrderNo'] != $orderNo) {
+                                            continue; // Bu satırı atla
+                                        }
+                                    }
                                     
                                     // Teslimat Miktarı: Şimdilik talep miktarını göster (teslim al işlemi yapıldıysa güncellenecek)
                                     $delivered = $quantity; // TODO: Teslim al işleminden gelen miktarı hesapla
@@ -622,6 +839,15 @@ body {
                                     }
                                     ?>
                                     <tr>
+                                        <td>
+                                            <?php if (!empty($lineOrderNo)): ?>
+                                                <a href="DisTedarik-Detay.php?requestNo=<?= urlencode($requestNo) ?>&orderNo=<?= urlencode($lineOrderNo) ?>" style="color: #3b82f6; text-decoration: none; font-weight: 600;">
+                                                    <?= htmlspecialchars($lineOrderNo) ?>
+                                                </a>
+                                            <?php else: ?>
+                                                <span style="color: #9ca3af;">-</span>
+                                            <?php endif; ?>
+                                        </td>
                                         <td><?= htmlspecialchars($itemCode) ?></td>
                                         <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
                                         <td><?= $deliveredDisplay ?></td>
@@ -630,7 +856,7 @@ body {
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="4" style="text-align: center; padding: 2rem; color: #9ca3af;">Satır bulunamadı.</td>
+                                    <td colspan="5" style="text-align: center; padding: 2rem; color: #9ca3af;">Satır bulunamadı.</td>
                                 </tr>
                             <?php endif; ?>
                         </tbody>

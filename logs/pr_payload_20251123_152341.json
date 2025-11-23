@@ -1,0 +1,26 @@
+{
+    "DocDate": "2025-11-23",
+    "DocDueDate": "2025-11-30",
+    "RequriedDate": "2025-11-30",
+    "Comments": "Deneme Talep Multi\r\n",
+    "U_ASB2B_BRAN": "100",
+    "U_AS_OWNR": "KT",
+    "U_ASB2B_STATUS": "1",
+    "U_ASB2B_User": "turgay",
+    "DocumentLines": [
+        {
+            "ItemCode": "90228",
+            "Quantity": 10,
+            "UoMCode": "AD",
+            "WarehouseCode": "100-KT-1",
+            "VendorNum": "P100001"
+        },
+        {
+            "ItemCode": "90230",
+            "Quantity": 10,
+            "UoMCode": "AD",
+            "WarehouseCode": "100-KT-1",
+            "VendorNum": "P100001"
+        }
+    ]
+}
