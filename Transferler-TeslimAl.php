@@ -1,0 +1,886 @@
+<?php
+session_start();
+if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
+    header("Location: config/login.php");
+    exit;
+}
+include 'sap_connect.php';
+$sap = new SAPConnect();
+
+// Session'dan bilgileri al
+$uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
+$branch = $_SESSION["Branch2"]["Name"] ?? $_SESSION["WhsCode"] ?? $_SESSION["Branch"] ?? '';
+
+if (empty($uAsOwnr) || empty($branch)) {
+    die("Session bilgileri eksik. Lütfen tekrar giriş yapın.");
+}
+
+$docEntry = $_GET['docEntry'] ?? '';
+
+if (empty($docEntry)) {
+    header("Location: Transferler.php?view=incoming");
+    exit;
+}
+
+// InventoryTransferRequest'i çek
+$docQuery = "InventoryTransferRequests({$docEntry})";
+$docData = $sap->get($docQuery);
+$requestData = $docData['response'] ?? null;
+
+if (!$requestData) {
+    die("Transfer talebi bulunamadı!");
+}
+
+// Lines'ı çek - çoklu deneme stratejisi
+$lines = [];
+$linesQuery1 = "InventoryTransferRequests({$docEntry})?\$expand=InventoryTransferRequestLines";
+$linesData1 = $sap->get($linesQuery1);
+if (($linesData1['status'] ?? 0) == 200) {
+    $response1 = $linesData1['response'] ?? null;
+    if ($response1 && isset($response1['InventoryTransferRequestLines']) && is_array($response1['InventoryTransferRequestLines'])) {
+        $lines = $response1['InventoryTransferRequestLines'];
+    }
+}
+
+if (empty($lines)) {
+    $linesQuery2 = "InventoryTransferRequests({$docEntry})?\$expand=StockTransferLines";
+    $linesData2 = $sap->get($linesQuery2);
+    if (($linesData2['status'] ?? 0) == 200) {
+        $response2 = $linesData2['response'] ?? null;
+        if ($response2 && isset($response2['StockTransferLines']) && is_array($response2['StockTransferLines'])) {
+            $lines = $response2['StockTransferLines'];
+        }
+    }
+}
+
+if (empty($lines)) {
+    $linesQuery3 = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
+    $linesData3 = $sap->get($linesQuery3);
+    if (($linesData3['status'] ?? 0) == 200) {
+        $response3 = $linesData3['response'] ?? null;
+        if ($response3) {
+            if (isset($response3['value']) && is_array($response3['value'])) {
+                $lines = $response3['value'];
+            } elseif (is_array($response3) && !isset($response3['value'])) {
+                $lines = $response3;
+            }
+        }
+    }
+}
+
+if (empty($lines)) {
+    $linesQuery4 = "InventoryTransferRequests({$docEntry})/StockTransferLines";
+    $linesData4 = $sap->get($linesQuery4);
+    if (($linesData4['status'] ?? 0) == 200) {
+        $response4 = $linesData4['response'] ?? null;
+        if ($response4) {
+            if (isset($response4['value']) && is_array($response4['value'])) {
+                $lines = $response4['value'];
+            } elseif (is_array($response4) && !isset($response4['value']) && !isset($response4['@odata.context'])) {
+                $lines = $response4;
+            } elseif (isset($response4['StockTransferLines'])) {
+                $stockTransferLines = $response4['StockTransferLines'];
+                if (is_array($stockTransferLines) && !isset($stockTransferLines[0]) && !empty($stockTransferLines)) {
+                    $lines = array_values($stockTransferLines);
+                } elseif (is_array($stockTransferLines)) {
+                    $lines = $stockTransferLines;
+                }
+            }
+        }
+    }
+}
+
+$fromWarehouse = $requestData['FromWarehouse'] ?? '';
+$toWarehouse = $requestData['ToWarehouse'] ?? '';
+
+// Alıcı şubenin ana deposunu bul (U_ASB2B_MAIN='1')
+$targetWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '1'";
+$targetWarehouseQuery = "Warehouses?\$filter=" . urlencode($targetWarehouseFilter);
+$targetWarehouseData = $sap->get($targetWarehouseQuery);
+$targetWarehouses = $targetWarehouseData['response']['value'] ?? [];
+$targetWarehouse = !empty($targetWarehouses) ? $targetWarehouses[0]['WarehouseCode'] : null;
+
+if (empty($targetWarehouse)) {
+    die("Hedef depo (U_ASB2B_MAIN=1) bulunamadı!");
+}
+
+// Fire & Zayi deposunu bul
+$fireZayiWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '3'";
+$fireZayiWarehouseQuery = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter);
+$fireZayiWarehouseData = $sap->get($fireZayiWarehouseQuery);
+$fireZayiWarehouses = $fireZayiWarehouseData['response']['value'] ?? [];
+$fireZayiWarehouse = !empty($fireZayiWarehouses) ? $fireZayiWarehouses[0]['WarehouseCode'] : null;
+
+if (empty($fireZayiWarehouse)) {
+    $fireZayiWarehouseFilter2 = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_FIREZAYI eq 'Y'";
+    $fireZayiWarehouseQuery2 = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter2);
+    $fireZayiWarehouseData2 = $sap->get($fireZayiWarehouseQuery2);
+    $fireZayiWarehouses2 = $fireZayiWarehouseData2['response']['value'] ?? [];
+    $fireZayiWarehouse = !empty($fireZayiWarehouses2) ? $fireZayiWarehouses2[0]['WarehouseCode'] : null;
+}
+
+// POST işlemi: StockTransfer oluştur
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'teslim_al') {
+    header('Content-Type: application/json');
+
+    if (empty($lines)) {
+        echo json_encode(['success' => false, 'message' => 'Transfer satırları bulunamadı!']);
+        exit;
+    }
+
+    $transferLines = [];
+    $headerComments = [];
+
+    foreach ($lines as $index => $line) {
+        // Talep miktarı (read-only)
+        $talepMiktari = floatval($line['Quantity'] ?? 0);
+        
+        // Eksik/Fazla miktar (cebirsel - negatif/pozitif olabilir)
+        $eksikFazlaQty = floatval($_POST['eksik_fazla'][$index] ?? 0);
+        
+        // Kusurlu miktar (min 0)
+        $kusurluQty = floatval($_POST['kusurlu'][$index] ?? 0);
+        if ($kusurluQty < 0) $kusurluQty = 0;
+        
+        // Fiziksel miktar = Talep + EksikFazla
+        $fizikselMiktar = $talepMiktari + $eksikFazlaQty;
+        if ($fizikselMiktar < 0) $fizikselMiktar = 0;
+        
+        // Kusurlu miktar fiziksel miktarı aşamaz
+        if ($kusurluQty > $fizikselMiktar) {
+            $kusurluQty = $fizikselMiktar;
+        }
+        
+        $not = trim($_POST['not'][$index] ?? '');
+        
+        $itemCode = $line['ItemCode'] ?? '';
+        $itemName = $line['ItemDescription'] ?? $itemCode;
+        $commentParts = [];
+        
+        // Eksik/Fazla miktar
+        if ($eksikFazlaQty != 0) {
+            $eksikFazlaStr = $eksikFazlaQty > 0 ? "+{$eksikFazlaQty}" : (string)$eksikFazlaQty;
+            $commentParts[] = "Eksik/Fazla: {$eksikFazlaStr}";
+        }
+        
+        // Kusurlu miktar
+        if ($kusurluQty > 0) {
+            $commentParts[] = "Kusurlu: {$kusurluQty}";
+        }
+        
+        // Fiziksel miktar
+        $commentParts[] = "Fiziksel: {$fizikselMiktar}";
+        
+        if (!empty($not)) {
+            $commentParts[] = "Not: {$not}";
+        }
+        
+        if (!empty($commentParts)) {
+            $headerComments[] = "{$itemCode} ({$itemName}): " . implode(", ", $commentParts);
+        }
+        
+        // Normal transfer miktarı = Fiziksel - Kusurlu
+        $normalTransferMiktar = $fizikselMiktar - $kusurluQty;
+        if ($normalTransferMiktar < 0) {
+            $normalTransferMiktar = 0;
+        }
+        
+        // Normal transfer miktarı > 0 ise StockTransfer için hazırla
+        if ($normalTransferMiktar > 0) {
+            $baseQty = floatval($line['BaseQty'] ?? 1.0);
+            $transferLines[] = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $normalTransferMiktar * $baseQty, // BaseQty ile çarp
+                'FromWarehouseCode' => $fromWarehouse, // Request'in FromWarehouse'u (gönderen şube)
+                'WarehouseCode' => $toWarehouse // Request'in ToWarehouse'u (alıcı şube)
+            ];
+        }
+        
+        // Eksik miktar varsa → Fire & Zayi deposuna (Zayi)
+        if ($eksikFazlaQty < 0) {
+            $zayiMiktar = abs($eksikFazlaQty);
+            $targetFireZayiWarehouse = $fireZayiWarehouse;
+            if (empty($targetFireZayiWarehouse)) {
+                $targetFireZayiWarehouse = '200-KT-2'; // Geçici
+            }
+            
+            $baseQty = floatval($line['BaseQty'] ?? 1.0);
+            $zayiLine = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $zayiMiktar * $baseQty,
+                'FromWarehouseCode' => $fromWarehouse,
+                'WarehouseCode' => $targetFireZayiWarehouse,
+                'U_ASB2B_LOST' => '2', // Zayi
+                'U_ASB2B_Damaged' => 'E' // Eksik
+            ];
+            
+            $zayiComments = [];
+            if (!empty($not)) {
+                $zayiComments[] = $not;
+            }
+            $zayiComments[] = "Eksik: {$zayiMiktar} adet";
+            $zayiComments[] = 'Fire & Zayi';
+            $zayiLine['U_ASB2B_Comments'] = implode(' | ', $zayiComments);
+            
+            $transferLines[] = $zayiLine;
+        }
+        
+        // Fazla miktar varsa → Fire & Zayi deposuna (Fire)
+        if ($eksikFazlaQty > 0) {
+            $targetFireZayiWarehouse = $fireZayiWarehouse;
+            if (empty($targetFireZayiWarehouse)) {
+                $targetFireZayiWarehouse = '200-KT-2'; // Geçici
+            }
+            
+            $baseQty = floatval($line['BaseQty'] ?? 1.0);
+            $fireLine = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $eksikFazlaQty * $baseQty,
+                'FromWarehouseCode' => $fromWarehouse,
+                'WarehouseCode' => $targetFireZayiWarehouse,
+                'U_ASB2B_LOST' => '1' // Fire
+            ];
+            
+            $fireComments = [];
+            if (!empty($not)) {
+                $fireComments[] = $not;
+            }
+            $fireComments[] = "Fazla: {$eksikFazlaQty} adet";
+            $fireComments[] = 'Fire & Zayi';
+            $fireLine['U_ASB2B_Comments'] = implode(' | ', $fireComments);
+            
+            $transferLines[] = $fireLine;
+        }
+        
+        // Kusurlu miktar varsa → Fire & Zayi deposuna
+        if ($kusurluQty > 0) {
+            $targetFireZayiWarehouse = $fireZayiWarehouse;
+            if (empty($targetFireZayiWarehouse)) {
+                $targetFireZayiWarehouse = '200-KT-2'; // Geçici
+            }
+            
+            $baseQty = floatval($line['BaseQty'] ?? 1.0);
+            $fireZayiLine = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $kusurluQty * $baseQty,
+                'FromWarehouseCode' => $fromWarehouse,
+                'WarehouseCode' => $targetFireZayiWarehouse,
+                'U_ASB2B_Damaged' => 'K' // Kusurlu
+            ];
+            
+            $fireZayiComments = [];
+            if (!empty($not)) {
+                $fireZayiComments[] = $not;
+            }
+            $fireZayiComments[] = "Kusurlu: {$kusurluQty} adet";
+            $fireZayiComments[] = 'Fire & Zayi';
+            $fireZayiLine['U_ASB2B_Comments'] = implode(' | ', $fireZayiComments);
+            
+            $transferLines[] = $fireZayiLine;
+        }
+    }
+
+    if (empty($transferLines)) {
+        echo json_encode(['success' => false, 'message' => 'İşlenecek kalem bulunamadı! Lütfen en az bir kalem için teslim alın.']);
+        exit;
+    }
+
+    $docDate = $requestData['DocDate'] ?? date('Y-m-d');
+    $headerCommentsText = !empty($headerComments) ? implode(" | ", $headerComments) : '';
+
+    // StockTransfer oluştur
+    // FromWarehouse: Request'in FromWarehouse'u (gönderen şube)
+    // ToWarehouse: Request'in ToWarehouse'u (alıcı şube)
+    $stockTransferPayload = [
+        'FromWarehouse' => $fromWarehouse, // Request'in FromWarehouse'u (gönderen şube)
+        'ToWarehouse' => $toWarehouse, // Request'in ToWarehouse'u (alıcı şube)
+        'DocDate' => $docDate,
+        'Comments' => $headerCommentsText,
+        'U_ASB2B_BRAN' => $branch,
+        'U_AS_OWNR' => $uAsOwnr,
+        'U_ASB2B_STATUS' => '4', // Tamamlandı
+        'U_ASB2B_TYPE' => 'TRANSFER',
+        'U_ASB2B_User' => $_SESSION["UserName"] ?? '',
+        'U_ASB2B_QutMaster' => (int)$docEntry, // InventoryTransferRequest DocEntry
+        'StockTransferLines' => $transferLines
+    ];
+
+    $result = $sap->post('StockTransfers', $stockTransferPayload);
+
+    if ($result['status'] == 200 || $result['status'] == 201) {
+        // InventoryTransferRequest'i güncelle: Status = 4 (Tamamlandı)
+        $updatePayload = [
+            'U_ASB2B_STATUS' => '4'
+        ];
+        
+        $updateResult = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
+        
+        if ($updateResult['status'] == 200 || $updateResult['status'] == 204) {
+            $_SESSION['success_message'] = "Transfer başarıyla teslim alındı!";
+            header('Location: Transferler.php?view=incoming');
+            exit;
+        } else {
+            $_SESSION['warning_message'] = "StockTransfer oluşturuldu ancak status güncellenemedi.";
+            header('Location: Transferler.php?view=incoming');
+            exit;
+        }
+    } else {
+        $errorMsg = 'Teslim alma işlemi başarısız! HTTP ' . ($result['status'] ?? 'NO STATUS');
+        if (isset($result['response']['error'])) {
+            $errorMsg .= ' - ' . json_encode($result['response']['error']);
+        }
+        $_SESSION['error_message'] = $errorMsg;
+        header('Location: Transferler.php?view=incoming');
+        exit;
+    }
+}
+
+// Tarih formatlama
+function formatDate($date) {
+    if (empty($date)) return '-';
+    if (strpos($date, 'T') !== false) {
+        return date('d.m.Y', strtotime(substr($date, 0, 10)));
+    }
+    return date('d.m.Y', strtotime($date));
+}
+
+// Warehouse isimlerini çek
+$warehouseNamesMap = [];
+$fromWhsName = '';
+$toWhsName = '';
+
+if (!empty($fromWarehouse)) {
+    $whsQuery = "Warehouses('{$fromWarehouse}')?\$select=WarehouseName";
+    $whsData = $sap->get($whsQuery);
+    if (($whsData['status'] ?? 0) == 200) {
+        $fromWhsName = $whsData['response']['WarehouseName'] ?? '';
+    }
+}
+
+if (!empty($toWarehouse)) {
+    $whsQuery2 = "Warehouses('{$toWarehouse}')?\$select=WarehouseName";
+    $whsData2 = $sap->get($whsQuery2);
+    if (($whsData2['status'] ?? 0) == 200) {
+        $toWhsName = $whsData2['response']['WarehouseName'] ?? '';
+    }
+}
+
+$docDate = formatDate($requestData['DocDate'] ?? '');
+$dueDate = formatDate($requestData['DueDate'] ?? '');
+$numAtCard = htmlspecialchars($requestData['U_ASB2B_NumAtCard'] ?? '-');
+$status = $requestData['U_ASB2B_STATUS'] ?? '';
+
+// Her line için BaseQty ve normalize edilmiş miktarları hesapla
+foreach ($lines as &$line) {
+    $baseQty = floatval($line['BaseQty'] ?? 1.0);
+    $quantity = floatval($line['Quantity'] ?? 0);
+    $line['_BaseQty'] = $baseQty;
+    $line['_RequestedQty'] = $baseQty > 0 ? ($quantity / $baseQty) : $quantity;
+}
+unset($line);
+?>
+
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transfer Teslim Al - MINOA</title>
+    <style>
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: #f5f7fa;
+    color: #2c3e50;
+    line-height: 1.6;
+}
+
+.main-content {
+    width: 100%;
+    background: whitesmoke;
+    padding: 0;
+    min-height: 100vh;
+}
+
+.page-header {
+    background: white;
+    padding: 20px 2rem;
+    border-radius: 0 0 0 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    height: 80px;
+    box-sizing: border-box;
+}
+
+.page-header h2 {
+    color: #1e40af;
+    font-size: 1.75rem;
+    font-weight: 600;
+}
+
+.btn {
+    padding: 0.75rem 1.5rem;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-decoration: none;
+    display: inline-block;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+}
+
+.btn-primary:hover {
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+}
+
+.btn-secondary {
+    background: white;
+    color: #3b82f6;
+    border: 2px solid #3b82f6;
+}
+
+.btn-secondary:hover {
+    background: #eff6ff;
+    transform: translateY(-2px);
+}
+
+.content-wrapper {
+    padding: 24px 32px;
+}
+
+.card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    padding: 2rem;
+    margin: 24px 32px 2rem 32px;
+}
+
+.alert {
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    margin: 24px 32px 1.5rem 32px;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.alert-danger {
+    background: #fee2e2;
+    border: 1px solid #ef4444;
+    color: #991b1b;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+}
+
+.data-table thead {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+}
+
+.data-table th {
+    padding: 1rem;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.data-table th:nth-child(4),
+.data-table th:nth-child(5),
+.data-table th:nth-child(6),
+.data-table th:nth-child(7),
+.data-table th:nth-child(8) {
+    text-align: center;
+}
+
+.data-table tbody tr {
+    border-bottom: 1px solid #e5e7eb;
+    transition: background-color 0.2s;
+}
+
+.data-table tbody tr:hover {
+    background-color: #f8fafc;
+}
+
+.data-table td {
+    padding: 1rem;
+    font-size: 0.95rem;
+}
+
+.data-table td:nth-child(4),
+.data-table td:nth-child(5),
+.data-table td:nth-child(6),
+.data-table td:nth-child(7),
+.data-table td:nth-child(8) {
+    text-align: center;
+}
+
+.quantity-controls {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: center;
+}
+
+.qty-btn {
+    padding: 0.5rem 1rem;
+    border: 2px solid #3b82f6;
+    background: white;
+    color: #3b82f6;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 1rem;
+    min-width: 40px;
+    transition: all 0.2s;
+}
+
+.qty-btn:hover {
+    background: #3b82f6;
+    color: white;
+    transform: scale(1.05);
+}
+
+.qty-input {
+    width: 100px;
+    text-align: center;
+    padding: 0.5rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 0.95rem;
+    transition: border-color 0.2s;
+}
+
+.qty-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.qty-input[readonly] {
+    background-color: #f3f4f6;
+    color: #6b7280;
+}
+
+input[name^="eksik_fazla"] {
+    font-weight: 500;
+}
+
+.eksik-fazla-negatif {
+    color: #dc2626 !important;
+}
+
+.eksik-fazla-pozitif {
+    color: #16a34a !important;
+}
+
+.eksik-fazla-sifir {
+    color: #6b7280 !important;
+}
+
+.notes-textarea {
+    width: 100%;
+    min-width: 150px;
+    padding: 0.5rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    resize: vertical;
+    font-family: inherit;
+    transition: border-color 0.2s;
+}
+
+.notes-textarea:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+    color: #374151;
+}
+
+.form-actions {
+    margin-top: 2rem;
+    text-align: right;
+    display: flex;
+    gap: 1rem;
+    justify-content: flex-end;
+}
+    </style>
+</head>
+<body>
+<?php include 'navbar.php'; ?>
+
+<main class="main-content">
+    <header class="page-header">
+        <h2>Teslim Al - Transfer No: <?= htmlspecialchars($docEntry) ?></h2>
+        <button class="btn btn-secondary" onclick="window.location.href='Transferler.php?view=incoming'">← Geri Dön</button>
+    </header>
+
+    <?php if (empty($lines)): ?>
+        <div class="card">
+            <p style="color: #ef4444; font-weight: 600; margin-bottom: 1rem;">⚠️ Transfer satırları bulunamadı!</p>
+        </div>
+    <?php else: ?>
+
+        <!-- Transfer bilgi kartı -->
+        <div class="card">
+            <h3 style="margin-bottom: 1rem; color: #1e40af;">Transfer Bilgileri</h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem;">
+                <div>
+                    <div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; text-transform: uppercase; margin-bottom: 0.25rem;">Transfer No</div>
+                    <div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= htmlspecialchars($docEntry) ?></div>
+                </div>
+                <div>
+                    <div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; text-transform: uppercase; margin-bottom: 0.25rem;">Gönderen Şube</div>
+                    <div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= htmlspecialchars($fromWarehouse) ?><?= !empty($fromWhsName) ? ' / ' . htmlspecialchars($fromWhsName) : '' ?></div>
+                </div>
+                <div>
+                    <div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; text-transform: uppercase; margin-bottom: 0.25rem;">Transfer Tarihi</div>
+                    <div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= $docDate ?></div>
+                </div>
+                <div>
+                    <div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; text-transform: uppercase; margin-bottom: 0.25rem;">Vade Tarihi</div>
+                    <div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= $dueDate ?></div>
+                </div>
+            </div>
+        </div>
+
+        <form method="POST" action="" onsubmit="return validateForm()">
+            <input type="hidden" name="action" value="teslim_al">
+
+            <div class="card">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Kalem Kodu</th>
+                            <th>Kalem Tanımı</th>
+                            <th>Talep Miktarı</th>
+                            <th>Eksik/Fazla Miktar</th>
+                            <th>Kusurlu Miktar</th>
+                            <th>Fiziksel</th>
+                            <th>Not</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($lines as $index => $line):
+                        $itemCode = $line['ItemCode'] ?? '';
+                        $itemName = $line['ItemDescription'] ?? '-';
+                        $baseQty = floatval($line['_BaseQty'] ?? 1.0);
+                        $requestedQty = floatval($line['_RequestedQty'] ?? 0);
+                        $uomCode = $line['UoMCode'] ?? 'AD';
+                    ?>
+                        <tr>
+                            <td><?= htmlspecialchars($itemCode) ?></td>
+                            <td><?= htmlspecialchars($itemName) ?></td>
+                            <td>
+                                <input type="number"
+                                       id="talep_<?= $index ?>"
+                                       value="<?= htmlspecialchars($requestedQty) ?>"
+                                       readonly
+                                       step="0.01"
+                                       class="qty-input">
+                                <small style="display: block; color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem;"><?= $uomCode ?></small>
+                            </td>
+                            <td>
+                                <div class="quantity-controls">
+                                    <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, -1)">-</button>
+                                    <input type="number"
+                                           name="eksik_fazla[<?= $index ?>]"
+                                           id="eksik_<?= $index ?>"
+                                           value="0"
+                                           step="0.01"
+                                           class="qty-input"
+                                           onchange="calculatePhysical(<?= $index ?>)"
+                                           oninput="updateEksikFazlaColor(this); calculatePhysical(<?= $index ?>)">
+                                    <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, 1)">+</button>
+                                </div>
+                            </td>
+                            <td>
+                                <div class="quantity-controls">
+                                    <button type="button" class="qty-btn" onclick="changeKusurlu(<?= $index ?>, -1)">-</button>
+                                    <input type="number"
+                                           name="kusurlu[<?= $index ?>]"
+                                           id="kusurlu_<?= $index ?>"
+                                           value="0"
+                                           min="0"
+                                           step="0.01"
+                                           class="qty-input"
+                                           onchange="calculatePhysical(<?= $index ?>)"
+                                           oninput="calculatePhysical(<?= $index ?>)">
+                                    <button type="button" class="qty-btn" onclick="changeKusurlu(<?= $index ?>, 1)">+</button>
+                                </div>
+                            </td>
+                            <td>
+                                <input type="text"
+                                       id="fiziksel_<?= $index ?>"
+                                       value="0"
+                                       readonly
+                                       class="qty-input">
+                            </td>
+                            <td>
+                                <input type="text"
+                                       name="not[<?= $index ?>]"
+                                       placeholder="Not"
+                                       style="width: 100%; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 6px;">
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="window.location.href='Transferler.php?view=incoming'">İptal</button>
+                    <button type="submit" class="btn btn-primary">
+                        ✓ Teslim Al / Onayla
+                    </button>
+                </div>
+            </div>
+        </form>
+    <?php endif; ?>
+</main>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const eksikFazlaInputs = document.querySelectorAll('input[name^="eksik_fazla"]');
+    eksikFazlaInputs.forEach(function(input) {
+        const index = input.id.replace('eksik_', '');
+        updateEksikFazlaColor(input);
+        calculatePhysical(parseInt(index));
+    });
+});
+
+function changeEksikFazla(index, delta) {
+    const input = document.getElementById('eksik_' + index);
+    if (!input) return;
+    
+    let value = parseFloat(input.value) || 0;
+    value += delta;
+    input.value = value;
+    updateEksikFazlaColor(input);
+    calculatePhysical(index);
+}
+
+function updateEksikFazlaColor(input) {
+    if (!input) return;
+    const value = parseFloat(input.value) || 0;
+    input.classList.remove('eksik-fazla-negatif', 'eksik-fazla-pozitif', 'eksik-fazla-sifir');
+    
+    if (value < 0) {
+        input.classList.add('eksik-fazla-negatif');
+    } else if (value > 0) {
+        input.classList.add('eksik-fazla-pozitif');
+    } else {
+        input.classList.add('eksik-fazla-sifir');
+    }
+}
+
+function changeKusurlu(index, delta) {
+    const input = document.getElementById('kusurlu_' + index);
+    if (!input) return;
+    
+    const talepInput = document.getElementById('talep_' + index);
+    const eksikFazlaInput = document.getElementById('eksik_' + index);
+    if (!talepInput || !eksikFazlaInput) return;
+    
+    const talep = parseFloat(talepInput.value) || 0;
+    const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
+    const fizikselMiktar = Math.max(0, talep + eksikFazla);
+    
+    let value = parseFloat(input.value) || 0;
+    value += delta;
+    if (value < 0) value = 0;
+    if (value > fizikselMiktar) value = fizikselMiktar;
+    input.value = value;
+    calculatePhysical(index);
+}
+
+function calculatePhysical(index) {
+    const talepInput = document.getElementById('talep_' + index);
+    const eksikFazlaInput = document.getElementById('eksik_' + index);
+    const kusurluInput = document.getElementById('kusurlu_' + index);
+    const fizikselInput = document.getElementById('fiziksel_' + index);
+    
+    if (!talepInput || !eksikFazlaInput || !kusurluInput || !fizikselInput) return;
+    
+    const talep = parseFloat(talepInput.value) || 0;
+    const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
+    let kusurlu = parseFloat(kusurluInput.value) || 0;
+    
+    let fiziksel = talep + eksikFazla;
+    if (fiziksel < 0) fiziksel = 0;
+    
+    if (kusurlu > fiziksel) {
+        kusurlu = fiziksel;
+        kusurluInput.value = kusurlu;
+    }
+    
+    let formattedValue;
+    if (fiziksel == Math.floor(fiziksel)) {
+        formattedValue = Math.floor(fiziksel).toString();
+    } else {
+        formattedValue = fiziksel.toFixed(2).replace('.', ',').replace(/0+$/, '').replace(/,$/, '');
+    }
+    
+    fizikselInput.value = formattedValue;
+}
+
+function validateForm() {
+    let hasQuantity = false;
+    const eksikFazlaInputs = document.querySelectorAll('input[name^="eksik_fazla"]');
+    const talepInputs = document.querySelectorAll('input[id^="talep_"]');
+    
+    talepInputs.forEach((talepInput, index) => {
+        const talep = parseFloat(talepInput.value) || 0;
+        const eksikFazla = parseFloat(eksikFazlaInputs[index].value) || 0;
+        const fiziksel = talep + eksikFazla;
+        
+        if (fiziksel > 0) {
+            hasQuantity = true;
+        }
+    });
+    
+    if (!hasQuantity) {
+        alert('Lütfen en az bir kalem için teslim alın!');
+        return false;
+    }
+    
+    return true;
+}
+</script>
+</body>
+</html>
+

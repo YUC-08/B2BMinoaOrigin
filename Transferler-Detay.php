@@ -495,25 +495,20 @@ body {
                         </div>
                         <div class="detail-item">
                             <label>Not:</label>
-                            <div class="detail-value"><?= htmlspecialchars($comments) ?></div>
+                            <div class="detail-value"><?= !empty($comments) && $comments !== '-' ? htmlspecialchars($comments) : 'Stok nakil talebi' ?></div>
                         </div>
                     </div>
                     
                     <!-- Sağ Sütun -->
                     <div class="detail-column">
-                        <?php if ($type === 'incoming'): ?>
-                            <!-- Gelen Transferler: Gönderen Şube göster, Alıcı Şube gösterme -->
-                            <div class="detail-item">
-                                <label>Gönderen Şube:</label>
-                                <div class="detail-value"><?= htmlspecialchars($gonderSubeDisplay) ?></div>
-                            </div>
-                        <?php else: ?>
-                            <!-- Giden Transferler: Alıcı Şube göster, Gönderen Şube gösterme -->
-                            <div class="detail-item">
-                                <label>Alıcı Şube:</label>
-                                <div class="detail-value"><?= htmlspecialchars($aliciSubeDisplay) ?></div>
-                            </div>
-                        <?php endif; ?>
+                        <div class="detail-item">
+                            <label>Kaynak Depo:</label>
+                            <div class="detail-value"><?= htmlspecialchars($gonderSubeDisplay) ?></div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Hedef Depo:</label>
+                            <div class="detail-value"><?= htmlspecialchars($aliciSubeDisplay) ?></div>
+                        </div>
                         <div class="detail-item">
                             <label>Durum:</label>
                             <div class="detail-value">

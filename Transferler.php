@@ -18,11 +18,21 @@ if (empty($uAsOwnr) || empty($branch)) {
 $userName = $_SESSION["UserName"] ?? '';
 
 // 1. Minoa talep ettiği transfer tedarik (diğer şubeden gelen) - ToWarehouse
+// Önce MAIN=2 (sevkiyat deposu) ara
 $toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '{$branch}'";
 $toWarehouseQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilter);
 $toWarehouseData = $sap->get($toWarehouseQuery);
 $toWarehouses = $toWarehouseData['response']['value'] ?? [];
 $toWarehouse = !empty($toWarehouses) ? $toWarehouses[0]['WarehouseCode'] : null;
+
+// Eğer MAIN=2 bulunamazsa, MAIN=1 (ana depo) kullan
+if (empty($toWarehouse)) {
+    $toWarehouseFilterAlt = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '{$branch}'";
+    $toWarehouseQueryAlt = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilterAlt);
+    $toWarehouseDataAlt = $sap->get($toWarehouseQueryAlt);
+    $toWarehousesAlt = $toWarehouseDataAlt['response']['value'] ?? [];
+    $toWarehouse = !empty($toWarehousesAlt) ? $toWarehousesAlt[0]['WarehouseCode'] : null;
+}
 
 // 2. Minoa talep edilen transfer tedarik (diğer şubeye giden) - FromWarehouse
 $fromWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '{$branch}'";
@@ -74,11 +84,21 @@ function canApprove($s) {
 }
 
 // 1. Minoa talep ettiği transfer tedarik (diğer şubeden gelen) - ToWarehouse
+// Önce MAIN=2 (sevkiyat deposu) ara
 $toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '{$branch}'";
 $toWarehouseQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilter);
 $toWarehouseData = $sap->get($toWarehouseQuery);
 $toWarehouses = $toWarehouseData['response']['value'] ?? [];
 $toWarehouse = !empty($toWarehouses) ? $toWarehouses[0]['WarehouseCode'] : null;
+
+// Eğer MAIN=2 bulunamazsa, MAIN=1 (ana depo) kullan
+if (empty($toWarehouse)) {
+    $toWarehouseFilterAlt = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '{$branch}'";
+    $toWarehouseQueryAlt = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilterAlt);
+    $toWarehouseDataAlt = $sap->get($toWarehouseQueryAlt);
+    $toWarehousesAlt = $toWarehouseDataAlt['response']['value'] ?? [];
+    $toWarehouse = !empty($toWarehousesAlt) ? $toWarehousesAlt[0]['WarehouseCode'] : null;
+}
 
 // 2. Minoa talep edilen transfer tedarik (diğer şubeye giden) - FromWarehouse
 $fromWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '{$branch}'";
@@ -89,7 +109,22 @@ $fromWarehouse = !empty($fromWarehouses) ? $fromWarehouses[0]['WarehouseCode'] :
 
 // 1. Gelen transferler (ToWarehouse = '100-KT-1')
 $incomingTransfers = [];
-$incomingDebugInfo = [];
+$incomingDebugInfo = [
+    'branch' => $branch,
+    'uAsOwnr' => $uAsOwnr,
+    'userName' => $userName,
+    'toWarehouseFilter' => $toWarehouseFilter,
+    'toWarehouseQuery' => $toWarehouseQuery,
+    'toWarehouseHttpStatus' => $toWarehouseData['status'] ?? 0,
+    'toWarehouse' => $toWarehouse,
+    'toWarehousesCount' => count($toWarehouses),
+    'toWarehouseFilterAlt' => isset($toWarehouseFilterAlt) ? $toWarehouseFilterAlt : '',
+    'toWarehouseQueryAlt' => isset($toWarehouseQueryAlt) ? $toWarehouseQueryAlt : '',
+    'toWarehouseHttpStatusAlt' => isset($toWarehouseDataAlt) ? ($toWarehouseDataAlt['status'] ?? 0) : 0,
+    'toWarehousesCountAlt' => isset($toWarehousesAlt) ? count($toWarehousesAlt) : 0,
+    'toWarehouseSource' => !empty($toWarehouses) ? 'MAIN=2' : (isset($toWarehousesAlt) && !empty($toWarehousesAlt) ? 'MAIN=1 (fallback)' : 'BULUNAMADI')
+];
+
 if ($toWarehouse) {
     $incomingFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_TYPE eq 'TRANSFER' and ToWarehouse eq '{$toWarehouse}'";
     
@@ -128,18 +163,33 @@ if ($toWarehouse) {
         }
     }
     
-    // Debug bilgisi
-    $incomingDebugInfo['toWarehouse'] = $toWarehouse;
+    // Debug bilgisi güncelle
     $incomingDebugInfo['incomingQuery'] = $incomingQuery;
     $incomingDebugInfo['incomingFilter'] = $incomingFilter;
     $incomingDebugInfo['incomingHttpStatus'] = $incomingData['status'] ?? 0;
     $incomingDebugInfo['incomingRawCount'] = count($incomingTransfersRaw);
     $incomingDebugInfo['incomingFilteredCount'] = count($incomingTransfers);
+    
+    if (isset($incomingData['response']['error'])) {
+        $incomingDebugInfo['error'] = $incomingData['response']['error'];
+    }
+} else {
+    $incomingDebugInfo['error'] = 'ToWarehouse bulunamadı!';
 }
 
 // 2. Giden transferler (FromWarehouse = '100-KT-0')
 $outgoingTransfers = [];
-$debugInfo = [];
+$debugInfo = [
+    'branch' => $branch,
+    'uAsOwnr' => $uAsOwnr,
+    'userName' => $userName,
+    'fromWarehouseFilter' => $fromWarehouseFilter,
+    'fromWarehouseQuery' => $fromWarehouseQuery,
+    'fromWarehouseHttpStatus' => $fromWarehouseData['status'] ?? 0,
+    'fromWarehouse' => $fromWarehouse,
+    'fromWarehousesCount' => count($fromWarehouses)
+];
+
 if ($fromWarehouse) {
         // Sadece TRANSFER tipi (ana depo transferleri MAIN tipinde olur)
         $outgoingFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_TYPE eq 'TRANSFER' and FromWarehouse eq '{$fromWarehouse}'";
@@ -161,21 +211,14 @@ if ($fromWarehouse) {
         // Expand parametresini kaldırdık - her transfer için ayrı ayrı lines çekeceğiz
         $outgoingQuery = "InventoryTransferRequests?\$select=" . urlencode($selectValue) . "&\$filter=" . urlencode($outgoingFilter) . "&\$orderby=" . urlencode("DocEntry desc") . "&\$top=25";
         
-        // Debug: Query'yi logla
-        error_log("[TRANSFERLER] Outgoing Query: " . $outgoingQuery);
-        error_log("[TRANSFERLER] Outgoing Filter: " . $outgoingFilter);
-        
         $outgoingData = $sap->get($outgoingQuery);
         $outgoingTransfersRaw = $outgoingData['response']['value'] ?? [];
         
-        // Debug bilgisi
+        // Debug bilgisi güncelle
         $debugInfo['outgoingQuery'] = $outgoingQuery;
         $debugInfo['outgoingFilter'] = $outgoingFilter;
         $debugInfo['outgoingHttpStatus'] = $outgoingData['status'] ?? 0;
         $debugInfo['outgoingRawCount'] = count($outgoingTransfersRaw);
-        $debugInfo['fromWarehouse'] = $fromWarehouse;
-        $debugInfo['uAsOwnr'] = $uAsOwnr;
-        $debugInfo['branch'] = $branch;
         
         if (isset($outgoingData['response']['error'])) {
             $debugInfo['error'] = $outgoingData['response']['error'];
@@ -193,47 +236,28 @@ if ($fromWarehouse) {
                     if (!empty($docEntry)) {
                         // InventoryTransferRequests için lines'ı çek - her iki navigation property'yi de dene
                         $lines = [];
-                        $linesDebug = []; // Debug bilgisi için
                         
                         // 1) InventoryTransferRequestLines ile dene ($expand)
                         $docQuery = "InventoryTransferRequests({$docEntry})?\$expand=InventoryTransferRequestLines";
                         $docData = $sap->get($docQuery);
-                        $linesDebug['method1'] = [
-                            'query' => $docQuery,
-                            'status' => $docData['status'] ?? 0,
-                            'found' => false
-                        ];
                         
                         if (($docData['status'] ?? 0) == 200) {
                             $requestData = $docData['response'] ?? null;
                             if ($requestData && isset($requestData['InventoryTransferRequestLines']) && is_array($requestData['InventoryTransferRequestLines'])) {
                                 $lines = $requestData['InventoryTransferRequestLines'];
-                                $linesDebug['method1']['found'] = true;
-                                $linesDebug['method1']['count'] = count($lines);
                             }
-                        } else {
-                            $linesDebug['method1']['error'] = $docData['response']['error'] ?? 'Unknown error';
                         }
                         
                         // 2) Hâlâ boşsa, StockTransferLines ile tekrar dene ($expand)
                         if (empty($lines)) {
                             $docQuery2 = "InventoryTransferRequests({$docEntry})?\$expand=StockTransferLines";
                             $docData2 = $sap->get($docQuery2);
-                            $linesDebug['method2'] = [
-                                'query' => $docQuery2,
-                                'status' => $docData2['status'] ?? 0,
-                                'found' => false
-                            ];
                             
                             if (($docData2['status'] ?? 0) == 200) {
                                 $requestData2 = $docData2['response'] ?? null;
                                 if ($requestData2 && isset($requestData2['StockTransferLines']) && is_array($requestData2['StockTransferLines'])) {
                                     $lines = $requestData2['StockTransferLines'];
-                                    $linesDebug['method2']['found'] = true;
-                                    $linesDebug['method2']['count'] = count($lines);
                                 }
-                            } else {
-                                $linesDebug['method2']['error'] = $docData2['response']['error'] ?? 'Unknown error';
                             }
                         }
                         
@@ -242,27 +266,16 @@ if ($fromWarehouse) {
                         if (empty($lines)) {
                             $linesQuery = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
                             $linesData = $sap->get($linesQuery);
-                            $linesDebug['method3'] = [
-                                'query' => $linesQuery,
-                                'status' => $linesData['status'] ?? 0,
-                                'found' => false
-                            ];
                             
                             if (($linesData['status'] ?? 0) == 200) {
                                 $linesResponse = $linesData['response'] ?? null;
                                 if ($linesResponse) {
                                     if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
                                         $lines = $linesResponse['value'];
-                                        $linesDebug['method3']['found'] = true;
-                                        $linesDebug['method3']['count'] = count($lines);
                                     } elseif (is_array($linesResponse) && !isset($linesResponse['value'])) {
                                         $lines = $linesResponse;
-                                        $linesDebug['method3']['found'] = true;
-                                        $linesDebug['method3']['count'] = count($lines);
                                     }
                                 }
-                            } else {
-                                $linesDebug['method3']['error'] = $linesData['response']['error'] ?? 'Unknown error';
                             }
                         }
                         
@@ -270,11 +283,6 @@ if ($fromWarehouse) {
                         if (empty($lines)) {
                             $linesQuery2 = "InventoryTransferRequests({$docEntry})/StockTransferLines";
                             $linesData2 = $sap->get($linesQuery2);
-                            $linesDebug['method4'] = [
-                                'query' => $linesQuery2,
-                                'status' => $linesData2['status'] ?? 0,
-                                'found' => false
-                            ];
                             
                             if (($linesData2['status'] ?? 0) == 200) {
                                 $linesResponse2 = $linesData2['response'] ?? null;
@@ -282,14 +290,10 @@ if ($fromWarehouse) {
                                     // Önce 'value' array'ini kontrol et
                                     if (isset($linesResponse2['value']) && is_array($linesResponse2['value'])) {
                                         $lines = $linesResponse2['value'];
-                                        $linesDebug['method4']['found'] = true;
-                                        $linesDebug['method4']['count'] = count($lines);
                                     } 
                                     // Eğer direkt array ise
                                     elseif (is_array($linesResponse2) && !isset($linesResponse2['value']) && !isset($linesResponse2['@odata.context'])) {
                                         $lines = $linesResponse2;
-                                        $linesDebug['method4']['found'] = true;
-                                        $linesDebug['method4']['count'] = count($lines);
                                     }
                                     // Eğer StockTransferLines object olarak geliyorsa (navigation property)
                                     elseif (isset($linesResponse2['StockTransferLines'])) {
@@ -301,18 +305,10 @@ if ($fromWarehouse) {
                                         } elseif (is_array($stockTransferLines)) {
                                             $lines = $stockTransferLines;
                                         }
-                                        $linesDebug['method4']['found'] = true;
-                                        $linesDebug['method4']['count'] = count($lines);
                                     }
                                 }
-                            } else {
-                                $linesDebug['method4']['error'] = $linesData2['response']['error'] ?? 'Unknown error';
                             }
                         }
-                        
-                        // Debug bilgisini transfer'e ekle
-                        $transfer['_LinesDebug'] = $linesDebug;
-                        $transfer['_LinesCount'] = count($lines);
                         
                         // Her line için stok miktarını çek ve normalize et
                         if (!empty($lines) && is_array($lines)) {
@@ -943,21 +939,32 @@ input[type="checkbox"]:focus {
                                 <td colspan="7" style="text-align: center; padding: 40px; color: #9ca3af;">
                                     Gelen transfer bulunamadı.
                                     <?php if (isset($incomingDebugInfo) && !empty($incomingDebugInfo)): ?>
-                                        <div style="margin-top: 1rem; padding: 1rem; background: #fef3c7; border-radius: 6px; font-size: 0.875rem; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto;">
-                                            <strong>Debug Bilgisi (Gelen Transferler):</strong><br>
-                                            Branch: <?= htmlspecialchars($incomingDebugInfo['branch'] ?? 'BULUNAMADI') ?><br>
-                                            U_AS_OWNR: <?= htmlspecialchars($incomingDebugInfo['uAsOwnr'] ?? 'BULUNAMADI') ?><br>
-                                            ToWarehouse Query: <?= htmlspecialchars($incomingDebugInfo['toWhsQuery'] ?? '') ?><br>
-                                            ToWarehouse HTTP Status: <?= htmlspecialchars($incomingDebugInfo['toWhsHttpStatus'] ?? '0') ?><br>
-                                            ToWarehouse: <?= htmlspecialchars($incomingDebugInfo['toWarehouse'] ?? 'BULUNAMADI') ?><br>
+                                        <div style="margin-top: 1rem; padding: 1rem; background: #fef3c7; border-radius: 6px; font-size: 0.875rem; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
+                                            <strong>🔍 Debug Bilgisi (Gelen Transferler):</strong><br>
+                                            <strong>Kullanıcı:</strong> <?= htmlspecialchars($incomingDebugInfo['userName'] ?? 'BULUNAMADI') ?><br>
+                                            <strong>Branch:</strong> <?= htmlspecialchars($incomingDebugInfo['branch'] ?? 'BULUNAMADI') ?><br>
+                                            <strong>U_AS_OWNR:</strong> <?= htmlspecialchars($incomingDebugInfo['uAsOwnr'] ?? 'BULUNAMADI') ?><br>
+                                            <strong>ToWarehouse Filter:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseFilter'] ?? '') ?><br>
+                                            <strong>ToWarehouse Query:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseQuery'] ?? '') ?><br>
+                                            <strong>ToWarehouse HTTP Status:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseHttpStatus'] ?? '0') ?><br>
+                                            <strong>ToWarehouse:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouse'] ?? 'BULUNAMADI') ?><br>
+                                            <strong>ToWarehouse Source:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseSource'] ?? 'BULUNAMADI') ?><br>
+                                            <strong>ToWarehouses Count (MAIN=2):</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehousesCount'] ?? '0') ?><br>
+                                            <?php if (!empty($incomingDebugInfo['toWarehouseFilterAlt'])): ?>
+                                                <strong>ToWarehouse Filter Alt (MAIN=1):</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseFilterAlt']) ?><br>
+                                                <strong>ToWarehouse Query Alt:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseQueryAlt'] ?? '') ?><br>
+                                                <strong>ToWarehouse HTTP Status Alt:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseHttpStatusAlt'] ?? '0') ?><br>
+                                                <strong>ToWarehouses Count Alt (MAIN=1):</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehousesCountAlt'] ?? '0') ?><br>
+                                            <?php endif; ?>
                                             <?php if (!empty($incomingDebugInfo['toWarehouse'])): ?>
-                                                Incoming Query: <?= htmlspecialchars($incomingDebugInfo['incomingQuery'] ?? '') ?><br>
-                                                Incoming Filter: <?= htmlspecialchars($incomingDebugInfo['incomingFilter'] ?? '') ?><br>
-                                                Incoming HTTP Status: <?= htmlspecialchars($incomingDebugInfo['incomingHttpStatus'] ?? '0') ?><br>
-                                                Incoming Raw Count: <?= htmlspecialchars($incomingDebugInfo['incomingRawCount'] ?? '0') ?><br>
+                                                <strong>Incoming Query:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingQuery'] ?? '') ?><br>
+                                                <strong>Incoming Filter:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingFilter'] ?? '') ?><br>
+                                                <strong>Incoming HTTP Status:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingHttpStatus'] ?? '0') ?><br>
+                                                <strong>Incoming Raw Count:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingRawCount'] ?? '0') ?><br>
+                                                <strong>Incoming Filtered Count:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingFilteredCount'] ?? '0') ?><br>
                                             <?php endif; ?>
                                             <?php if (isset($incomingDebugInfo['error'])): ?>
-                                                Error: <?= htmlspecialchars(json_encode($incomingDebugInfo['error'])) ?><br>
+                                                <strong style="color: #dc2626;">Error:</strong> <?= htmlspecialchars(json_encode($incomingDebugInfo['error'])) ?><br>
                                             <?php endif; ?>
                         </div>
                                     <?php endif; ?>
@@ -1044,21 +1051,24 @@ input[type="checkbox"]:focus {
                                 <td colspan="8" style="text-align: center; padding: 40px; color: #9ca3af;">
                                     Giden transfer bulunamadı.
                                     <?php if (isset($debugInfo) && !empty($debugInfo)): ?>
-                                        <div style="margin-top: 1rem; padding: 1rem; background: #fef3c7; border-radius: 6px; font-size: 0.875rem; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto;">
-                                            <strong>Debug Bilgisi (Giden Transferler):</strong><br>
-                                            Branch: <?= htmlspecialchars($debugInfo['branch'] ?? 'BULUNAMADI') ?><br>
-                                            U_AS_OWNR: <?= htmlspecialchars($debugInfo['uAsOwnr'] ?? 'BULUNAMADI') ?><br>
-                                            FromWarehouse Query: <?= htmlspecialchars($debugInfo['fromWhsQuery'] ?? '') ?><br>
-                                            FromWarehouse HTTP Status: <?= htmlspecialchars($debugInfo['fromWhsHttpStatus'] ?? '0') ?><br>
-                                            FromWarehouse: <?= htmlspecialchars($debugInfo['fromWarehouse'] ?? 'BULUNAMADI') ?><br>
+                                        <div style="margin-top: 1rem; padding: 1rem; background: #fef3c7; border-radius: 6px; font-size: 0.875rem; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
+                                            <strong>🔍 Debug Bilgisi (Giden Transferler):</strong><br>
+                                            <strong>Kullanıcı:</strong> <?= htmlspecialchars($debugInfo['userName'] ?? 'BULUNAMADI') ?><br>
+                                            <strong>Branch:</strong> <?= htmlspecialchars($debugInfo['branch'] ?? 'BULUNAMADI') ?><br>
+                                            <strong>U_AS_OWNR:</strong> <?= htmlspecialchars($debugInfo['uAsOwnr'] ?? 'BULUNAMADI') ?><br>
+                                            <strong>FromWarehouse Filter:</strong> <?= htmlspecialchars($debugInfo['fromWarehouseFilter'] ?? '') ?><br>
+                                            <strong>FromWarehouse Query:</strong> <?= htmlspecialchars($debugInfo['fromWarehouseQuery'] ?? '') ?><br>
+                                            <strong>FromWarehouse HTTP Status:</strong> <?= htmlspecialchars($debugInfo['fromWarehouseHttpStatus'] ?? '0') ?><br>
+                                            <strong>FromWarehouse:</strong> <?= htmlspecialchars($debugInfo['fromWarehouse'] ?? 'BULUNAMADI') ?><br>
+                                            <strong>FromWarehouses Count:</strong> <?= htmlspecialchars($debugInfo['fromWarehousesCount'] ?? '0') ?><br>
                                             <?php if (!empty($debugInfo['fromWarehouse'])): ?>
-                                                Outgoing Query: <?= htmlspecialchars($debugInfo['outgoingQuery'] ?? '') ?><br>
-                                                Outgoing Filter: <?= htmlspecialchars($debugInfo['outgoingFilter'] ?? '') ?><br>
-                                                Outgoing HTTP Status: <?= htmlspecialchars($debugInfo['outgoingHttpStatus'] ?? '0') ?><br>
-                                                Outgoing Raw Count: <?= htmlspecialchars($debugInfo['outgoingRawCount'] ?? '0') ?><br>
+                                                <strong>Outgoing Query:</strong> <?= htmlspecialchars($debugInfo['outgoingQuery'] ?? '') ?><br>
+                                                <strong>Outgoing Filter:</strong> <?= htmlspecialchars($debugInfo['outgoingFilter'] ?? '') ?><br>
+                                                <strong>Outgoing HTTP Status:</strong> <?= htmlspecialchars($debugInfo['outgoingHttpStatus'] ?? '0') ?><br>
+                                                <strong>Outgoing Raw Count:</strong> <?= htmlspecialchars($debugInfo['outgoingRawCount'] ?? '0') ?><br>
                                             <?php endif; ?>
                                             <?php if (isset($debugInfo['error'])): ?>
-                                                Error: <?= htmlspecialchars(json_encode($debugInfo['error'])) ?><br>
+                                                <strong style="color: #dc2626;">Error:</strong> <?= htmlspecialchars(json_encode($debugInfo['error'])) ?><br>
                                             <?php endif; ?>
                                         </div>
                                     <?php endif; ?>
@@ -1083,35 +1093,11 @@ input[type="checkbox"]:focus {
                                 $docEntry = htmlspecialchars($transfer['DocEntry'] ?? '-');
                                 $searchData = buildSearchData($docEntry, $toWhsDisplay, $docDate, $dueDate, $numAtCard, $statusText);
                                 $lines = $transfer['InventoryTransferRequestLines'] ?? [];
-                                $linesDebug = $transfer['_LinesDebug'] ?? [];
-                                $linesCount = $transfer['_LinesCount'] ?? 0;
                                 
                                 // Lines boş olsa bile JSON olarak encode et
                                 $transferLinesJson = !empty($lines) ? htmlspecialchars(json_encode($lines), ENT_QUOTES, 'UTF-8') : '[]';
                             ?>
                                 <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>" data-docentry="<?= $docEntry ?>" data-lines="<?= $transferLinesJson ?>">
-                                    <?php if (!empty($linesDebug)): ?>
-                                    <tr style="background: #fef3c7;">
-                                        <td colspan="8" style="padding: 0.75rem; font-size: 0.8rem;">
-                                            <strong>🔍 DEBUG - Transfer No: <?= $docEntry ?></strong><br>
-                                            <strong>Lines Count:</strong> <?= $linesCount ?><br>
-                                            <?php foreach ($linesDebug as $method => $info): ?>
-                                                <div style="margin-top: 0.5rem; padding: 0.5rem; background: white; border-radius: 4px; border-left: 3px solid <?= $info['found'] ?? false ? '#10b981' : '#ef4444' ?>;">
-                                                    <strong><?= strtoupper($method) ?>:</strong><br>
-                                                    Query: <code style="font-size: 0.75rem;"><?= htmlspecialchars($info['query'] ?? '') ?></code><br>
-                                                    Status: <strong style="color: <?= ($info['status'] ?? 0) == 200 ? '#10b981' : '#ef4444' ?>"><?= $info['status'] ?? 0 ?></strong><br>
-                                                    Found: <strong style="color: <?= $info['found'] ?? false ? '#10b981' : '#ef4444' ?>"><?= $info['found'] ? 'YES' : 'NO' ?></strong>
-                                                    <?php if (isset($info['count'])): ?>
-                                                        <br>Count: <strong><?= $info['count'] ?></strong>
-                                                    <?php endif; ?>
-                                                    <?php if (isset($info['error'])): ?>
-                                                        <br>Error: <span style="color: #ef4444;"><?= htmlspecialchars(json_encode($info['error'])) ?></span>
-                                                    <?php endif; ?>
-                                                </div>
-                                            <?php endforeach; ?>
-                                        </td>
-                                        </tr>
-                                    <?php endif; ?>
                                     <td style="text-align: center;">
                                         <?php if ($canApprove): ?>
                                             <input type="checkbox" class="transfer-checkbox" value="<?= $docEntry ?>" data-docentry="<?= $docEntry ?>">
@@ -1140,7 +1126,7 @@ input[type="checkbox"]:focus {
                                             <?php endif; ?>
                                         </div>
                                     </td>
-                                    </tr>
+                                        </tr>
                             <?php endforeach; ?>
                                 <?php endif; ?>
                             </tbody>
@@ -1206,66 +1192,32 @@ input[type="checkbox"]:focus {
         
         // Checkbox değiştiğinde
         function checkboxChanged(checkbox) {
-            console.log('=== CHECKBOX CHANGED ===');
-            console.log('Value:', checkbox.value);
-            console.log('Checked:', checkbox.checked);
-            console.log('Element:', checkbox);
-            
             if (checkbox.checked) {
-                console.log('CHECKBOX CHECKED - SEPETE EKLEMEYE ÇALIŞIYOR');
                 sepetEkle(checkbox.value);
             } else {
-                console.log('CHECKBOX UNCHECKED - SEPETTEN ÇIKARIYOR');
                 sepetCikar(checkbox.value);
             }
-            
-            console.log('SEPET DURUMU:', sepet);
-            console.log('SEPET COUNT:', Object.keys(sepet).length);
             sepetGuncelle();
-            console.log('=== CHECKBOX CHANGED END ===');
         }
         
         // Sepete ekle
         function sepetEkle(docEntry) {
-            console.log('=== SEPET EKLE BAŞLADI ===');
-            console.log('DocEntry:', docEntry);
-            console.log('Mevcut Sepet:', sepet);
-            
-            if (!docEntry) {
-                console.error('SEPET EKLE - DOCENTRY BOŞ!');
-                return;
-            }
-            
-            if (sepet[docEntry]) {
-                console.warn('SEPET EKLE - ZATEN SEPETTE VAR:', docEntry);
+            if (!docEntry || sepet[docEntry]) {
                 return;
             }
             
             const row = document.querySelector(`tr[data-docentry="${docEntry}"]`);
-            console.log('Row bulundu:', !!row);
             if (!row) {
-                console.error('SEPET EKLE - ROW BULUNAMADI! Selector:', `tr[data-docentry="${docEntry}"]`);
-                // Alternatif selector dene
-                const altRow = document.querySelector(`tr[data-docentry='${docEntry}']`);
-                console.log('Alternatif row:', !!altRow);
                 return;
             }
             
             // Lines bilgisini al
             const linesJson = row.getAttribute('data-lines') || '[]';
-            console.log('=== LINES JSON DEBUG ===');
-            console.log('Lines JSON (raw):', linesJson);
-            console.log('Lines JSON length:', linesJson.length);
-            console.log('Lines JSON substring (first 200 chars):', linesJson.substring(0, 200));
             
             let lines = [];
             if (linesJson && linesJson !== '[]' && linesJson !== 'null' && linesJson.trim() !== '') {
                 try {
                     const parsed = JSON.parse(linesJson);
-                    console.log('Parsed result type:', typeof parsed);
-                    console.log('Parsed result is array:', Array.isArray(parsed));
-                    console.log('Parsed result length:', Array.isArray(parsed) ? parsed.length : 'N/A');
-                    console.log('Parsed result (first item):', Array.isArray(parsed) && parsed.length > 0 ? parsed[0] : 'N/A');
                     
                     // Eğer bir error object ise, boş array kullan
                     if (parsed && typeof parsed === 'object' && parsed.error) {
@@ -1273,52 +1225,35 @@ input[type="checkbox"]:focus {
                         lines = [];
                     } else if (Array.isArray(parsed)) {
                         lines = parsed;
-                        console.log('✅ Lines parsed başarılı, count:', lines.length);
-                        if (lines.length > 0) {
-                            console.log('First line sample:', lines[0]);
-                        }
                     } else if (parsed && parsed.value && Array.isArray(parsed.value)) {
                         // Eğer {value: [...]} formatında ise
                         lines = parsed.value;
-                        console.log('Lines parsed (value array), count:', lines.length);
                     } else if (parsed && parsed.StockTransferLines) {
                         // Eğer StockTransferLines object olarak geliyorsa (navigation property)
                         const stockTransferLines = parsed.StockTransferLines;
                         if (Array.isArray(stockTransferLines)) {
                             lines = stockTransferLines;
-                            console.log('Lines parsed (StockTransferLines array), count:', lines.length);
                         } else if (typeof stockTransferLines === 'object' && stockTransferLines !== null) {
                             // Object formatında geliyorsa (key-value pairs), array'e çevir
                             lines = Object.values(stockTransferLines);
-                            console.log('Lines parsed (StockTransferLines object converted to array), count:', lines.length);
                         } else {
-                            console.warn('StockTransferLines beklenmeyen format:', stockTransferLines);
                             lines = [];
                         }
                     } else {
-                        console.warn('Lines beklenmeyen format:', parsed);
                         lines = [];
                     }
-                    console.log('Final lines count:', lines.length);
                 } catch (e) {
                     console.error('Lines parse hatası:', e);
-                    console.error('Hatalı JSON:', linesJson);
                     lines = [];
                 }
-            } else {
-                console.warn('Lines JSON boş veya geçersiz:', linesJson);
             }
-            console.log('=== LINES JSON DEBUG END ===');
             
             // Alıcı şube bilgisini al (3. sütun: checkbox(1), TransferNo(2), AlıcıŞube(3))
             const toWarehouseCell = row.querySelector('td:nth-child(3)');
             const toWarehouse = toWarehouseCell ? toWarehouseCell.textContent.trim() : '';
-            console.log('ToWarehouse cell:', !!toWarehouseCell);
-            console.log('ToWarehouse:', toWarehouse);
             
             // Sepete ekle - lines array kontrolü
             if (!Array.isArray(lines)) {
-                console.error('Lines bir array değil!', lines);
                 lines = [];
             }
             
@@ -1343,10 +1278,6 @@ input[type="checkbox"]:focus {
                 })
             };
             
-            console.log('SEPET EKLE - BAŞARIYLA EKLENDI!');
-            console.log('Eklenen transfer:', sepet[docEntry]);
-            console.log('Güncel sepet:', sepet);
-            console.log('=== SEPET EKLE BİTTİ ===');
         }
         
         // Sepetten çıkar
@@ -1358,63 +1289,40 @@ input[type="checkbox"]:focus {
         
         // Sepeti güncelle (görsel)
         function sepetGuncelle() {
-            console.log('=== SEPET GUNCELLE BAŞLADI ===');
             const count = Object.keys(sepet).length;
-            console.log('Sepet count:', count);
-            console.log('Sepet objesi:', sepet);
-            console.log('Sepet keys:', Object.keys(sepet));
             
             const sepetCountEl = document.getElementById('sepetCount');
             const sepetBtn = document.getElementById('sepetBtn');
             const sepetContent = document.getElementById('sepetContent');
             const sepetPanel = document.getElementById('sepetPanel');
             
-            console.log('Elementler bulundu:', {
-                sepetCountEl: !!sepetCountEl,
-                sepetBtn: !!sepetBtn,
-                sepetContent: !!sepetContent,
-                sepetPanel: !!sepetPanel
-            });
-            
             // Sepet sayısını güncelle
             if (sepetCountEl) {
                 sepetCountEl.textContent = count;
-                console.log('Sepet count güncellendi:', count);
-            } else {
-                console.error('sepetCountEl bulunamadı!');
             }
             
             // Sepet boşsa butonu ve paneli gizle
             if (count === 0) {
-                console.log('Sepet boş - buton ve panel gizleniyor');
                 if (sepetBtn) {
                     sepetBtn.style.display = 'none';
-                    console.log('Sepet butonu gizlendi');
                 }
                 if (sepetContent) {
                     sepetContent.innerHTML = '<div style="text-align: center; padding: 2rem; color: #9ca3af;">Sepet boş. Lütfen onaylamak istediğiniz transferleri seçin.</div>';
                 }
                 if (sepetPanel) {
                     sepetPanel.style.display = 'none';
-                    console.log('Sepet paneli gizlendi');
                 }
-                console.log('=== SEPET GUNCELLE BİTTİ (BOŞ) ===');
                 return;
             }
             
             // Sepet doluysa butonu göster
             if (sepetBtn) {
                 sepetBtn.style.display = 'inline-flex';
-                console.log('Sepet butonu görünür yapıldı');
-            } else {
-                console.error('sepetBtn bulunamadı!');
             }
             
             // Sepet doluysa paneli göster
-            console.log('Sepet dolu - içerik oluşturuluyor');
             if (sepetPanel) {
                 sepetPanel.style.display = 'flex';
-                console.log('Sepet paneli açıldı (display: flex)');
             }
             
             // Sepet içeriğini oluştur
@@ -1570,59 +1478,26 @@ input[type="checkbox"]:focus {
         
         // Sayfa yüklendiğinde
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('=== DOM YUKLENDI - SEPET SISTEMI BASLATILIYOR ===');
-            
             // İlk güncelleme
             sepetGuncelle();
             
-            // Checkbox listener'ları ekle - class selector kullan
+            // Checkbox listener'ları ekle
             const checkboxes = document.querySelectorAll('input.transfer-checkbox');
-            console.log('Bulunan transfer checkbox sayısı:', checkboxes.length);
-            
-            if (checkboxes.length === 0) {
-                console.warn('HİÇ CHECKBOX BULUNAMADI! Tab kontrolü yapılıyor...');
-                const currentTab = document.querySelector('.tab-button.active');
-                console.log('Aktif tab:', currentTab ? currentTab.textContent : 'YOK');
-            }
-            
-            checkboxes.forEach((cb, idx) => {
-                console.log(`Checkbox ${idx}:`, {
-                    value: cb.value,
-                    dataDocEntry: cb.getAttribute('data-docentry'),
-                    checked: cb.checked,
-                    element: cb
-                });
-                
-                // Event listener ekle
+            checkboxes.forEach((cb) => {
                 cb.addEventListener('change', function(e) {
                     e.stopPropagation();
-                    console.log('=== CHECKBOX CHANGE EVENT FIRED ===');
-                    console.log('Event:', e);
-                    console.log('This:', this);
-                    console.log('Value:', this.value);
-                    console.log('Data-docentry:', this.getAttribute('data-docentry'));
-                    console.log('Checked:', this.checked);
                     checkboxChanged(this);
                 });
-                
-                console.log(`Checkbox ${idx} listener eklendi`);
             });
             
             // SelectAll listener
             const selectAll = document.getElementById('selectAll');
             if (selectAll) {
-                console.log('SelectAll bulundu, listener ekleniyor');
                 selectAll.addEventListener('change', function(e) {
                     e.stopPropagation();
-                    console.log('=== SELECT ALL CHANGED ===');
-                    console.log('Checked:', this.checked);
                     toggleSelectAll();
                 });
-            } else {
-                console.warn('SelectAll bulunamadı!');
             }
-            
-            console.log('=== DOM YUKLENDI BİTTİ ===');
             });
         </script>
 
