@@ -29,93 +29,6 @@ $query = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=' . urlencode($fi
 $data = $sap->get($query);
 $allRows = $data['response']['value'] ?? [];
 
-// View'de görünmeyen PurchaseOrders'ları da ekle (Kayıt dışı modda oluşturulanlar)
-// View'den gelen tüm OrderNo'ları topla
-$viewOrderNos = [];
-foreach ($allRows as $row) {
-    $orderNo = trim($row['U_ASB2B_ORNO'] ?? '');
-    if (!empty($orderNo) && $orderNo !== '-') {
-        $viewOrderNos[] = intval($orderNo);
-    }
-}
-
-// PurchaseOrders'dan direkt veri çek (RequestNo'su olmayanlar için)
-// ÖNEMLİ: Son 50 PurchaseOrders'u çek ve manuel filtrele (filter sorunları olabilir)
-// Bu yaklaşım daha güvenilir çünkü U_AS_OWNR ve U_ASB2B_BRAN boş olabilir
-// DÜZELTME: Boşluk karakterini %20 ile kodladık ve limiti artırdık
-$poQuery = 'PurchaseOrders?$select=DocEntry,DocDate,U_ASB2B_STATUS,U_AS_OWNR,U_ASB2B_BRAN&$orderby=DocEntry%20desc&$top=50';
-$poData = $sap->get($poQuery);
-$poRowsAll = $poData['response']['value'] ?? [];
-
-// Eğer query başarısız olduysa (HTTP Status 0), daha basit bir query dene
-if (($poData['status'] ?? 0) == 0 || empty($poRowsAll)) {
-    // Daha basit query: Sadece son 50 siparişi çek (desc kodlamasına dikkat)
-    $poQuery2 = 'PurchaseOrders?$orderby=DocEntry%20desc&$top=50';
-    $poData2 = $sap->get($poQuery2);
-    $poRowsAll = $poData2['response']['value'] ?? [];
-    
-}
-
-// Manuel filtrele: U_AS_OWNR ve U_ASB2B_BRAN eşleşen veya boş olanları al
-$poRows = [];
-foreach ($poRowsAll as $row) {
-    $rowBranch = trim($row['U_ASB2B_BRAN'] ?? '');
-    $rowOwnr = trim($row['U_AS_OWNR'] ?? '');
-    
-    // Eşleşme kontrolü: Boşsa veya session değerleriyle eşleşiyorsa al
-    $branchMatch = empty($rowBranch) || $rowBranch === $branch;
-    $ownrMatch = empty($rowOwnr) || $rowOwnr === $uAsOwnr;
-    
-    if ($branchMatch && $ownrMatch) {
-        $poRows[] = $row;
-    }
-}
-
-// View'de olmayan PurchaseOrders'ları ekle
-$addedCount = 0;
-foreach ($poRows as $poRow) {
-    $poDocEntry = intval($poRow['DocEntry'] ?? 0);
-    $poStatus = $poRow['U_ASB2B_STATUS'] ?? '3';
-    $poUAsOwnr = trim($poRow['U_AS_OWNR'] ?? '');
-    $poBranch = trim($poRow['U_ASB2B_BRAN'] ?? '');
-    
-    // U_AS_OWNR ve U_ASB2B_BRAN kontrolü (trim ile karşılaştır)
-    // Eğer PurchaseOrder'da U_AS_OWNR veya U_ASB2B_BRAN boşsa, session değerlerini kullan
-    // Bu, kayıt dışı modda oluşturulan PurchaseOrders'lar için gerekli olabilir
-    if (empty($poUAsOwnr)) {
-        $poUAsOwnr = $uAsOwnr;
-    } else if ($poUAsOwnr !== $uAsOwnr) {
-        continue;
-    }
-    if (empty($poBranch)) {
-        $poBranch = $branch;
-    } else if ($poBranch !== $branch) {
-        continue;
-    }
-    
-    // Status filter varsa ve sipariş status'u eşleşmiyorsa atla
-    if (!empty($filterStatus) && $poStatus !== $filterStatus) {
-        continue;
-    }
-    
-    if ($poDocEntry > 0 && !in_array($poDocEntry, $viewOrderNos)) {
-        // Bu sipariş view'de yok, ekle
-        // View formatına uygun bir satır oluştur
-        $fakeRow = [
-            'RequestNo' => '-', // RequestNo yok
-            'U_ASB2B_ORNO' => (string)$poDocEntry,
-            'U_ASB2B_STATUS' => $poStatus,
-            'DocDate' => $poRow['DocDate'] ?? '',
-            'U_ASB2B_ORDT' => $poRow['DocDate'] ?? '',
-            'LineStatus' => 'O', // Varsayılan: Açık
-            'U_AS_OWNR' => $poUAsOwnr ?: $uAsOwnr,
-            'U_ASB2B_BRAN' => $poBranch ?: $branch
-        ];
-        $allRows[] = $fakeRow;
-        $addedCount++;
-    }
-}
-
 $statusPriorityMap = [
     '4' => 5,
     '3' => 4,
@@ -143,39 +56,8 @@ function extractDocDateFromRow($row) {
 }
 
 $groupedRows = [];
-// Önce tüm talepleri grupla
 foreach ($allRows as $row) {
     $requestNo = $row['RequestNo'] ?? '';
-    // RequestNo '-' olan satırlar (Kayıt dışı PurchaseOrders) için özel işlem
-    if ($requestNo === '-') {
-        $orderNo = trim($row['U_ASB2B_ORNO'] ?? '');
-        if (empty($orderNo) || $orderNo === '-') continue;
-        
-        // RequestNo '-' olan satırlar için özel grup oluştur (OrderNo bazlı)
-        $groupKey = 'PO-' . $orderNo; // PurchaseOrder prefix
-        if (!isset($groupedRows[$groupKey])) {
-            $groupedRows[$groupKey] = [
-                'RequestNo' => '-',
-                'DocDate' => extractDocDateFromRow($row),
-                'StatusValue' => $row['U_ASB2B_STATUS'] ?? '3',
-                'StatusPriority' => getStatusPriority($row['U_ASB2B_STATUS'] ?? '3'),
-                'IsFullyClosed' => false, // Kayıt dışı siparişler her zaman açık
-                'Orders' => [],
-                'CheckedLines' => true, // PurchaseRequests kontrolüne gerek yok
-                'IsPurchaseOrderOnly' => true // Bu bir PurchaseOrder-only kayıt
-            ];
-        }
-        
-        // Siparişi ekle
-        $groupedRows[$groupKey]['Orders'][$orderNo] = [
-            'OrderNo' => $orderNo,
-            'DocDate' => $row['U_ASB2B_ORDT'] ?? extractDocDateFromRow($row),
-            'Status' => $row['U_ASB2B_STATUS'] ?? '3'
-        ];
-        
-        continue; // Normal akışa devam etme
-    }
-    
     if (empty($requestNo)) continue;
     
     $status = isset($row['U_ASB2B_STATUS']) ? (string)$row['U_ASB2B_STATUS'] : null;
@@ -186,44 +68,24 @@ foreach ($allRows as $row) {
         $groupedRows[$requestNo] = [
             'RequestNo' => $requestNo,
             'DocDate' => $docDateValue,
-            'StatusValue' => '1',
-            'StatusPriority' => 0,
-            'IsFullyClosed' => true,
-            'Orders' => [],
-            'CheckedLines' => false
+            'StatusValue' => $status,
+            'StatusPriority' => $statusPriority,
+            'Orders' => []
         ];
     } else {
         if (empty($groupedRows[$requestNo]['DocDate']) && !empty($docDateValue)) {
             $groupedRows[$requestNo]['DocDate'] = $docDateValue;
+        }
+        if ($statusPriority > ($groupedRows[$requestNo]['StatusPriority'] ?? 0) && $status !== null) {
+            $groupedRows[$requestNo]['StatusValue'] = $status;
+            $groupedRows[$requestNo]['StatusPriority'] = $statusPriority;
         }
     }
     
     $orderNo = trim($row['U_ASB2B_ORNO'] ?? '');
     $orderDateValue = $row['U_ASB2B_ORDT'] ?? '';
     
-    // Eğer satırın sipariş numarası yoksa ve satır açıksa, talep kapanmamalıdır!
-    $lineStatus = $row['LineStatus'] ?? 'O'; // SAP'den gelen satır durumu (O: Open, C: Closed)
-    
-    // Eğer satırın sipariş numarası yoksa VE satır hala AÇIK ise, talep KAPANAMAZ!
-    if ((empty($orderNo) || $orderNo === '-') && $lineStatus === 'O') {
-        $groupedRows[$requestNo]['IsFullyClosed'] = false;
-        $groupedRows[$requestNo]['StatusValue'] = '1'; // Durumu "Bekliyor"a çekiyoruz
-        // Önceliği yükselt ki listede "Sevk Edildi" yerine "Bekliyor" göstersin (kullanıcı unutmasın)
-        $groupedRows[$requestNo]['StatusPriority'] = 10;
-    }
-    
-    // Sipariş numarası varsa listeye ekle
     if ($orderNo !== '' && $orderNo !== '-') {
-        // Siparişin durumunu kontrol et
-        if (in_array($status, ['1', '2'])) {
-            $groupedRows[$requestNo]['IsFullyClosed'] = false;
-            $groupedRows[$requestNo]['StatusValue'] = $status;
-            $groupedRows[$requestNo]['StatusPriority'] = max($groupedRows[$requestNo]['StatusPriority'], $statusPriority);
-        } elseif (in_array($status, ['3', '4']) && $statusPriority > ($groupedRows[$requestNo]['StatusPriority'] ?? 0)) {
-            $groupedRows[$requestNo]['StatusValue'] = $status;
-            $groupedRows[$requestNo]['StatusPriority'] = $statusPriority;
-        }
-        
         if (!isset($groupedRows[$requestNo]['Orders'][$orderNo])) {
             $groupedRows[$requestNo]['Orders'][$orderNo] = [
                 'OrderNo' => $orderNo,
@@ -245,51 +107,6 @@ foreach ($allRows as $row) {
     }
 }
 
-// Her talep için PurchaseRequests'ten satırları kontrol et - sipariş numarası olmayan açık satır var mı?
-foreach ($groupedRows as $requestNo => &$group) {
-    if ($group['CheckedLines'] || !empty($group['Orders'])) continue;
-    
-    $requestQuery = 'PurchaseRequests(' . intval($requestNo) . ')';
-    $requestData = $sap->get($requestQuery);
-    
-    if (($requestData['status'] ?? 0) == 200 && isset($requestData['response'])) {
-        $requestDocEntry = $requestData['response']['DocEntry'] ?? intval($requestNo);
-        $linesQuery = "PurchaseRequests({$requestDocEntry})/DocumentLines";
-        $linesData = $sap->get($linesQuery);
-        
-        if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
-            $resp = $linesData['response'];
-            $requestLines = $resp['value'] ?? $resp['DocumentLines'] ?? [];
-            
-            foreach ($requestLines as $line) {
-                if (($line['LineStatus'] ?? 'O') === 'O') {
-                    // View'de bu talep için sipariş numarası var mı?
-                    $hasOrder = false;
-                    foreach ($allRows as $viewRow) {
-                        if (($viewRow['RequestNo'] ?? '') == $requestNo) {
-                            $viewOrderNo = trim($viewRow['U_ASB2B_ORNO'] ?? '');
-                            if (!empty($viewOrderNo) && $viewOrderNo !== '-') {
-                                $hasOrder = true;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (!$hasOrder) {
-                        $group['IsFullyClosed'] = false;
-                        $group['StatusValue'] = '1';
-                        $group['StatusPriority'] = 10;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    
-    $group['CheckedLines'] = true;
-}
-unset($group);
-
 $displayRows = [];
 
 if (!empty($groupedRows)) {
@@ -298,67 +115,6 @@ if (!empty($groupedRows)) {
     });
     
     foreach ($groupedRows as $requestNo => $group) {
-        // PurchaseOrder-only kayıtlar için özel işlem
-        if (!empty($group['IsPurchaseOrderOnly'])) {
-            if (!empty($group['Orders'])) {
-                uksort($group['Orders'], function($a, $b) {
-                    return intval($a) <=> intval($b);
-                });
-                
-                foreach ($group['Orders'] as $orderData) {
-                    $displayRows[] = [
-                        'RequestNo' => '-', // RequestNo yok
-                        'OrderNo' => $orderData['OrderNo'],
-                        'DocDate' => $orderData['DocDate'] ?? $group['DocDate'] ?? '',
-                        'Status' => $orderData['Status'] ?? null,
-                        'HasOrder' => true,
-                        'IsPurchaseOrderOnly' => true
-                    ];
-                }
-            }
-            continue; // Normal akışa devam etme
-        }
-        
-        // Normal talep kayıtları için mevcut mantık
-        // PurchaseRequests'ten satırları çek ve sipariş numarası olmayan açık satır var mı kontrol et
-        $requestDocEntry = $group['RequestDocEntry'] ?? intval($requestNo);
-        $requestLines = [];
-        if ($requestDocEntry > 0 && !$group['CheckedLines']) {
-            $linesQuery = "PurchaseRequests({$requestDocEntry})/DocumentLines";
-            $linesData = $sap->get($linesQuery);
-            if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
-                $resp = $linesData['response'];
-                if (isset($resp['value']) && is_array($resp['value'])) {
-                    $requestLines = $resp['value'];
-                } elseif (isset($resp['DocumentLines']) && is_array($resp['DocumentLines'])) {
-                    $requestLines = $resp['DocumentLines'];
-                }
-            }
-        }
-
-        $hasPendingLinesWithoutOrder = false;
-        foreach ($requestLines as $line) {
-            $lineStatus = $line['LineStatus'] ?? 'O';
-            $lineNum = $line['LineNum'] ?? null;
-            $hasOrderForLine = false;
-            foreach ($group['Orders'] as $orderItem) {
-                // Basit kontrol: Eğer bu talep satırı için bir sipariş varsa
-                // Daha detaylı BaseEntry-BaseLine eşleştirmesi gerekebilir
-                // Şimdilik, eğer talep için herhangi bir sipariş varsa, bu satırın da siparişi var sayalım
-                // Bu kısım DisTedarik-Detay.php'deki gibi BaseEntry-BaseLine eşleştirmesi ile daha doğru yapılabilir.
-                // Ancak liste sayfasında performans için daha basit tutuluyor.
-                if (isset($line['_OrderNo']) && $line['_OrderNo'] == $orderItem['OrderNo']) {
-                     $hasOrderForLine = true;
-                     break;
-                }
-            }
-            if ($lineStatus === 'O' && !$hasOrderForLine) {
-                $hasPendingLinesWithoutOrder = true;
-                break;
-            }
-        }
-        
-        // Her sipariş için ayrı satır oluştur
         if (!empty($group['Orders'])) {
             uksort($group['Orders'], function($a, $b) {
                 return intval($a) <=> intval($b);
@@ -369,34 +125,23 @@ if (!empty($groupedRows)) {
                     'RequestNo' => $requestNo,
                     'OrderNo' => $orderData['OrderNo'],
                     'DocDate' => $orderData['DocDate'] ?? $group['DocDate'] ?? '',
+                    'OrderDate' => $orderData['OrderDate'] ?? '',
                     'Status' => $orderData['Status'] ?? null,
-                    'HasOrder' => true,
-                    'HasPendingLinesWithoutOrder' => $hasPendingLinesWithoutOrder
+                    'HasOrder' => true
                 ];
             }
-        }
-        
-        // Sipariş numarası olmayan açık satırlar varsa, talebi de göster (tek bir satır olarak)
-        if ($hasPendingLinesWithoutOrder && empty($group['Orders'])) {
+        } else {
             $displayRows[] = [
                 'RequestNo' => $requestNo,
-                'OrderNo' => '-', // Sipariş numarası yok
+                'OrderNo' => '-',
                 'DocDate' => $group['DocDate'] ?? '',
-                'Status' => $group['StatusValue'] ?? '1', // Bekliyor
-                'HasOrder' => false,
-                'HasPendingLinesWithoutOrder' => true
+                'OrderDate' => '',
+                'Status' => $group['StatusValue'] ?? null,
+                'HasOrder' => false
             ];
         }
     }
 }
-
-// Sipariş numarasına göre sırala (büyük numara = yeni sipariş = en üstte)
-usort($displayRows, function($a, $b) {
-    $orderNoA = intval($a['OrderNo'] ?? 0);
-    $orderNoB = intval($b['OrderNo'] ?? 0);
-    // Büyük numara önce gelsin (descending order)
-    return $orderNoB <=> $orderNoA;
-});
 
 if (!empty($filterStartDate) || !empty($filterEndDate)) {
     $filteredRows = [];
@@ -1084,44 +829,25 @@ body {
                                 <?php
                                     $requestNo = $rowData['RequestNo'];
                                     $orderNoDisplay = $rowData['OrderNo'] ?? '-';
+                                    $docDateValue = $rowData['DocDate'] ?? '';
+                                    $orderDateValue = $rowData['OrderDate'] ?? '';
                                     $statusValue = $rowData['Status'] ?? null;
                                     $statusText = $statusValue !== null ? getStatusText($statusValue) : 'Bilinmiyor';
                                     $statusClass = $statusValue !== null ? getStatusClass($statusValue) : 'status-unknown';
                                     $hasOrder = !empty($rowData['HasOrder']);
-                                    $isPurchaseOrderOnly = !empty($rowData['IsPurchaseOrderOnly']);
-                                    $docDate = formatDate($rowData['DocDate'] ?? '');
-                                    
-                                    // RequestNo '-' olan satırlar için özel URL oluştur
-                                    if ($isPurchaseOrderOnly || $requestNo === '-') {
-                                        // Sadece OrderNo ile git (DisTedarik-Detay.php'de RequestNo opsiyonel)
-                                        $detailUrl = 'DisTedarik-Detay.php?orderNo=' . urlencode($orderNoDisplay);
-                                    } else {
-                                        $detailUrl = 'DisTedarik-Detay.php?requestNo=' . urlencode($requestNo);
-                                        if ($hasOrder && $orderNoDisplay !== '-') {
-                                            $detailUrl .= '&orderNo=' . urlencode($orderNoDisplay);
-                                        }
+                                    $docDate = !empty($docDateValue) ? formatDate($docDateValue) : '-';
+                                    $orderDate = !empty($orderDateValue) ? formatDate($orderDateValue) : '-';
+                                    $detailUrl = 'DisTedarik-Detay.php?requestNo=' . urlencode($requestNo);
+                                    if ($hasOrder && $orderNoDisplay !== '-' && $orderNoDisplay !== '') {
+                                        $detailUrl .= '&orderNo=' . urlencode($orderNoDisplay);
                                     }
-                                    
-                                    $requestNoDisplay = ($isPurchaseOrderOnly || $requestNo === '-') ? 'Kayıt Dışı' : $requestNo;
-                                    $searchData = buildSearchData($requestNoDisplay, $orderNoDisplay, $docDate, '', $statusText);
+                                ?>
+                                <?php
+                                    $searchData = buildSearchData($requestNo, $orderNoDisplay, $docDate, $orderDate, $statusText);
                                 ?>
                                 <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>">
-                                    <td>
-                                        <?php if ($isPurchaseOrderOnly || $requestNo === '-'): ?>
-                                            <span style="color: #6b7280; font-style: italic;"><?= htmlspecialchars($requestNoDisplay) ?></span>
-                                        <?php else: ?>
-                                            <?= htmlspecialchars($requestNo) ?>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <?php if ($orderNoDisplay !== '-' && $orderNoDisplay !== ''): ?>
-                                            <a href="<?= $detailUrl ?>" style="color: #3b82f6; text-decoration: none; font-weight: 600;">
-                                                <?= htmlspecialchars($orderNoDisplay) ?>
-                                            </a>
-                                        <?php else: ?>
-                                            <span style="color: #ef4444; font-weight: 600;">Sipariş Bekliyor</span>
-                                        <?php endif; ?>
-                                    </td>
+                                    <td><?= htmlspecialchars($requestNo) ?></td>
+                                    <td><?= htmlspecialchars($orderNoDisplay) ?></td>
                                     <td><?= $docDate ?></td>
                                     <td><span class="status-badge <?= $statusClass ?>"><?= $statusText ?></span></td>
                                     <td>
@@ -1129,15 +855,9 @@ body {
                                             <button class="btn-icon btn-view">👁️ Detay</button>
                                         </a>
                                         <?php if ($hasOrder && isReceivableStatus($statusValue)): ?>
-                                            <?php if ($isPurchaseOrderOnly || $requestNo === '-'): ?>
-                                                <a href="DisTedarik-TeslimAl.php?orderNos=<?= urlencode($orderNoDisplay) ?>">
-                                                    <button class="btn-icon btn-primary">✓ Teslim Al</button>
-                                                </a>
-                                            <?php else: ?>
-                                                <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?>&orderNos=<?= urlencode($orderNoDisplay) ?>">
-                                                    <button class="btn-icon btn-primary">✓ Teslim Al</button>
-                                                </a>
-                                            <?php endif; ?>
+                                            <a href="DisTedarik-TeslimAl.php?requestNo=<?= urlencode($requestNo) ?>&orderNos=<?= urlencode($orderNoDisplay) ?>">
+                                                <button class="btn-icon btn-primary">✓ Teslim Al</button>
+                                            </a>
                                         <?php endif; ?>
                                     </td>
                                 </tr>

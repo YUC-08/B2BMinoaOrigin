@@ -10,7 +10,11 @@ $firstName  = $_SESSION['FirstName']  ?? '';
 $lastName   = $_SESSION['LastName']   ?? '';
 $userName   = $_SESSION['UserName']   ?? '';
 $ownerCode  = $_SESSION['U_AS_OWNR']  ?? '';
-$branchDesc = $_SESSION['Branch2']['Description'] ?? '';
+// Branch2 bilgisini kontrol et: Önce Description (açıklayıcı isim), yoksa Name, yoksa boş
+$branchDesc = '';
+if (isset($_SESSION['Branch2']) && is_array($_SESSION['Branch2'])) {
+    $branchDesc = $_SESSION['Branch2']['Description'] ?? $_SESSION['Branch2']['Name'] ?? '';
+}
 
 // Görünecek isim: Önce Ad Soyad, yoksa username, o da yoksa 'Misafir'
 $displayName = trim($firstName . ' ' . $lastName);
@@ -630,7 +634,7 @@ if ($avatarText === '') {
                 </div>
                 <?php if ($ownerCode): ?>
                     <div class="sidebar-user-owner">
-                        Giriş: <?= htmlspecialchars($ownerCode, ENT_QUOTES, 'UTF-8') ?>
+                        Giriş: <?= htmlspecialchars($ownerCode, ENT_QUOTES, 'UTF-8') ?><?php if (!empty($branchDesc)): ?> - <?= htmlspecialchars($branchDesc, ENT_QUOTES, 'UTF-8') ?><?php endif; ?>
                     </div>
                 <?php endif; ?>
             </div>

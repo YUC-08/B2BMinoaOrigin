@@ -103,10 +103,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         'Comments' => 'Stok nakil talebi',
         'U_ASB2B_BRAN' => $branch,
         'U_AS_OWNR' => $uAsOwnr,
-        'U_ASB2B_STATUS' => 'ONAYBEKLIYOR',
+        'U_ASB2B_STATUS' => '1', // Onay Bekliyor (string olarak '1')
         'U_ASB2B_TYPE' => 'TRANSFER',
         'U_ASB2B_User' => $userName,
-        'InventoryTransferRequestLines' => $stockTransferLines
+        'StockTransferLines' => $stockTransferLines // AnaDepoSO.php'deki gibi StockTransferLines kullan
     ];
     
     $result = $sap->post('InventoryTransferRequests', $payload);
