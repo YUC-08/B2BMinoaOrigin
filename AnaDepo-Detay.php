@@ -220,6 +220,25 @@ if ($status == '3' || $status == '4') {
             $itemCode = $dtLine['ItemCode'] ?? '';
             $qty = (float)($dtLine['Quantity'] ?? 0);
             if ($itemCode === '') continue;
+            
+            // Fire & Zayi satırlarını filtrele
+            // Teslim alma sırasında:
+            // - Normal transfer satırları: U_ASB2B_LOST ve U_ASB2B_Damaged alanları boş
+            // - Fire & Zayi satırları: U_ASB2B_LOST veya U_ASB2B_Damaged dolu
+            //   * Zayi (eksik): U_ASB2B_LOST = '2', U_ASB2B_Damaged = 'E'
+            //   * Fire (fazla): U_ASB2B_LOST = '1'
+            //   * Kusurlu: U_ASB2B_Damaged = 'K'
+            $uAsb2bLost = $dtLine['U_ASB2B_LOST'] ?? '';
+            $uAsb2bDamaged = $dtLine['U_ASB2B_Damaged'] ?? '';
+            $isFireZayi = !empty($uAsb2bLost) || !empty($uAsb2bDamaged);
+            
+            if ($isFireZayi) {
+                // Fire & Zayi satırını atla, teslimat miktarına dahil etme
+                continue;
+            }
+            
+            // Normal transfer satırlarını topla (Fire & Zayi olmayan satırlar)
+            // Bu satırlar fiziksel miktarın içindeki normal transfer miktarını temsil eder (fiziksel - kusurlu)
             if (!isset($deliveryTransferLinesMap[$itemCode])) {
                 $deliveryTransferLinesMap[$itemCode] = 0;
             }

@@ -978,7 +978,7 @@ function loadItems() {
                             ${debug.filterWithoutWhs ? `<strong>Filter (WhsCode olmadan):</strong> ${debug.filterWithoutWhs}<br>` : ''}
                             <strong>Query:</strong> ${debug.itemsQuery || 'YOK'}
                         </small></td></tr>`;
-        } else {
+    } else {
                     msg = '<tr><td colspan="10" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
                 }
                 document.getElementById('itemsTableBody').innerHTML = msg;
@@ -1069,7 +1069,7 @@ function renderItems(items) {
                         <button type="button" class="qty-btn" onclick="changeQuantity('${itemKey}', 1)">+</button>
                     </div>
                     ${sepetQty > 0 ? `<div style="text-align: center; margin-top: 4px; font-size: 0.85rem; color: #6b7280; font-weight: 500;">${formatQuantity(sepetQty)} ${uomCode}${baseQty !== 1 && baseQty > 0 ? ` (${formatQuantity(sepetQty * baseQty)} AD)` : ''}</div>` : ''}
-                </td>
+            </td>
                 <td>${uomCode}</td>
                 <td style="text-align: center; font-weight: 600; color: #3b82f6;">${conversionText}</td>
         </tr>
@@ -1122,7 +1122,7 @@ function updateQuantity(itemKey, quantity) {
                 fromWhsName: fromWhsName,
                 fromWhsCode: fromWhsCode
             };
-        } else {
+    } else {
             selectedItems[itemKey].quantity = qty;
         }
     } else {

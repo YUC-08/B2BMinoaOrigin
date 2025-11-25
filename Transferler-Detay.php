@@ -174,37 +174,34 @@ if ($status == '3' || $status == '4') {
     // Eğer U_ASB2B_QutMaster ile bulunamazsa, BaseType ve BaseEntry ile çekilen StockTransfer'lerden
     // en yeni olanı (onaylama StockTransfer'inden sonra oluşturulan) teslim alma StockTransfer'i olarak kabul et
     if (empty($deliveryList)) {
+        // BaseType = 1250000001 ve BaseEntry = docEntry ile filtrele
+        // FromWarehouse = fromWarehouse ve ToWarehouse = toWarehouse olanları al
+        $deliveryFilter2 = "BaseType eq 1250000001 and BaseEntry eq {$docEntry} and FromWarehouse eq '{$fromWarehouse}' and ToWarehouse eq '{$toWarehouse}'";
+        
         if (!empty($outgoingStockTransferInfo)) {
             $outgoingDocEntry = $outgoingStockTransferInfo['DocEntry'] ?? null;
-            
-            // BaseType = 1250000001 ve BaseEntry = docEntry ile filtrele
-            // FromWarehouse = fromWarehouse ve ToWarehouse = toWarehouse olanları al
             // DocEntry > outgoingDocEntry olanları al (onaylama StockTransfer'inden sonra oluşturulan)
             if ($outgoingDocEntry) {
-                $deliveryFilter2 = "BaseType eq 1250000001 and BaseEntry eq {$docEntry} and FromWarehouse eq '{$fromWarehouse}' and ToWarehouse eq '{$toWarehouse}' and DocEntry gt {$outgoingDocEntry}";
-                $deliveryQuery2 = "StockTransfers?\$filter=" . urlencode($deliveryFilter2) . "&\$orderby=DocEntry desc&\$top=1";
-                $deliveryData2 = $sap->get($deliveryQuery2);
-                $deliveryList2 = $deliveryData2['response']['value'] ?? [];
-                
-                if (!empty($deliveryList2)) {
-                    $deliveryList = $deliveryList2;
-                }
+                $deliveryFilter2 .= " and DocEntry gt {$outgoingDocEntry}";
             }
-        } else {
-            // Eğer outgoingStockTransferInfo yoksa, BaseType ve BaseEntry ile tüm StockTransfer'leri çek
-            // En yeni olanı teslim alma StockTransfer'i olarak kabul et
-            $deliveryFilter2 = "BaseType eq 1250000001 and BaseEntry eq {$docEntry} and FromWarehouse eq '{$fromWarehouse}' and ToWarehouse eq '{$toWarehouse}'";
-            $deliveryQuery2 = "StockTransfers?\$filter=" . urlencode($deliveryFilter2) . "&\$orderby=DocEntry desc";
-            $deliveryData2 = $sap->get($deliveryQuery2);
-            $deliveryList2 = $deliveryData2['response']['value'] ?? [];
-            
-            // U_ASB2B_QutMaster kontrolü yap, eğer doğruysa ekle
-            foreach ($deliveryList2 as $st2) {
-                $qutMaster = (int)($st2['U_ASB2B_QutMaster'] ?? 0);
-                if ($qutMaster == $docEntryInt) {
-                    $deliveryList[] = $st2;
-                }
+        }
+        
+        $deliveryQuery2 = "StockTransfers?\$filter=" . urlencode($deliveryFilter2) . "&\$orderby=DocEntry desc";
+        $deliveryData2 = $sap->get($deliveryQuery2);
+        $deliveryList2 = $deliveryData2['response']['value'] ?? [];
+        
+        // U_ASB2B_QutMaster kontrolü yap, eğer doğruysa ekle
+        // Eğer hiçbiri U_ASB2B_QutMaster ile eşleşmiyorsa, en yeni olanı al (teslim alma StockTransfer'i olabilir)
+        foreach ($deliveryList2 as $st2) {
+            $qutMaster = (int)($st2['U_ASB2B_QutMaster'] ?? 0);
+            if ($qutMaster == $docEntryInt) {
+                $deliveryList[] = $st2;
             }
+        }
+        
+        // Eğer hala boşsa ve en az bir StockTransfer varsa, en yeni olanı al
+        if (empty($deliveryList) && !empty($deliveryList2)) {
+            $deliveryList = [$deliveryList2[0]]; // En yeni olanı al
         }
     }
     
@@ -242,13 +239,21 @@ if ($status == '3' || $status == '4') {
             $qty = (float)($dtLine['Quantity'] ?? 0);
             if ($itemCode === '') continue;
             
-            // AnaDepo-Detay.php mantığı: Tüm satırları topla (Fire & Zayi kontrolü yok)
-            // Transferler-TeslimAl.php'de normal transfer miktarı (fiziksel - kusurlu) zaten WarehouseCode = toWarehouse olarak kaydediliyor
-            // Bu yüzden tüm satırları toplamak yeterli (AnaDepo gibi)
-            if (!isset($teslimatMiktarMap[$itemCode])) {
-                $teslimatMiktarMap[$itemCode] = 0;
+            // Transferler-TeslimAl.php'de:
+            // - Normal transfer satırları: WarehouseCode = toWarehouse
+            // - Fire & Zayi satırları: WarehouseCode = Fire & Zayi deposu (farklı bir depo)
+            
+            // WarehouseCode kontrolü: Sadece toWarehouse'a giden satırları topla
+            // Fire & Zayi satırları farklı bir depoya kaydedildiği için otomatik olarak filtrelenir
+            $lineToWhs = $dtLine['WarehouseCode'] ?? '';
+            if ($lineToWhs === $toWarehouse) {
+                // Normal transfer satırı, topla
+                if (!isset($teslimatMiktarMap[$itemCode])) {
+                    $teslimatMiktarMap[$itemCode] = 0;
+                }
+                $teslimatMiktarMap[$itemCode] += $qty;
             }
-            $teslimatMiktarMap[$itemCode] += $qty;
+            // Fire & Zayi satırları (WarehouseCode != toWarehouse) otomatik olarak atlanır
         }
     }
 }

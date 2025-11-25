@@ -206,7 +206,7 @@ if ($fromWarehouse) {
             $outgoingFilter .= " and DocDate le '{$endDateFormatted}'";
         }
         
-        $selectValue = "DocEntry,DocDate,DueDate,U_ASB2B_NumAtCard,U_ASB2B_STATUS,ToWarehouse";
+        $selectValue = "DocEntry,DocDate,DueDate,U_ASB2B_NumAtCard,U_ASB2B_STATUS,FromWarehouse,ToWarehouse";
         // URL encoding: OData query parametrelerini doğru şekilde encode et
         // Expand parametresini kaldırdık - her transfer için ayrı ayrı lines çekeceğiz
         $outgoingQuery = "InventoryTransferRequests?\$select=" . urlencode($selectValue) . "&\$filter=" . urlencode($outgoingFilter) . "&\$orderby=" . urlencode("DocEntry desc") . "&\$top=25";
@@ -227,6 +227,8 @@ if ($fromWarehouse) {
         // Ana depo warehouse'larını filtrele ve her transfer için detayları çek
         foreach ($outgoingTransfersRaw as $transfer) {
             $toWhsCode = $transfer['ToWarehouse'] ?? '';
+            // Her transferin kendi FromWarehouse değerini al (gönderen şube deposu)
+            $transferFromWarehouse = $transfer['FromWarehouse'] ?? '';
             if (!empty($toWhsCode)) {
                 $whsCheckQuery = "Warehouses('{$toWhsCode}')?\$select=U_ASB2B_FATH";
                 $whsCheckData = $sap->get($whsCheckQuery);
@@ -312,6 +314,11 @@ if ($fromWarehouse) {
                         
                         // Her line için stok miktarını çek ve normalize et
                         if (!empty($lines) && is_array($lines)) {
+                            // Debug: Transfer için stok bilgisi
+                            if (!isset($debugInfo['stockDebug'])) {
+                                $debugInfo['stockDebug'] = [];
+                            }
+                            
                             foreach ($lines as &$line) {
                                 // Line'ın array olduğundan emin ol
                                 if (!is_array($line)) {
@@ -321,47 +328,104 @@ if ($fromWarehouse) {
                                 $itemCode = $line['ItemCode'] ?? '';
                                 $quantity = floatval($line['Quantity'] ?? 0);
                                 $stockQty = 0;
-                                $baseQty = 1.0; // Varsayılan BaseQty
+                                // BaseQty ve UoMCode'u lines'dan al (zaten var, Item query'sine gerek yok)
+                                $baseQty = floatval($line['BaseQty'] ?? 1.0);
                                 $uomCode = $line['UoMCode'] ?? 'AD';
                                 
-                                if (!empty($itemCode)) {
-                                    // Item bilgilerini çek (BaseQty ve stok için)
-                                    $itemQuery = "Items('{$itemCode}')?\$select=BaseQty,UoMCode&\$expand=ItemWarehouseInfoCollection";
-                                    $itemData = $sap->get($itemQuery);
-                                    
-                                    if (($itemData['status'] ?? 0) == 200) {
-                                        $itemInfo = $itemData['response'] ?? null;
-                                        if ($itemInfo) {
-                                            // BaseQty'yi al
-                                            $baseQty = floatval($itemInfo['BaseQty'] ?? 1.0);
-                                            $uomCode = $itemInfo['UoMCode'] ?? $line['UoMCode'] ?? 'AD';
+                                // Debug: Item için başlangıç bilgisi
+                                $itemDebug = [
+                                    'docEntry' => $docEntry,
+                                    'itemCode' => $itemCode,
+                                    'transferFromWarehouse' => $transferFromWarehouse,
+                                    'transferToWarehouse' => $toWhsCode,
+                                    'transferFromWarehouseRaw' => $transfer['FromWarehouse'] ?? 'NOT_SET',
+                                    'quantity' => $quantity,
+                                    'baseQtyFromLine' => $baseQty,
+                                    'uomCodeFromLine' => $uomCode
+                                ];
+                                
+                                // Stok miktarını çek - Her transferin kendi FromWarehouse'undan
+                                // transferFromWarehouse: Transferin gönderen şube deposu (FromWarehouse)
+                                // anadepo_teslim_al.php'deki mantığı kullan (Item query'sine gerek yok)
+                                if (!empty($itemCode) && !empty($transferFromWarehouse)) {
+                                    try {
+                                        // ItemWarehouseInfoCollection'ı çek (filter olmadan, tümünü al)
+                                        // PHP tarafında filtrele (WarehouseCode filter çalışmıyor)
+                                        $whInfoQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection";
+                                        $whInfoData = $sap->get($whInfoQuery);
+                                        $itemDebug['whInfoQuery'] = $whInfoQuery;
+                                        $itemDebug['whInfoQueryStatus'] = $whInfoData['status'] ?? 0;
+                                        
+                                        if (($whInfoData['status'] ?? 0) == 200) {
+                                            $whInfoResponse = $whInfoData['response'] ?? null;
                                             
-                                            // Stok miktarını çek - ItemWarehouseInfoCollection içinden
-                                            if (!empty($fromWarehouse)) {
-                                                $itemWarehouseInfo = $itemInfo['ItemWarehouseInfoCollection'] ?? [];
-                                                if (is_array($itemWarehouseInfo) && !empty($itemWarehouseInfo)) {
-                                                    // WarehouseCode'a göre filtrele
-                                                    foreach ($itemWarehouseInfo as $whInfo) {
-                                                        if (is_array($whInfo) && ($whInfo['WarehouseCode'] ?? '') === $fromWarehouse) {
-                                                            $stockQty = floatval($whInfo['InStock'] ?? $whInfo['Available'] ?? 0);
-                                                            break;
-                                                        }
+                                            // Response yapısı: ItemWarehouseInfoCollection direkt array olarak geliyor
+                                            $whInfoArray = null;
+                                            if ($whInfoResponse && isset($whInfoResponse['ItemWarehouseInfoCollection']) && is_array($whInfoResponse['ItemWarehouseInfoCollection'])) {
+                                                $whInfoArray = $whInfoResponse['ItemWarehouseInfoCollection'];
+                                            } elseif ($whInfoResponse && isset($whInfoResponse['value']) && is_array($whInfoResponse['value'])) {
+                                                $whInfoArray = $whInfoResponse['value'];
+                                            }
+                                            
+                                            if ($whInfoArray && is_array($whInfoArray)) {
+                                                // PHP tarafında WarehouseCode'a göre filtrele
+                                                $itemDebug['allWarehouseInfo'] = [];
+                                                $transferFromWarehouseTrimmed = trim($transferFromWarehouse);
+                                                
+                                                foreach ($whInfoArray as $whInfo) {
+                                                    $whCode = trim($whInfo['WarehouseCode'] ?? $whInfo['Warehouse'] ?? '');
+                                                    $inStock = floatval($whInfo['InStock'] ?? $whInfo['Available'] ?? 0);
+                                                    
+                                                    // Case-insensitive karşılaştırma
+                                                    $matches = (strcasecmp($whCode, $transferFromWarehouseTrimmed) === 0);
+                                                    
+                                                    // Debug: Tüm warehouse bilgilerini topla
+                                                    $itemDebug['allWarehouseInfo'][] = [
+                                                        'WarehouseCode' => $whCode,
+                                                        'InStock' => $inStock,
+                                                        'matches' => $matches,
+                                                        'transferFromWarehouse' => $transferFromWarehouseTrimmed
+                                                    ];
+                                                    
+                                                    if ($matches) {
+                                                        $stockQty = $inStock;
+                                                        $itemDebug['stockFound'] = true;
+                                                        $itemDebug['stockQty'] = $stockQty;
+                                                        $itemDebug['stockSource'] = 'direct_filtered';
+                                                        $itemDebug['whInfo'] = $whInfo;
+                                                        break;
                                                     }
                                                 }
                                                 
-                                                // Eğer expand ile bulunamazsa, direkt navigation property ile dene
                                                 if ($stockQty == 0) {
-                                                    $whInfoQuery2 = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$fromWarehouse}'";
-                                                    $whInfoData2 = $sap->get($whInfoQuery2);
-                                                    if (($whInfoData2['status'] ?? 0) == 200 && isset($whInfoData2['response']['value'][0])) {
-                                                        $whInfo = $whInfoData2['response']['value'][0];
-                                                        if (is_array($whInfo)) {
-                                                            $stockQty = floatval($whInfo['InStock'] ?? $whInfo['Available'] ?? 0);
-                                                        }
-                                                    }
+                                                    $itemDebug['stockFound'] = false;
+                                                    $itemDebug['stockQty'] = 0;
+                                                    $itemDebug['transferFromWarehouse'] = $transferFromWarehouse;
+                                                    $itemDebug['allWarehouseCodes'] = array_map(function($w) {
+                                                        return $w['WarehouseCode'] ?? $w['Warehouse'] ?? '';
+                                                    }, $whInfoArray);
                                                 }
+                                            } else {
+                                                $itemDebug['stockFound'] = false;
+                                                $itemDebug['stockQty'] = 0;
+                                                $itemDebug['whInfoResponse'] = $whInfoResponse;
                                             }
+                                        } else {
+                                            $itemDebug['whInfoError'] = $whInfoData['response']['error'] ?? null;
+                                            $itemDebug['stockFound'] = false;
+                                            $itemDebug['stockQty'] = 0;
                                         }
+                                    } catch (Exception $e) {
+                                        $itemDebug['exception'] = $e->getMessage();
+                                        $itemDebug['stockFound'] = false;
+                                        $itemDebug['stockQty'] = 0;
+                                    }
+                                } else {
+                                    if (empty($itemCode)) {
+                                        $itemDebug['itemCodeEmpty'] = true;
+                                    }
+                                    if (empty($transferFromWarehouse)) {
+                                        $itemDebug['transferFromWarehouseEmpty'] = true;
                                     }
                                 }
                                 
@@ -376,6 +440,14 @@ if ($fromWarehouse) {
                                 $line['UoMCode'] = $uomCode;
                                 // Varsayılan: talep kadar gönder (kullanıcı sepette değiştirebilir)
                                 $line['_SentQty'] = $userRequestedQty;
+                                
+                                // Debug: Final bilgi
+                                $itemDebug['finalStockQty'] = $stockQty;
+                                $itemDebug['finalBaseQty'] = $baseQty;
+                                $itemDebug['finalRequestedQty'] = $userRequestedQty;
+                                $itemDebug['line_StockQty'] = $line['_StockQty'] ?? 'NOT_SET';
+                                
+                                $debugInfo['stockDebug'][] = $itemDebug;
                             }
                             unset($line);
                         }
@@ -858,6 +930,12 @@ input[type="checkbox"]:focus {
 <body>
         <?php include 'navbar.php'; ?>
     <main class="main-content">
+        <?php if (isset($debugInfo['stockDebug']) && !empty($debugInfo['stockDebug'])): ?>
+        <div style="background: #fff3cd; border: 2px solid #ffc107; padding: 1rem; margin: 1rem; border-radius: 8px; font-size: 12px; max-height: 400px; overflow-y: auto;">
+            <h3 style="color: #856404; margin-bottom: 0.5rem;">🔍 DEBUG: Stok Bilgisi</h3>
+            <pre style="background: #fff; padding: 0.5rem; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word;"><?= htmlspecialchars(json_encode($debugInfo['stockDebug'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
+        </div>
+        <?php endif; ?>
         <header class="page-header">
                 <h2>Transferler</h2>
             <div style="display: flex; gap: 12px; align-items: center;">
@@ -1258,25 +1336,51 @@ input[type="checkbox"]:focus {
             }
             
             // Sepete ekle - normalize edilmiş format (BaseQty dahil)
+            const normalizedLines = lines.map(l => {
+                const baseQty = parseFloat(l._BaseQty || 1.0);
+                const requestedQty = parseFloat(l._RequestedQty || 0);
+                const quantity = parseFloat(l.Quantity || 0);
+                const stockQty = parseFloat(l._StockQty || 0);
+                
+                return {
+                    ItemCode: l.ItemCode || '',
+                    ItemName: l.ItemDescription || l.ItemName || '',
+                    UoMCode: l.UoMCode || 'AD',
+                    LineNum: l.LineNum || 0,
+                    BaseQty: baseQty,
+                    RequestedQty: requestedQty > 0 ? requestedQty : (baseQty > 0 ? (quantity / baseQty) : quantity),
+                    StockQty: stockQty,
+                    SentQty: parseFloat(l._SentQty || l._RequestedQty || (baseQty > 0 ? (quantity / baseQty) : quantity))
+                };
+            });
+            
             sepet[docEntry] = {
                 toWarehouse: toWarehouse,
-                lines: lines.map(l => {
-                    const baseQty = parseFloat(l._BaseQty || 1.0);
-                    const requestedQty = parseFloat(l._RequestedQty || 0);
-                    const quantity = parseFloat(l.Quantity || 0);
-                    
-                    return {
-                        ItemCode: l.ItemCode || '',
-                        ItemName: l.ItemDescription || l.ItemName || '',
-                        UoMCode: l.UoMCode || 'AD',
-                        LineNum: l.LineNum || 0,
-                        BaseQty: baseQty,
-                        RequestedQty: requestedQty > 0 ? requestedQty : (baseQty > 0 ? (quantity / baseQty) : quantity),
-                        StockQty: parseFloat(l._StockQty || 0),
-                        SentQty: parseFloat(l._SentQty || l._RequestedQty || (baseQty > 0 ? (quantity / baseQty) : quantity))
-                    };
-                })
+                lines: normalizedLines
             };
+            
+            // DEBUG: Sepete eklenen veriyi console'a yazdır
+            console.log('🔍 DEBUG - Sepete Eklendi:', {
+                docEntry: docEntry,
+                toWarehouse: toWarehouse,
+                linesCount: normalizedLines.length,
+                lines: normalizedLines.map(l => ({
+                    ItemCode: l.ItemCode,
+                    ItemName: l.ItemName,
+                    StockQty: l.StockQty,
+                    RequestedQty: l.RequestedQty,
+                    BaseQty: l.BaseQty,
+                    UoMCode: l.UoMCode
+                })),
+                rawLines: lines.map(l => ({
+                    ItemCode: l.ItemCode,
+                    _StockQty: l._StockQty,
+                    _RequestedQty: l._RequestedQty,
+                    _BaseQty: l._BaseQty,
+                    Quantity: l.Quantity,
+                    UoMCode: l.UoMCode
+                }))
+            });
             
         }
         
@@ -1312,8 +1416,8 @@ input[type="checkbox"]:focus {
                 if (sepetPanel) {
                     sepetPanel.style.display = 'none';
                 }
-                return;
-            }
+                    return;
+                }
             
             // Sepet doluysa butonu göster
             if (sepetBtn) {
