@@ -616,23 +616,23 @@ body {
                 <div class="detail-grid">
                     <!-- Sol Sütun -->
                     <div class="detail-column">
-                        <div class="detail-item">
+                    <div class="detail-item">
                             <label>Talep No:</label>
-                            <div class="detail-value"><?= htmlspecialchars($docEntry) ?></div>
-                        </div>
-                        <div class="detail-item">
+                        <div class="detail-value"><?= htmlspecialchars($docEntry) ?></div>
+                    </div>
+                    <div class="detail-item">
                             <label>Talep Tarihi:</label>
-                            <div class="detail-value"><?= htmlspecialchars($docDate) ?></div>
-                        </div>
-                        <div class="detail-item">
+                        <div class="detail-value"><?= htmlspecialchars($docDate) ?></div>
+                    </div>
+                    <div class="detail-item">
                             <label>Teslimat Belge No:</label>
                             <div class="detail-value"><?= htmlspecialchars($numAtCard) ?></div>
                         </div>
                         <div class="detail-item">
                             <label>Talep Özeti:</label>
-                            <div class="detail-value"><?= htmlspecialchars($ordSum) ?></div>
-                        </div>
-                        <div class="detail-item">
+                        <div class="detail-value"><?= htmlspecialchars($ordSum) ?></div>
+                    </div>
+                    <div class="detail-item">
                             <label>Talep Notu:</label>
                             <div class="detail-value"><?= htmlspecialchars($journalMemo) ?></div>
                         </div>
@@ -645,23 +645,23 @@ body {
                             <div class="detail-value">
                                 <span class="status-badge <?= getStatusClass($status) ?>"><?= htmlspecialchars($statusText) ?></span>
                             </div>
-                        </div>
-                        <div class="detail-item">
-                            <label>Tahmini Teslimat Tarihi:</label>
-                            <div class="detail-value"><?= htmlspecialchars($dueDate) ?></div>
-                        </div>
-                        <div class="detail-item">
+                    </div>
+                    <div class="detail-item">
+                        <label>Tahmini Teslimat Tarihi:</label>
+                        <div class="detail-value"><?= htmlspecialchars($dueDate) ?></div>
+                    </div>
+                    <div class="detail-item">
                             <label>Gönderen Şube:</label>
                             <div class="detail-value"><?= htmlspecialchars($gonderSubeDisplay) ?></div>
-                        </div>
-                        <div class="detail-item">
-                            <label>Alıcı Şube:</label>
+                    </div>
+                    <div class="detail-item">
+                        <label>Alıcı Şube:</label>
                             <div class="detail-value"><?= htmlspecialchars($aliciSubeDisplay) ?></div> 
-                        </div>
-                        <div class="detail-item">
+                    </div>
+                    <div class="detail-item">
                             <label>Teslimat Tarihi:</label>
                             <div class="detail-value"><?= htmlspecialchars($teslimatTarihi ?: '-') ?></div>
-                        </div>
+                    </div>
                     </div>
                 </div>
             </div>

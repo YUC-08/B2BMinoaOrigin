@@ -125,23 +125,130 @@ if (!empty($toWarehouseName)) {
     $aliciSubeDisplay = '-';
 }
 
-// StockTransfer bilgileri (Sevk Edildi/Tamamlandı durumunda)
-$stockTransferInfo = null;
-$stockTransferLinesMap = [];
+// Sevk / Teslim miktarları için haritalama: ItemCode => Toplam Miktar (StockTransfers'tan gelen)
+$sevkMiktarMap = []; // Gönderen şubenin sevk ettiği miktar (outgoing şube onayladığında)
+$teslimatMiktarMap = []; // Alıcı şubenin teslim aldığı miktar (fiziksel - kusurlu)
+$outgoingStockTransferInfo = null;
+$incomingStockTransferInfo = null;
 
-if ($status === '3' || $status === '4') {
+// Sevk miktarı: Hazırlanıyor (2), Sevk Edildi (3) ve Tamamlandı (4) durumlarında göster
+// Outgoing şube onayladığında (status == '2') sevk miktarı güncellenir
+if ($status == '2' || $status == '3' || $status == '4') {
+    // 1. Gönderen şubenin sevk ettiği belge (BaseType = 1250000001 => InventoryTransferRequest)
+    // Bu, outgoing şubenin onayladığı StockTransfer'dir
     $stockTransferFilter = "BaseType eq 1250000001 and BaseEntry eq {$docEntry}";
     $stockTransferQuery = "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
     $stockTransferData = $sap->get($stockTransferQuery);
     $stockTransfers = $stockTransferData['response']['value'] ?? [];
     
     if (!empty($stockTransfers)) {
-        $stockTransferInfo = $stockTransfers[0];
-        $stLines = $stockTransferInfo['StockTransferLines'] ?? [];
+        $outgoingStockTransferInfo = $stockTransfers[0];
+        
+        // StockTransfer satırlarındaki Quantity'leri topla (sevk miktarı)
+        $stLines = $outgoingStockTransferInfo['StockTransferLines'] ?? [];
         foreach ($stLines as $stLine) {
             $itemCode = $stLine['ItemCode'] ?? '';
             $qty = (float)($stLine['Quantity'] ?? 0);
-            $stockTransferLinesMap[$itemCode] = $qty;
+            
+            // Fire & Zayi satırlarını filtrele
+            $isFireZayi = !empty($stLine['U_ASB2B_LOST']) || !empty($stLine['U_ASB2B_Damaged']);
+            if ($isFireZayi) continue;
+            
+            $sevkMiktarMap[$itemCode] = $qty;
+        }
+    }
+}
+
+// Teslimat miktarı: Sadece Sevk Edildi (3) ve Tamamlandı (4) durumlarında göster
+// Incoming şube teslim aldığında (fiziksel - kusurlu miktar)
+if ($status == '3' || $status == '4') {
+    // Teslimat miktarını U_ASB2B_QutMaster ile hesapla
+    $docEntryInt = (int)$docEntry;
+    
+    // U_ASB2B_QutMaster ile filtrele (expand kullanmadan, satırları ayrı çekeceğiz)
+    $deliveryFilter = "U_ASB2B_QutMaster eq {$docEntryInt}";
+    $deliveryQuery = "StockTransfers?\$filter=" . urlencode($deliveryFilter);
+    $deliveryData = $sap->get($deliveryQuery);
+    $deliveryList = $deliveryData['response']['value'] ?? [];
+    
+    // Eğer U_ASB2B_QutMaster ile bulunamazsa, BaseType ve BaseEntry ile çekilen StockTransfer'lerden
+    // en yeni olanı (onaylama StockTransfer'inden sonra oluşturulan) teslim alma StockTransfer'i olarak kabul et
+    if (empty($deliveryList)) {
+        if (!empty($outgoingStockTransferInfo)) {
+            $outgoingDocEntry = $outgoingStockTransferInfo['DocEntry'] ?? null;
+            
+            // BaseType = 1250000001 ve BaseEntry = docEntry ile filtrele
+            // FromWarehouse = fromWarehouse ve ToWarehouse = toWarehouse olanları al
+            // DocEntry > outgoingDocEntry olanları al (onaylama StockTransfer'inden sonra oluşturulan)
+            if ($outgoingDocEntry) {
+                $deliveryFilter2 = "BaseType eq 1250000001 and BaseEntry eq {$docEntry} and FromWarehouse eq '{$fromWarehouse}' and ToWarehouse eq '{$toWarehouse}' and DocEntry gt {$outgoingDocEntry}";
+                $deliveryQuery2 = "StockTransfers?\$filter=" . urlencode($deliveryFilter2) . "&\$orderby=DocEntry desc&\$top=1";
+                $deliveryData2 = $sap->get($deliveryQuery2);
+                $deliveryList2 = $deliveryData2['response']['value'] ?? [];
+                
+                if (!empty($deliveryList2)) {
+                    $deliveryList = $deliveryList2;
+                }
+            }
+        } else {
+            // Eğer outgoingStockTransferInfo yoksa, BaseType ve BaseEntry ile tüm StockTransfer'leri çek
+            // En yeni olanı teslim alma StockTransfer'i olarak kabul et
+            $deliveryFilter2 = "BaseType eq 1250000001 and BaseEntry eq {$docEntry} and FromWarehouse eq '{$fromWarehouse}' and ToWarehouse eq '{$toWarehouse}'";
+            $deliveryQuery2 = "StockTransfers?\$filter=" . urlencode($deliveryFilter2) . "&\$orderby=DocEntry desc";
+            $deliveryData2 = $sap->get($deliveryQuery2);
+            $deliveryList2 = $deliveryData2['response']['value'] ?? [];
+            
+            // U_ASB2B_QutMaster kontrolü yap, eğer doğruysa ekle
+            foreach ($deliveryList2 as $st2) {
+                $qutMaster = (int)($st2['U_ASB2B_QutMaster'] ?? 0);
+                if ($qutMaster == $docEntryInt) {
+                    $deliveryList[] = $st2;
+                }
+            }
+        }
+    }
+    
+    // Her StockTransfer için satırları ayrı çek (expand çalışmıyor)
+    foreach ($deliveryList as $idx => $st) {
+        $stDocEntry = $st['DocEntry'] ?? null;
+        $dtLines = [];
+        if ($stDocEntry) {
+            $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
+            $stLinesData = $sap->get($stLinesQuery);
+            
+            // Response yapısını kontrol et: value içinde mi, yoksa direkt StockTransferLines içinde mi?
+            $response = $stLinesData['response'] ?? [];
+            if (isset($response['value']) && is_array($response['value'])) {
+                // OData collection response
+                $dtLines = $response['value'];
+            } elseif (isset($response['StockTransferLines']) && is_array($response['StockTransferLines'])) {
+                // Direct StockTransferLines property
+                $dtLines = $response['StockTransferLines'];
+            } else {
+                // Fallback: response'un kendisi array ise
+                $dtLines = is_array($response) ? $response : [];
+            }
+            
+            $deliveryList[$idx]['StockTransferLines'] = $dtLines;
+        }
+        
+        // İlk teslimat StockTransfer'ini $incomingStockTransferInfo olarak kullan
+        if (empty($incomingStockTransferInfo)) {
+            $incomingStockTransferInfo = $st;
+        }
+        
+        foreach ($dtLines as $dtLine) {
+            $itemCode = $dtLine['ItemCode'] ?? '';
+            $qty = (float)($dtLine['Quantity'] ?? 0);
+            if ($itemCode === '') continue;
+            
+            // AnaDepo-Detay.php mantığı: Tüm satırları topla (Fire & Zayi kontrolü yok)
+            // Transferler-TeslimAl.php'de normal transfer miktarı (fiziksel - kusurlu) zaten WarehouseCode = toWarehouse olarak kaydediliyor
+            // Bu yüzden tüm satırları toplamak yeterli (AnaDepo gibi)
+            if (!isset($teslimatMiktarMap[$itemCode])) {
+                $teslimatMiktarMap[$itemCode] = 0;
+            }
+            $teslimatMiktarMap[$itemCode] += $qty;
         }
     }
 }
@@ -306,7 +413,9 @@ body {
     width: 25%;
 }
 
-.data-table th:nth-child(3) {
+.data-table th:nth-child(3),
+.data-table th:nth-child(4),
+.data-table th:nth-child(5) {
     text-align: center;
 }
 
@@ -315,10 +424,12 @@ body {
     border-bottom: 1px solid #f3f4f6;
     font-size: 14px;
     color: #374151;
-    width: 25%;
+    width: 20%;
 }
 
-.data-table td:nth-child(3) {
+.data-table td:nth-child(3),
+.data-table td:nth-child(4),
+.data-table td:nth-child(5) {
     text-align: center;
 }
 
@@ -515,14 +626,24 @@ body {
                                 <span class="status-badge <?= $statusClass ?>"><?= htmlspecialchars($statusText) ?></span>
                             </div>
                         </div>
-                        <?php if ($stockTransferInfo): ?>
+                        <?php if ($outgoingStockTransferInfo): ?>
                             <div class="detail-item">
                                 <label>Sevk Tarihi:</label>
-                                <div class="detail-value"><?= formatDate($stockTransferInfo['DocDate'] ?? '') ?></div>
+                                <div class="detail-value"><?= formatDate($outgoingStockTransferInfo['DocDate'] ?? '') ?></div>
                             </div>
                             <div class="detail-item">
-                                <label>StockTransfer DocEntry:</label>
-                                <div class="detail-value"><?= htmlspecialchars($stockTransferInfo['DocEntry'] ?? '-') ?></div>
+                                <label>Sevk DocEntry:</label>
+                                <div class="detail-value"><?= htmlspecialchars($outgoingStockTransferInfo['DocEntry'] ?? '-') ?></div>
+                            </div>
+                        <?php endif; ?>
+                        <?php if ($incomingStockTransferInfo): ?>
+                            <div class="detail-item">
+                                <label>Teslimat Tarihi:</label>
+                                <div class="detail-value"><?= formatDate($incomingStockTransferInfo['DocDate'] ?? '') ?></div>
+                            </div>
+                            <div class="detail-item">
+                                <label>Teslimat DocEntry:</label>
+                                <div class="detail-value"><?= htmlspecialchars($incomingStockTransferInfo['DocEntry'] ?? '-') ?></div>
                             </div>
                         <?php endif; ?>
                     </div>
@@ -537,39 +658,94 @@ body {
                             <th>Kalem Numarası</th>
                             <th>Kalem Tanımı</th>
                             <th>Talep Miktarı</th>
+                            <th>Sevk Miktarı</th>
                             <th>Teslimat Miktarı</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($lines)): ?>
                             <tr>
-                                <td colspan="4" style="text-align: center; padding: 2rem; color: #9ca3af;">Satır bulunamadı.</td>
+                                <td colspan="5" style="text-align: center; padding: 2rem; color: #9ca3af;">Satır bulunamadı.</td>
                             </tr>
                         <?php else: ?>
                             <?php foreach ($lines as $line): 
                                 $itemCode = $line['ItemCode'] ?? '';
                                 $itemName = $line['ItemDescription'] ?? '';
                                 $quantity = (float)($line['Quantity'] ?? 0);
+                                $remaining = (float)($line['RemainingOpenQuantity'] ?? 0);
+                                $baseQty = (float)($line['BaseQty'] ?? 1.0);
                                 $uomCode = $line['UoMCode'] ?? 'AD';
                                 
-                                // Teslimat miktarı
-                                $delivered = 0;
-                                if ($status === '3' || $status === '4') {
-                                    $delivered = $stockTransferLinesMap[$itemCode] ?? 0;
+                                // Talep miktarı (InventoryTransferRequest'ten)
+                                $talepMiktar = $quantity;
+                                
+                                // Sevk / Teslimat başlangıç
+                                $sevkMiktar = 0;
+                                $teslimatMiktar = 0;
+                                
+                                // Sevk miktarı: Hazırlanıyor (2), Sevk Edildi (3) ve Tamamlandı (4) durumlarında göster
+                                // Outgoing şube onayladığında (status == '2') sevk miktarı güncellenir
+                                if ($status == '2' || $status == '3' || $status == '4') {
+                                    // Sevk miktarı: sevk maps'ten (outgoing şubenin onayladığı StockTransfer'den)
+                                    $sevkMiktar = $sevkMiktarMap[$itemCode] ?? 0;
+                                    
+                                    // Eğer StockTransfer'den miktar gelmediyse, RemainingOpenQuantity'ye göre hesapla
+                                    if ($sevkMiktar == 0 && $quantity > 0) {
+                                        // RemainingOpenQuantity < Quantity ise, sevk edilen miktar = Quantity - RemainingOpenQuantity
+                                        if ($remaining < $quantity) {
+                                            $sevkMiktar = $quantity - $remaining;
+                                        } else {
+                                            // RemainingOpenQuantity = Quantity ise, henüz sevk edilmemiş demektir
+                                            // Ama status "Hazırlanıyor" veya "Sevk Edildi" ise, talep miktarını göster
+                                            if ($status == '2' || $status == '3') {
+                                                $sevkMiktar = $quantity;
+                                            }
+                                        }
+                                        
+                                        // Tamamlandı durumunda: Eğer hala 0 ise ve StockTransfer yoksa, talep miktarını göster
+                                        if ($sevkMiktar == 0 && $status == '4' && empty($outgoingStockTransferInfo) && $quantity > 0) {
+                                            $sevkMiktar = $quantity;
+                                        }
+                                    }
                                 }
                                 
-                                // Miktar formatı
-                                $quantityFormatted = formatQuantity($quantity);
-                                $deliveredFormatted = formatQuantity($delivered);
+                                // Teslimat miktarı: Sadece Sevk Edildi (3) ve Tamamlandı (4) durumlarında göster
+                                // Incoming şube teslim aldığında (fiziksel - kusurlu miktar)
+                                if ($status == '3' || $status == '4') {
+                                    // Teslimat miktarı: teslimat maps'ten (incoming şubenin teslim aldığı StockTransfer'den)
+                                    $teslimatMiktar = $teslimatMiktarMap[$itemCode] ?? 0;
+                                    
+                                    // Eğer teslimat belgesi yoksa, teslimat miktarı 0'dır (henüz teslim alınmamış)
+                                }
                                 
-                                $quantityDisplay = $quantity > 0 ? $quantityFormatted . ' ' . htmlspecialchars($uomCode) : '0';
-                                $deliveredDisplay = $delivered > 0 ? $deliveredFormatted . ' ' . htmlspecialchars($uomCode) : '0';
+                                // Formatlama AnaDepo ile aynı kalsın
+                                $talepFormatted = formatQuantity($talepMiktar);
+                                if ($talepMiktar > 0) {
+                                    $talepDisplay = $talepFormatted . ' ' . htmlspecialchars($uomCode);
+                                } else {
+                                    $talepDisplay = '0';
+                                }
+                                
+                                $sevkFormatted = formatQuantity($sevkMiktar);
+                                if ($sevkMiktar > 0) {
+                                    $sevkDisplay = $sevkFormatted . ' ' . htmlspecialchars($uomCode);
+                                } else {
+                                    $sevkDisplay = '0';
+                                }
+                                
+                                $teslimatFormatted = formatQuantity($teslimatMiktar);
+                                if ($teslimatMiktar > 0) {
+                                    $teslimatDisplay = $teslimatFormatted . ' ' . htmlspecialchars($uomCode);
+                                } else {
+                                    $teslimatDisplay = '0';
+                                }
                             ?>
                                 <tr>
                                     <td><?= htmlspecialchars($itemCode) ?></td>
                                     <td><?= htmlspecialchars($itemName) ?></td>
-                                    <td><?= $quantityDisplay ?></td>
-                                    <td><?= $deliveredDisplay ?></td>
+                                    <td style="text-align: center;"><?= $talepDisplay ?></td>
+                                    <td style="text-align: center;"><?= $sevkDisplay ?></td>
+                                    <td style="text-align: center;"><?= $teslimatDisplay ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>

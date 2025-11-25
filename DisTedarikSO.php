@@ -1802,8 +1802,8 @@ function updateQuantity(itemCode, quantity) {
             };
         } else {
             selectedItems[itemCode].quantity = qty;
-        }
-    } else {
+    }
+} else {
         // Sepetten çıkar
         if (selectedItems[itemCode]) {
             delete selectedItems[itemCode];

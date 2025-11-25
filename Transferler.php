@@ -1446,13 +1446,18 @@ input[type="checkbox"]:focus {
                         lines: JSON.stringify(sapLines)
                     })
                 })
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
-                    if (data.success) {
+                    if (data && data.success) {
                         successCount++;
                     } else {
                         failedCount++;
-                        console.error('Onaylama hatası:', docEntry, data.message);
+                        console.error('Onaylama hatası:', docEntry, data?.message || 'Bilinmeyen hata');
                     }
                 })
                 .catch(error => {
