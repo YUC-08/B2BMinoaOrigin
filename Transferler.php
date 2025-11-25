@@ -17,6 +17,120 @@ if (empty($uAsOwnr) || empty($branch)) {
 
 $userName = $_SESSION["UserName"] ?? '';
 
+// Debug modu (sadece gerektiğinde aç)
+$debugMode = isset($_GET['debug']) && $_GET['debug'] === '1';
+
+// AJAX: Transfer lines'ları lazy load et (sepete eklendiğinde)
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'] === 'get_lines') {
+    header('Content-Type: application/json');
+    
+    $docEntry = $_GET['docEntry'] ?? '';
+    if (empty($docEntry)) {
+        echo json_encode(['error' => 'DocEntry gerekli']);
+        exit;
+    }
+    
+    // Lines'ları çek
+    $lines = [];
+    $docQuery = "InventoryTransferRequests({$docEntry})?\$expand=InventoryTransferRequestLines";
+    $docData = $sap->get($docQuery);
+    
+    if (($docData['status'] ?? 0) == 200) {
+        $requestData = $docData['response'] ?? null;
+        if ($requestData && isset($requestData['InventoryTransferRequestLines']) && is_array($requestData['InventoryTransferRequestLines'])) {
+            $lines = $requestData['InventoryTransferRequestLines'];
+        }
+    }
+    
+    // Fallback
+    if (empty($lines)) {
+        $linesQuery = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
+        $linesData = $sap->get($linesQuery);
+        
+        if (($linesData['status'] ?? 0) == 200) {
+            $linesResponse = $linesData['response'] ?? null;
+            if ($linesResponse) {
+                if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
+                    $lines = $linesResponse['value'];
+                } elseif (is_array($linesResponse) && !isset($linesResponse['value'])) {
+                    $lines = $linesResponse;
+                }
+            }
+        }
+    }
+    
+    // Transfer bilgisini al (FromWarehouse için)
+    $transferQuery = "InventoryTransferRequests({$docEntry})?\$select=FromWarehouse";
+    $transferData = $sap->get($transferQuery);
+    $transferFromWarehouse = '';
+    if (($transferData['status'] ?? 0) == 200) {
+        $transferFromWarehouse = $transferData['response']['FromWarehouse'] ?? '';
+    }
+    
+    // ItemWarehouseInfoCollection cache
+    $itemStockCache = [];
+    
+    // Her line için stok miktarını çek ve normalize et
+    foreach ($lines as &$line) {
+        if (!is_array($line)) continue;
+        
+        $itemCode = $line['ItemCode'] ?? '';
+        $quantity = floatval($line['Quantity'] ?? 0);
+        $stockQty = 0;
+        $baseQty = floatval($line['BaseQty'] ?? 1.0);
+        $uomCode = $line['UoMCode'] ?? 'AD';
+        
+        if (!empty($itemCode) && !empty($transferFromWarehouse)) {
+            $cacheKey = $itemCode;
+            
+            if (!isset($itemStockCache[$cacheKey])) {
+                try {
+                    $whInfoQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection";
+                    $whInfoData = $sap->get($whInfoQuery);
+                    
+                    if (($whInfoData['status'] ?? 0) == 200) {
+                        $whInfoResponse = $whInfoData['response'] ?? null;
+                        $whInfoArray = null;
+                        if ($whInfoResponse && isset($whInfoResponse['ItemWarehouseInfoCollection']) && is_array($whInfoResponse['ItemWarehouseInfoCollection'])) {
+                            $whInfoArray = $whInfoResponse['ItemWarehouseInfoCollection'];
+                        } elseif ($whInfoResponse && isset($whInfoResponse['value']) && is_array($whInfoResponse['value'])) {
+                            $whInfoArray = $whInfoResponse['value'];
+                        }
+                        $itemStockCache[$cacheKey] = $whInfoArray ?: [];
+                    } else {
+                        $itemStockCache[$cacheKey] = [];
+                    }
+                } catch (Exception $e) {
+                    $itemStockCache[$cacheKey] = [];
+                }
+            }
+            
+            $whInfoArray = $itemStockCache[$cacheKey] ?? [];
+            if (!empty($whInfoArray) && is_array($whInfoArray)) {
+                $transferFromWarehouseTrimmed = trim($transferFromWarehouse);
+                foreach ($whInfoArray as $whInfo) {
+                    $whCode = trim($whInfo['WarehouseCode'] ?? $whInfo['Warehouse'] ?? '');
+                    if (strcasecmp($whCode, $transferFromWarehouseTrimmed) === 0) {
+                        $stockQty = floatval($whInfo['InStock'] ?? $whInfo['Available'] ?? 0);
+                        break;
+                    }
+                }
+            }
+        }
+        
+        $userRequestedQty = $baseQty > 0 ? ($quantity / $baseQty) : $quantity;
+        $line['_StockQty'] = $stockQty;
+        $line['_RequestedQty'] = $userRequestedQty;
+        $line['_BaseQty'] = $baseQty;
+        $line['UoMCode'] = $uomCode;
+        $line['_SentQty'] = $userRequestedQty;
+    }
+    unset($line);
+    
+    echo json_encode(['lines' => $lines, 'fromWarehouse' => $transferFromWarehouse]);
+    exit;
+}
+
 // 1. Minoa talep ettiği transfer tedarik (diğer şubeden gelen) - ToWarehouse
 // Önce MAIN=2 (sevkiyat deposu) ara
 $toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '{$branch}'";
@@ -51,7 +165,7 @@ $filterEndDate = $_GET['end_date'] ?? '';
 
 // Durum metinleri
 function getStatusText($status) {
-    $statusMap = [
+        $statusMap = [
         '0' => 'Onay Bekliyor',
         '1' => 'Onay Bekliyor',
         '2' => 'Hazırlanıyor',
@@ -82,30 +196,6 @@ function canReceive($s) {
 function canApprove($s) {
     return in_array($s, ['0', '1'], true);
 }
-
-// 1. Minoa talep ettiği transfer tedarik (diğer şubeden gelen) - ToWarehouse
-// Önce MAIN=2 (sevkiyat deposu) ara
-$toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '{$branch}'";
-$toWarehouseQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilter);
-$toWarehouseData = $sap->get($toWarehouseQuery);
-$toWarehouses = $toWarehouseData['response']['value'] ?? [];
-$toWarehouse = !empty($toWarehouses) ? $toWarehouses[0]['WarehouseCode'] : null;
-
-// Eğer MAIN=2 bulunamazsa, MAIN=1 (ana depo) kullan
-if (empty($toWarehouse)) {
-    $toWarehouseFilterAlt = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '{$branch}'";
-    $toWarehouseQueryAlt = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilterAlt);
-    $toWarehouseDataAlt = $sap->get($toWarehouseQueryAlt);
-    $toWarehousesAlt = $toWarehouseDataAlt['response']['value'] ?? [];
-    $toWarehouse = !empty($toWarehousesAlt) ? $toWarehousesAlt[0]['WarehouseCode'] : null;
-}
-
-// 2. Minoa talep edilen transfer tedarik (diğer şubeye giden) - FromWarehouse
-$fromWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '{$branch}'";
-$fromWarehouseQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($fromWarehouseFilter);
-$fromWarehouseData = $sap->get($fromWarehouseQuery);
-$fromWarehouses = $fromWarehouseData['response']['value'] ?? [];
-$fromWarehouse = !empty($fromWarehouses) ? $fromWarehouses[0]['WarehouseCode'] : null;
 
 // 1. Gelen transferler (ToWarehouse = '100-KT-1')
 $incomingTransfers = [];
@@ -148,20 +238,9 @@ if ($toWarehouse) {
     $incomingData = $sap->get($incomingQuery);
     $incomingTransfersRaw = $incomingData['response']['value'] ?? [];
     
-    // Ana depo warehouse'larını filtrele
-    foreach ($incomingTransfersRaw as $transfer) {
-        $fromWhsCode = $transfer['FromWarehouse'] ?? '';
-        if (!empty($fromWhsCode)) {
-            $whsCheckQuery = "Warehouses('{$fromWhsCode}')?\$select=U_ASB2B_FATH";
-            $whsCheckData = $sap->get($whsCheckQuery);
-            $isAnadepo = ($whsCheckData['response']['U_ASB2B_FATH'] ?? '') === 'Y';
-            if (!$isAnadepo) {
-                $incomingTransfers[] = $transfer;
-            }
-        } else {
-            $incomingTransfers[] = $transfer;
-        }
-    }
+    // Ana depo warehouse'larını filtrele (cache oluşturulduktan sonra yapılacak)
+    // Şimdilik tüm transferleri ekle, cache oluşturulduktan sonra filtreleme yapılacak
+    $incomingTransfers = $incomingTransfersRaw;
     
     // Debug bilgisi güncelle
     $incomingDebugInfo['incomingQuery'] = $incomingQuery;
@@ -224,246 +303,17 @@ if ($fromWarehouse) {
             $debugInfo['error'] = $outgoingData['response']['error'];
         }
         
-        // Ana depo warehouse'larını filtrele ve her transfer için detayları çek
+        // ItemWarehouseInfoCollection cache (aynı item için tekrar sorgu yapmamak)
+        $itemStockCache = [];
+        
+        // OPTIMIZE: LAZY LOADING - Lines'ları sayfa yüklenirken çekme, sadece sepete eklendiğinde AJAX ile çek
+        // Bu sayede binlerce transfer için sadece liste sorgusu yapılır, lines'lar lazy load edilir
+        // Ana depo warehouse'larını filtrele (cache oluşturulduktan sonra yapılacak)
+        // Şimdilik tüm transferleri ekle, cache oluşturulduktan sonra filtreleme yapılacak
         foreach ($outgoingTransfersRaw as $transfer) {
-            $toWhsCode = $transfer['ToWarehouse'] ?? '';
-            // Her transferin kendi FromWarehouse değerini al (gönderen şube deposu)
-            $transferFromWarehouse = $transfer['FromWarehouse'] ?? '';
-            if (!empty($toWhsCode)) {
-                $whsCheckQuery = "Warehouses('{$toWhsCode}')?\$select=U_ASB2B_FATH";
-                $whsCheckData = $sap->get($whsCheckQuery);
-                $isAnadepo = ($whsCheckData['response']['U_ASB2B_FATH'] ?? '') === 'Y';
-                if (!$isAnadepo) {
-                    $docEntry = $transfer['DocEntry'] ?? '';
-                    if (!empty($docEntry)) {
-                        // InventoryTransferRequests için lines'ı çek - her iki navigation property'yi de dene
-                        $lines = [];
-                        
-                        // 1) InventoryTransferRequestLines ile dene ($expand)
-                        $docQuery = "InventoryTransferRequests({$docEntry})?\$expand=InventoryTransferRequestLines";
-                        $docData = $sap->get($docQuery);
-                        
-                        if (($docData['status'] ?? 0) == 200) {
-                            $requestData = $docData['response'] ?? null;
-                            if ($requestData && isset($requestData['InventoryTransferRequestLines']) && is_array($requestData['InventoryTransferRequestLines'])) {
-                                $lines = $requestData['InventoryTransferRequestLines'];
-                            }
-                        }
-                        
-                        // 2) Hâlâ boşsa, StockTransferLines ile tekrar dene ($expand)
-                        if (empty($lines)) {
-                            $docQuery2 = "InventoryTransferRequests({$docEntry})?\$expand=StockTransferLines";
-                            $docData2 = $sap->get($docQuery2);
-                            
-                            if (($docData2['status'] ?? 0) == 200) {
-                                $requestData2 = $docData2['response'] ?? null;
-                                if ($requestData2 && isset($requestData2['StockTransferLines']) && is_array($requestData2['StockTransferLines'])) {
-                                    $lines = $requestData2['StockTransferLines'];
-                                }
-                            }
-                        }
-                        
-                        // 3) Hâlâ boşsa, navigation endpointleri tek tek dene
-                        // a) InventoryTransferRequestLines endpoint
-                        if (empty($lines)) {
-                            $linesQuery = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
-                            $linesData = $sap->get($linesQuery);
-                            
-                            if (($linesData['status'] ?? 0) == 200) {
-                                $linesResponse = $linesData['response'] ?? null;
-                                if ($linesResponse) {
-                                    if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
-                                        $lines = $linesResponse['value'];
-                                    } elseif (is_array($linesResponse) && !isset($linesResponse['value'])) {
-                                        $lines = $linesResponse;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // b) Hâlâ boşsa, StockTransferLines endpoint
-                        if (empty($lines)) {
-                            $linesQuery2 = "InventoryTransferRequests({$docEntry})/StockTransferLines";
-                            $linesData2 = $sap->get($linesQuery2);
-                            
-                            if (($linesData2['status'] ?? 0) == 200) {
-                                $linesResponse2 = $linesData2['response'] ?? null;
-                                if ($linesResponse2) {
-                                    // Önce 'value' array'ini kontrol et
-                                    if (isset($linesResponse2['value']) && is_array($linesResponse2['value'])) {
-                                        $lines = $linesResponse2['value'];
-                                    } 
-                                    // Eğer direkt array ise
-                                    elseif (is_array($linesResponse2) && !isset($linesResponse2['value']) && !isset($linesResponse2['@odata.context'])) {
-                                        $lines = $linesResponse2;
-                                    }
-                                    // Eğer StockTransferLines object olarak geliyorsa (navigation property)
-                                    elseif (isset($linesResponse2['StockTransferLines'])) {
-                                        $stockTransferLines = $linesResponse2['StockTransferLines'];
-                                        // Eğer object ise, değerlerini array'e çevir
-                                        if (is_array($stockTransferLines) && !isset($stockTransferLines[0]) && !empty($stockTransferLines)) {
-                                            // Object formatında geliyorsa (key-value pairs), array'e çevir
-                                            $lines = array_values($stockTransferLines);
-                                        } elseif (is_array($stockTransferLines)) {
-                                            $lines = $stockTransferLines;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Her line için stok miktarını çek ve normalize et
-                        if (!empty($lines) && is_array($lines)) {
-                            // Debug: Transfer için stok bilgisi
-                            if (!isset($debugInfo['stockDebug'])) {
-                                $debugInfo['stockDebug'] = [];
-                            }
-                            
-                            foreach ($lines as &$line) {
-                                // Line'ın array olduğundan emin ol
-                                if (!is_array($line)) {
-                                    continue;
-                                }
-                                
-                                $itemCode = $line['ItemCode'] ?? '';
-                                $quantity = floatval($line['Quantity'] ?? 0);
-                                $stockQty = 0;
-                                // BaseQty ve UoMCode'u lines'dan al (zaten var, Item query'sine gerek yok)
-                                $baseQty = floatval($line['BaseQty'] ?? 1.0);
-                                $uomCode = $line['UoMCode'] ?? 'AD';
-                                
-                                // Debug: Item için başlangıç bilgisi
-                                $itemDebug = [
-                                    'docEntry' => $docEntry,
-                                    'itemCode' => $itemCode,
-                                    'transferFromWarehouse' => $transferFromWarehouse,
-                                    'transferToWarehouse' => $toWhsCode,
-                                    'transferFromWarehouseRaw' => $transfer['FromWarehouse'] ?? 'NOT_SET',
-                                    'quantity' => $quantity,
-                                    'baseQtyFromLine' => $baseQty,
-                                    'uomCodeFromLine' => $uomCode
-                                ];
-                                
-                                // Stok miktarını çek - Her transferin kendi FromWarehouse'undan
-                                // transferFromWarehouse: Transferin gönderen şube deposu (FromWarehouse)
-                                // anadepo_teslim_al.php'deki mantığı kullan (Item query'sine gerek yok)
-                                if (!empty($itemCode) && !empty($transferFromWarehouse)) {
-                                    try {
-                                        // ItemWarehouseInfoCollection'ı çek (filter olmadan, tümünü al)
-                                        // PHP tarafında filtrele (WarehouseCode filter çalışmıyor)
-                                        $whInfoQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection";
-                                        $whInfoData = $sap->get($whInfoQuery);
-                                        $itemDebug['whInfoQuery'] = $whInfoQuery;
-                                        $itemDebug['whInfoQueryStatus'] = $whInfoData['status'] ?? 0;
-                                        
-                                        if (($whInfoData['status'] ?? 0) == 200) {
-                                            $whInfoResponse = $whInfoData['response'] ?? null;
-                                            
-                                            // Response yapısı: ItemWarehouseInfoCollection direkt array olarak geliyor
-                                            $whInfoArray = null;
-                                            if ($whInfoResponse && isset($whInfoResponse['ItemWarehouseInfoCollection']) && is_array($whInfoResponse['ItemWarehouseInfoCollection'])) {
-                                                $whInfoArray = $whInfoResponse['ItemWarehouseInfoCollection'];
-                                            } elseif ($whInfoResponse && isset($whInfoResponse['value']) && is_array($whInfoResponse['value'])) {
-                                                $whInfoArray = $whInfoResponse['value'];
-                                            }
-                                            
-                                            if ($whInfoArray && is_array($whInfoArray)) {
-                                                // PHP tarafında WarehouseCode'a göre filtrele
-                                                $itemDebug['allWarehouseInfo'] = [];
-                                                $transferFromWarehouseTrimmed = trim($transferFromWarehouse);
-                                                
-                                                foreach ($whInfoArray as $whInfo) {
-                                                    $whCode = trim($whInfo['WarehouseCode'] ?? $whInfo['Warehouse'] ?? '');
-                                                    $inStock = floatval($whInfo['InStock'] ?? $whInfo['Available'] ?? 0);
-                                                    
-                                                    // Case-insensitive karşılaştırma
-                                                    $matches = (strcasecmp($whCode, $transferFromWarehouseTrimmed) === 0);
-                                                    
-                                                    // Debug: Tüm warehouse bilgilerini topla
-                                                    $itemDebug['allWarehouseInfo'][] = [
-                                                        'WarehouseCode' => $whCode,
-                                                        'InStock' => $inStock,
-                                                        'matches' => $matches,
-                                                        'transferFromWarehouse' => $transferFromWarehouseTrimmed
-                                                    ];
-                                                    
-                                                    if ($matches) {
-                                                        $stockQty = $inStock;
-                                                        $itemDebug['stockFound'] = true;
-                                                        $itemDebug['stockQty'] = $stockQty;
-                                                        $itemDebug['stockSource'] = 'direct_filtered';
-                                                        $itemDebug['whInfo'] = $whInfo;
-                                                        break;
-                                                    }
-                                                }
-                                                
-                                                if ($stockQty == 0) {
-                                                    $itemDebug['stockFound'] = false;
-                                                    $itemDebug['stockQty'] = 0;
-                                                    $itemDebug['transferFromWarehouse'] = $transferFromWarehouse;
-                                                    $itemDebug['allWarehouseCodes'] = array_map(function($w) {
-                                                        return $w['WarehouseCode'] ?? $w['Warehouse'] ?? '';
-                                                    }, $whInfoArray);
-                                                }
-                                            } else {
-                                                $itemDebug['stockFound'] = false;
-                                                $itemDebug['stockQty'] = 0;
-                                                $itemDebug['whInfoResponse'] = $whInfoResponse;
-                                            }
-                                        } else {
-                                            $itemDebug['whInfoError'] = $whInfoData['response']['error'] ?? null;
-                                            $itemDebug['stockFound'] = false;
-                                            $itemDebug['stockQty'] = 0;
-                                        }
-                                    } catch (Exception $e) {
-                                        $itemDebug['exception'] = $e->getMessage();
-                                        $itemDebug['stockFound'] = false;
-                                        $itemDebug['stockQty'] = 0;
-                                    }
-                                } else {
-                                    if (empty($itemCode)) {
-                                        $itemDebug['itemCodeEmpty'] = true;
-                                    }
-                                    if (empty($transferFromWarehouse)) {
-                                        $itemDebug['transferFromWarehouseEmpty'] = true;
-                                    }
-                                }
-                                
-                                // Normalize et - AnaDepo mantığına uygun
-                                // Quantity SAP'de BaseQty × kullanıcı miktarı olarak saklanıyor
-                                // Kullanıcıya gösterirken: Quantity / BaseQty = kullanıcı miktarı
-                                $userRequestedQty = $baseQty > 0 ? ($quantity / $baseQty) : $quantity;
-                                
-                                $line['_StockQty'] = $stockQty;
-                                $line['_RequestedQty'] = $userRequestedQty; // Kullanıcı miktarı
-                                $line['_BaseQty'] = $baseQty;
-                                $line['UoMCode'] = $uomCode;
-                                // Varsayılan: talep kadar gönder (kullanıcı sepette değiştirebilir)
-                                $line['_SentQty'] = $userRequestedQty;
-                                
-                                // Debug: Final bilgi
-                                $itemDebug['finalStockQty'] = $stockQty;
-                                $itemDebug['finalBaseQty'] = $baseQty;
-                                $itemDebug['finalRequestedQty'] = $userRequestedQty;
-                                $itemDebug['line_StockQty'] = $line['_StockQty'] ?? 'NOT_SET';
-                                
-                                $debugInfo['stockDebug'][] = $itemDebug;
-                            }
-                            unset($line);
-                        }
-                        
-                        // Normalize edilmiş lines'ı transfer'e ata
-                        $transfer['InventoryTransferRequestLines'] = $lines;
-                    } else {
-                        $transfer['InventoryTransferRequestLines'] = [];
-                    }
-                    
-                    $outgoingTransfers[] = $transfer;
-                }
-            } else {
-                // ToWarehouse boşsa da ekle (güvenlik için)
-                $outgoingTransfers[] = $transfer;
-            }
+            // Lines'ları boş bırak - AJAX ile lazy load edilecek
+            $transfer['InventoryTransferRequestLines'] = [];
+            $outgoingTransfers[] = $transfer;
         }
 }
 
@@ -487,32 +337,86 @@ function buildSearchData(...$parts) {
     return mb_strtolower($text ?? '', 'UTF-8');
 }
 
-// Warehouse isimlerini çek (ana depo warehouse'larını hariç tut)
-$warehouseNamesMap = [];
+// OPTIMIZE: Global warehouse cache oluştur - Tüm warehouse bilgilerini tek sorguda çek
+$warehouseInfoCache = []; // [ 'WHSCODE' => ['Name' => ..., 'FATH' => ...] ]
 $allWarehouseCodes = [];
-foreach ($incomingTransfers as $transfer) {
+
+// Tüm warehouse kodlarını topla
+foreach ($incomingTransfersRaw as $transfer) {
     if (!empty($transfer['FromWarehouse'])) {
         $allWarehouseCodes[] = $transfer['FromWarehouse'];
     }
 }
-foreach ($outgoingTransfers as $transfer) {
+foreach ($outgoingTransfersRaw as $transfer) {
     if (!empty($transfer['ToWarehouse'])) {
         $allWarehouseCodes[] = $transfer['ToWarehouse'];
     }
 }
 $allWarehouseCodes = array_unique($allWarehouseCodes);
+
+// Tüm warehouse bilgilerini tek sorguda çek
 if (!empty($allWarehouseCodes)) {
+    $warehouseConditions = [];
     foreach ($allWarehouseCodes as $whsCode) {
-        // Warehouse bilgisini çek ve ana depo olup olmadığını kontrol et
-        $whsQuery = "Warehouses('{$whsCode}')?\$select=WarehouseCode,WarehouseName,U_ASB2B_FATH";
-        $whsData = $sap->get($whsQuery);
-        if (($whsData['status'] ?? 0) == 200 && isset($whsData['response']['WarehouseName'])) {
-            // Ana depo değilse ekle (U_ASB2B_FATH ne 'Y')
-            $isAnadepo = ($whsData['response']['U_ASB2B_FATH'] ?? '') === 'Y';
-            if (!$isAnadepo) {
-                $warehouseNamesMap[$whsCode] = $whsData['response']['WarehouseName'];
+        $warehouseConditions[] = "WarehouseCode eq '" . str_replace("'", "''", $whsCode) . "'";
+    }
+    if (!empty($warehouseConditions)) {
+        $warehouseFilter = "(" . implode(" or ", $warehouseConditions) . ")";
+        $warehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_FATH&\$filter=" . urlencode($warehouseFilter);
+        $warehouseData = $sap->get($warehouseQuery);
+        
+        if (($warehouseData['status'] ?? 0) == 200) {
+            $warehouses = $warehouseData['response']['value'] ?? [];
+            foreach ($warehouses as $whs) {
+                $whsCode = $whs['WarehouseCode'] ?? '';
+                if (!empty($whsCode)) {
+                    $warehouseInfoCache[$whsCode] = [
+                        'Name' => $whs['WarehouseName'] ?? '',
+                        'FATH' => $whs['U_ASB2B_FATH'] ?? ''
+                    ];
+                }
             }
         }
+    }
+}
+
+// Ana depo warehouse'larını filtrele (incoming transfers)
+$incomingTransfersFiltered = [];
+foreach ($incomingTransfersRaw as $transfer) {
+    $fromWhsCode = $transfer['FromWarehouse'] ?? '';
+    if (!empty($fromWhsCode)) {
+        $isAnadepo = ($warehouseInfoCache[$fromWhsCode]['FATH'] ?? '') === 'Y';
+        if (!$isAnadepo) {
+            $incomingTransfersFiltered[] = $transfer;
+        }
+    } else {
+        $incomingTransfersFiltered[] = $transfer;
+    }
+}
+$incomingTransfers = $incomingTransfersFiltered;
+
+// Ana depo warehouse'larını filtrele (outgoing transfers)
+$outgoingTransfersFiltered = [];
+foreach ($outgoingTransfersRaw as $transfer) {
+    $toWhsCode = $transfer['ToWarehouse'] ?? '';
+    if (!empty($toWhsCode)) {
+        $isAnadepo = ($warehouseInfoCache[$toWhsCode]['FATH'] ?? '') === 'Y';
+        if (!$isAnadepo) {
+            $transfer['InventoryTransferRequestLines'] = [];
+            $outgoingTransfersFiltered[] = $transfer;
+        }
+    } else {
+        $transfer['InventoryTransferRequestLines'] = [];
+        $outgoingTransfersFiltered[] = $transfer;
+    }
+}
+$outgoingTransfers = $outgoingTransfersFiltered;
+
+// Warehouse isimlerini cache'den türet (ana depo olmayanlar için)
+$warehouseNamesMap = [];
+foreach ($warehouseInfoCache as $whsCode => $info) {
+    if (($info['FATH'] ?? '') !== 'Y') { // Ana depo değilse
+        $warehouseNamesMap[$whsCode] = $info['Name'] ?? '';
     }
 }
 ?>
@@ -930,7 +834,7 @@ input[type="checkbox"]:focus {
 <body>
         <?php include 'navbar.php'; ?>
     <main class="main-content">
-        <?php if (isset($debugInfo['stockDebug']) && !empty($debugInfo['stockDebug'])): ?>
+        <?php if ($debugMode && isset($debugInfo['stockDebug']) && !empty($debugInfo['stockDebug'])): ?>
         <div style="background: #fff3cd; border: 2px solid #ffc107; padding: 1rem; margin: 1rem; border-radius: 8px; font-size: 12px; max-height: 400px; overflow-y: auto;">
             <h3 style="color: #856404; margin-bottom: 0.5rem;">🔍 DEBUG: Stok Bilgisi</h3>
             <pre style="background: #fff; padding: 0.5rem; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word;"><?= htmlspecialchars(json_encode($debugInfo['stockDebug'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
@@ -1170,12 +1074,8 @@ input[type="checkbox"]:focus {
                                 $numAtCard = htmlspecialchars($transfer['U_ASB2B_NumAtCard'] ?? '-');
                                 $docEntry = htmlspecialchars($transfer['DocEntry'] ?? '-');
                                 $searchData = buildSearchData($docEntry, $toWhsDisplay, $docDate, $dueDate, $numAtCard, $statusText);
-                                $lines = $transfer['InventoryTransferRequestLines'] ?? [];
-                                
-                                // Lines boş olsa bile JSON olarak encode et
-                                $transferLinesJson = !empty($lines) ? htmlspecialchars(json_encode($lines), ENT_QUOTES, 'UTF-8') : '[]';
                             ?>
-                                <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>" data-docentry="<?= $docEntry ?>" data-lines="<?= $transferLinesJson ?>">
+                                <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>" data-docentry="<?= $docEntry ?>">
                                     <td style="text-align: center;">
                                         <?php if ($canApprove): ?>
                                             <input type="checkbox" class="transfer-checkbox" value="<?= $docEntry ?>" data-docentry="<?= $docEntry ?>">
@@ -1278,7 +1178,7 @@ input[type="checkbox"]:focus {
             sepetGuncelle();
         }
         
-        // Sepete ekle
+        // Sepete ekle (LAZY LOADING - Lines'ları AJAX ile çek)
         function sepetEkle(docEntry) {
             if (!docEntry || sepet[docEntry]) {
                 return;
@@ -1289,99 +1189,60 @@ input[type="checkbox"]:focus {
                 return;
             }
             
-            // Lines bilgisini al
-            const linesJson = row.getAttribute('data-lines') || '[]';
-            
-            let lines = [];
-            if (linesJson && linesJson !== '[]' && linesJson !== 'null' && linesJson.trim() !== '') {
-                try {
-                    const parsed = JSON.parse(linesJson);
-                    
-                    // Eğer bir error object ise, boş array kullan
-                    if (parsed && typeof parsed === 'object' && parsed.error) {
-                        console.error('SAP Error in lines:', parsed.error);
-                        lines = [];
-                    } else if (Array.isArray(parsed)) {
-                        lines = parsed;
-                    } else if (parsed && parsed.value && Array.isArray(parsed.value)) {
-                        // Eğer {value: [...]} formatında ise
-                        lines = parsed.value;
-                    } else if (parsed && parsed.StockTransferLines) {
-                        // Eğer StockTransferLines object olarak geliyorsa (navigation property)
-                        const stockTransferLines = parsed.StockTransferLines;
-                        if (Array.isArray(stockTransferLines)) {
-                            lines = stockTransferLines;
-                        } else if (typeof stockTransferLines === 'object' && stockTransferLines !== null) {
-                            // Object formatında geliyorsa (key-value pairs), array'e çevir
-                            lines = Object.values(stockTransferLines);
-                        } else {
-                            lines = [];
-                        }
-                    } else {
-                        lines = [];
-                    }
-                } catch (e) {
-                    console.error('Lines parse hatası:', e);
-                    lines = [];
-                }
-            }
-            
             // Alıcı şube bilgisini al (3. sütun: checkbox(1), TransferNo(2), AlıcıŞube(3))
             const toWarehouseCell = row.querySelector('td:nth-child(3)');
             const toWarehouse = toWarehouseCell ? toWarehouseCell.textContent.trim() : '';
             
-            // Sepete ekle - lines array kontrolü
-            if (!Array.isArray(lines)) {
-                lines = [];
-            }
-            
-            // Sepete ekle - normalize edilmiş format (BaseQty dahil)
-            const normalizedLines = lines.map(l => {
-                const baseQty = parseFloat(l._BaseQty || 1.0);
-                const requestedQty = parseFloat(l._RequestedQty || 0);
-                const quantity = parseFloat(l.Quantity || 0);
-                const stockQty = parseFloat(l._StockQty || 0);
-                
-                return {
-                    ItemCode: l.ItemCode || '',
-                    ItemName: l.ItemDescription || l.ItemName || '',
-                    UoMCode: l.UoMCode || 'AD',
-                    LineNum: l.LineNum || 0,
-                    BaseQty: baseQty,
-                    RequestedQty: requestedQty > 0 ? requestedQty : (baseQty > 0 ? (quantity / baseQty) : quantity),
-                    StockQty: stockQty,
-                    SentQty: parseFloat(l._SentQty || l._RequestedQty || (baseQty > 0 ? (quantity / baseQty) : quantity))
-                };
-            });
-            
+            // Loading göster
             sepet[docEntry] = {
                 toWarehouse: toWarehouse,
-                lines: normalizedLines
+                lines: [],
+                loading: true
             };
+            sepetGuncelle();
             
-            // DEBUG: Sepete eklenen veriyi console'a yazdır
-            console.log('🔍 DEBUG - Sepete Eklendi:', {
-                docEntry: docEntry,
-                toWarehouse: toWarehouse,
-                linesCount: normalizedLines.length,
-                lines: normalizedLines.map(l => ({
-                    ItemCode: l.ItemCode,
-                    ItemName: l.ItemName,
-                    StockQty: l.StockQty,
-                    RequestedQty: l.RequestedQty,
-                    BaseQty: l.BaseQty,
-                    UoMCode: l.UoMCode
-                })),
-                rawLines: lines.map(l => ({
-                    ItemCode: l.ItemCode,
-                    _StockQty: l._StockQty,
-                    _RequestedQty: l._RequestedQty,
-                    _BaseQty: l._BaseQty,
-                    Quantity: l.Quantity,
-                    UoMCode: l.UoMCode
-                }))
-            });
-            
+            // Lines'ları AJAX ile çek (LAZY LOADING)
+            fetch(`Transferler.php?ajax=get_lines&docEntry=${docEntry}`)
+                .then(response => response.json())
+                .then(data => {
+                    let lines = data.lines || [];
+                    
+                    // Normalize et
+                    const normalizedLines = lines.map(l => {
+                        const baseQty = parseFloat(l._BaseQty || 1.0);
+                        const requestedQty = parseFloat(l._RequestedQty || 0);
+                        const quantity = parseFloat(l.Quantity || 0);
+                        const stockQty = parseFloat(l._StockQty || 0);
+                        
+                        return {
+                            ItemCode: l.ItemCode || '',
+                            ItemName: l.ItemDescription || l.ItemName || '',
+                            UoMCode: l.UoMCode || 'AD',
+                            LineNum: l.LineNum || 0,
+                            BaseQty: baseQty,
+                            RequestedQty: requestedQty > 0 ? requestedQty : (baseQty > 0 ? (quantity / baseQty) : quantity),
+                            StockQty: stockQty,
+                            SentQty: parseFloat(l._SentQty || l._RequestedQty || (baseQty > 0 ? (quantity / baseQty) : quantity))
+                        };
+                    });
+                    
+                    sepet[docEntry] = {
+                        toWarehouse: toWarehouse,
+                        lines: normalizedLines,
+                        loading: false
+                    };
+                    sepetGuncelle();
+                })
+                .catch(error => {
+                    console.error('Lines yükleme hatası:', error);
+                    sepet[docEntry] = {
+                        toWarehouse: toWarehouse,
+                        lines: [],
+                        loading: false,
+                        error: true
+                    };
+                    sepetGuncelle();
+                });
         }
         
         // Sepetten çıkar
@@ -1437,7 +1298,11 @@ input[type="checkbox"]:focus {
                     html += `<div style="font-weight: 600; color: #1e40af; margin-bottom: 0.5rem; font-size: 1rem;">Transfer No: ${docEntry}</div>`;
                     html += `<div style="font-size: 0.875rem; color: #6b7280; margin-bottom: 0.75rem;">Alıcı: ${t.toWarehouse}</div>`;
                     
-                    if (!t.lines || t.lines.length === 0) {
+                    if (t.loading) {
+                        html += `<div style="padding: 0.75rem; background: #fef3c7; border-radius: 6px; font-size: 0.85rem; color: #92400e; text-align: center;">⏳ Kalem bilgileri yükleniyor...</div>`;
+                    } else if (t.error) {
+                        html += `<div style="padding: 0.75rem; background: #fee2e2; border-radius: 6px; font-size: 0.85rem; color: #991b1b;">❌ Kalem bilgileri yüklenirken hata oluştu.</div>`;
+                    } else if (!t.lines || t.lines.length === 0) {
                         html += `<div style="padding: 0.75rem; background: #e0edff; border-radius: 6px; font-size: 0.85rem; color: #1d4ed8;">ℹ Kalem bilgisi yüklenemedi veya bu transfer için satır yok.</div>`;
                     } else {
                         t.lines.forEach((line, idx) => {
