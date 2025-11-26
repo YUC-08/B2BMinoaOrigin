@@ -30,21 +30,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
         exit;
     }
     
-    // Lines'ları çek
+    // Lines'ları çek - SAP'de StockTransferLines kullanılıyor
     $lines = [];
-    $docQuery = "InventoryTransferRequests({$docEntry})?\$expand=InventoryTransferRequestLines";
+    
+    // Önce expand ile dene
+    $docQuery = "InventoryTransferRequests({$docEntry})?\$expand=StockTransferLines";
     $docData = $sap->get($docQuery);
     
     if (($docData['status'] ?? 0) == 200) {
         $requestData = $docData['response'] ?? null;
-        if ($requestData && isset($requestData['InventoryTransferRequestLines']) && is_array($requestData['InventoryTransferRequestLines'])) {
-            $lines = $requestData['InventoryTransferRequestLines'];
+        if ($requestData && isset($requestData['StockTransferLines']) && is_array($requestData['StockTransferLines'])) {
+            $lines = $requestData['StockTransferLines'];
         }
     }
     
-    // Fallback
+    // Fallback 1: Direct query ile StockTransferLines
     if (empty($lines)) {
-        $linesQuery = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
+        $linesQuery = "InventoryTransferRequests({$docEntry})/StockTransferLines";
         $linesData = $sap->get($linesQuery);
         
         if (($linesData['status'] ?? 0) == 200) {
@@ -52,8 +54,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
             if ($linesResponse) {
                 if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
                     $lines = $linesResponse['value'];
-                } elseif (is_array($linesResponse) && !isset($linesResponse['value'])) {
+                } elseif (is_array($linesResponse) && !isset($linesResponse['value']) && !isset($linesResponse['@odata.context'])) {
                     $lines = $linesResponse;
+                } elseif (isset($linesResponse['StockTransferLines'])) {
+                    $stockTransferLines = $linesResponse['StockTransferLines'];
+                    if (is_array($stockTransferLines)) {
+                        $lines = $stockTransferLines;
+                    }
                 }
             }
         }
@@ -127,7 +134,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
     }
     unset($line);
     
-    echo json_encode(['lines' => $lines, 'fromWarehouse' => $transferFromWarehouse]);
+    echo json_encode([
+        'lines' => $lines, 
+        'fromWarehouse' => $transferFromWarehouse
+    ]);
     exit;
 }
 
@@ -1203,13 +1213,30 @@ input[type="checkbox"]:focus {
             
             // Lines'ları AJAX ile çek (LAZY LOADING)
             fetch(`Transferler.php?ajax=get_lines&docEntry=${docEntry}`)
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
                     let lines = data.lines || [];
+                    
+                    if (!Array.isArray(lines)) {
+                        lines = [];
+                    }
                     
                     // Normalize et
                     const normalizedLines = lines.map(l => {
-                        const baseQty = parseFloat(l._BaseQty || 1.0);
+                        if (!l || typeof l !== 'object') {
+                            return null;
+                        }
+                        
+                        const baseQty = parseFloat(l._BaseQty || l.BaseQty || 1.0);
                         const requestedQty = parseFloat(l._RequestedQty || 0);
                         const quantity = parseFloat(l.Quantity || 0);
                         const stockQty = parseFloat(l._StockQty || 0);
@@ -1224,7 +1251,7 @@ input[type="checkbox"]:focus {
                             StockQty: stockQty,
                             SentQty: parseFloat(l._SentQty || l._RequestedQty || (baseQty > 0 ? (quantity / baseQty) : quantity))
                         };
-                    });
+                    }).filter(l => l !== null);
                     
                     sepet[docEntry] = {
                         toWarehouse: toWarehouse,

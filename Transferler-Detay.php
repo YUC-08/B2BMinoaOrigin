@@ -229,7 +229,7 @@ if ($status == '3' || $status == '4') {
             $deliveryList[$idx]['StockTransferLines'] = $dtLines;
         }
         
-        // İlk teslimat StockTransfer'ini $incomingStockTransferInfo olarak kullan
+        // İlk teslimat StockTransfer'ini $incomingStockTransferInfo olarak kullan 
         if (empty($incomingStockTransferInfo)) {
             $incomingStockTransferInfo = $st;
         }
@@ -611,7 +611,7 @@ body {
                         </div>
                         <div class="detail-item">
                             <label>Not:</label>
-                            <div class="detail-value"><?= !empty($comments) && $comments !== '-' ? htmlspecialchars($comments) : 'Stok nakil talebi' ?></div>
+                            <div class="detail-value"><?= !empty($comments) && $comments !== '-' ? htmlspecialchars($comments) : 'Transfer nakil talebi' ?></div>
                         </div>
                     </div>
                     

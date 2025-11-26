@@ -100,7 +100,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         'DocDate' => date('Y-m-d'),
         'FromWarehouse' => $firstItemFromWarehouse,
         'ToWarehouse' => $toWarehouse,
-        'Comments' => 'Stok nakil talebi',
+        'Comments' => 'Transfer nakil talebi',
         'U_ASB2B_BRAN' => $branch,
         'U_AS_OWNR' => $uAsOwnr,
         'U_ASB2B_STATUS' => '1', // Onay Bekliyor (string olarak '1')
@@ -232,16 +232,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
                 'data' => [],
                 'count' => 0,
                 'hasMore' => false,
-                'error' => 'View expose edilemedi!',
-                'debug' => [
-                    'viewCheckQuery' => $viewCheckQuery,
-                    'viewCheckStatus' => $viewCheckStatus,
-                    'viewCheckError' => $viewCheckError,
-                    'exposeAttempted' => $exposeAttempted,
-                    'exposeStatus' => $exposeStatus,
-                    'exposeError' => $exposeError,
-                    'exposeResponse' => $exposeResult['response'] ?? null
-                ]
+                'error' => 'View expose edilemedi!'
             ]);
             exit;
         }
@@ -255,79 +246,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
                 'data' => [],
                 'count' => 0,
                 'hasMore' => false,
-                'error' => 'View expose edildi ancak hala erişilemiyor!',
-                'debug' => [
-                    'exposeStatus' => $exposeStatus,
-                    'secondCheckStatus' => $viewCheck2['status'] ?? 'NO STATUS',
-                    'secondCheckError' => $viewCheck2['response']['error'] ?? null
-                ]
+                'error' => 'View expose edildi ancak hala erişilemiyor!'
             ]);
             exit;
         }
     }
     
-    // Önce filtresiz bir sorgu yaparak view'den gelen verileri kontrol et
-    $testQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$top=10&\$select=WhsCode,FromWhsCode,FromWhsName,ItemCode,ItemName";
-    $testData = $sap->get($testQuery);
-    $testItems = $testData['response']['value'] ?? [];
-    $sampleWhsCodes = [];
-    $sampleFromWhsCodes = [];
-    $sampleFromWhsNames = [];
-    foreach ($testItems as $testItem) {
-        if (!empty($testItem['WhsCode'])) $sampleWhsCodes[] = $testItem['WhsCode'];
-        if (!empty($testItem['FromWhsCode'])) $sampleFromWhsCodes[] = $testItem['FromWhsCode'];
-        if (!empty($testItem['FromWhsName'])) $sampleFromWhsNames[] = $testItem['FromWhsName'];
-    }
-    $sampleWhsCodes = array_unique($sampleWhsCodes);
-    $sampleFromWhsCodes = array_unique($sampleFromWhsCodes);
-    $sampleFromWhsNames = array_unique($sampleFromWhsNames);
-    
     // Normal sorguyu çalıştır
     $itemsQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$filter=" . urlencode($filter) . "&\$orderby=ItemCode&\$top={$top}&\$skip={$skip}";
     $itemsData = $sap->get($itemsQuery);
     $items = $itemsData['response']['value'] ?? [];
-    
-    // Eğer kayıt yoksa, WhsCode filtresini kaldırıp tekrar dene (test için)
-    $itemsWithoutWhsFilter = [];
-    if (count($items) === 0 && !empty($toWarehouse)) {
-        $filterWithoutWhs = str_replace(" and WhsCode eq '" . str_replace("'", "''", $toWarehouse) . "'", "", $filter);
-        $testQuery2 = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$filter=" . urlencode($filterWithoutWhs) . "&\$top=10";
-        $testData2 = $sap->get($testQuery2);
-        $itemsWithoutWhsFilter = $testData2['response']['value'] ?? [];
-    }
-    
-    $debugInfo = [
-        'viewCheckQuery' => $viewCheckQuery,
-        'viewCheckStatus' => $viewCheckStatus,
-        'viewCheckError' => $viewCheckError,
-        'isViewExposed' => $isViewExposed,
-        'exposeAttempted' => $exposeAttempted,
-        'exposeStatus' => $exposeResult['status'] ?? null,
-        'exposeError' => $exposeResult['response']['error'] ?? null,
-        'testQuery' => $testQuery,
-        'testItemsCount' => count($testItems),
-        'sampleWhsCodes' => array_values($sampleWhsCodes),
-        'sampleFromWhsCodes' => array_values($sampleFromWhsCodes),
-        'sampleFromWhsNames' => array_values($sampleFromWhsNames),
-        'itemsQuery' => $itemsQuery,
-        'itemsStatus' => $itemsData['status'] ?? 'NO STATUS',
-        'rawCount' => count($items),
-        'itemsWithoutWhsFilterCount' => count($itemsWithoutWhsFilter),
-        'toWarehouse' => $toWarehouse,
-        'fromWarehouse' => $fromWarehouse,
-        'filter' => $filter,
-        'filterWithoutWhs' => isset($filterWithoutWhs) ? $filterWithoutWhs : null,
-        'itemsError' => $itemsData['response']['error'] ?? null,
-        'otherWarehousesCount' => count($otherWarehouses),
-        'fromWhsNameConditionsCount' => count($fromWhsNameConditions),
-        'otherWarehouses' => array_map(function($whs) {
-            return [
-                'code' => $whs['WarehouseCode'] ?? '',
-                'name' => $whs['WarehouseName'] ?? '',
-                'branch' => $whs['U_ASB2B_BRAN'] ?? ''
-            ];
-        }, $otherWarehouses)
-    ];
 
     // Deduplication
     $uniqueItems = [];
@@ -344,12 +272,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
         }
     }
     
-    $debugInfo['uniqueCount'] = count($uniqueItems);
     echo json_encode([
         'data' => $uniqueItems,
         'count' => count($uniqueItems),
-        'hasMore' => count($uniqueItems) >= $top,
-        'debug' => $debugInfo
+        'hasMore' => count($uniqueItems) >= $top
     ]);
     exit;
 }
@@ -900,41 +826,9 @@ function loadItems() {
     fetch(url)
         .then(res => res.json())
         .then(data => {
-            // Detaylı debug bilgisi console'a yazdır
-            if (data.debug) {
-                console.log('=== TRANSFERLERSO DEBUG INFO ===');
-                console.log('View Check Status:', data.debug.viewCheckStatus);
-                console.log('View Check Error:', data.debug.viewCheckError);
-                console.log('View Exposed:', data.debug.isViewExposed);
-                console.log('Expose Attempted:', data.debug.exposeAttempted);
-                console.log('Expose Status:', data.debug.exposeStatus);
-                console.log('Expose Error:', data.debug.exposeError);
-                console.log('Test Items Count:', data.debug.testItemsCount);
-                console.log('Sample WhsCodes (view\'den gelen):', data.debug.sampleWhsCodes);
-                console.log('Sample FromWhsCodes (view\'den gelen):', data.debug.sampleFromWhsCodes);
-                console.log('Sample FromWhsNames (view\'den gelen):', data.debug.sampleFromWhsNames);
-                console.log('Items Query Status:', data.debug.itemsStatus);
-                console.log('Items Error:', data.debug.itemsError);
-                console.log('Items Without WhsCode Filter Count:', data.debug.itemsWithoutWhsFilterCount);
-                console.log('ToWarehouse (kullanılan):', data.debug.toWarehouse);
-                console.log('FromWarehouse:', data.debug.fromWarehouse);
-                console.log('Raw Count:', data.debug.rawCount);
-                console.log('Other Warehouses:', data.debug.otherWarehouses);
-                console.log('FromWhsName Conditions Count:', data.debug.fromWhsNameConditionsCount);
-                console.log('Filter:', data.debug.filter);
-                if (data.debug.filterWithoutWhs) {
-                    console.log('Filter (WhsCode olmadan):', data.debug.filterWithoutWhs);
-                }
-                console.log('Items Query:', data.debug.itemsQuery);
-                console.log('Full Debug Object:', data.debug);
-                console.log('================================');
-            }
             
             if (data.error) {
                 console.error('ERROR:', data.error);
-                if (data.debug) {
-                    console.error('Error Debug:', data.debug);
-                }
             }
             
             hasMore = data.hasMore || false;
@@ -948,38 +842,10 @@ function loadItems() {
                 let msg = '';
                 if (data.error) {
                     msg = `<tr><td colspan="10" style="text-align:center;color:#dc3545;padding:20px;">
-                        <strong>⚠️ HATA: ${data.error}</strong><br>
-                        <small style="color:#666;margin-top:10px;display:block;text-align:left;max-width:800px;margin:10px auto;">
-                            ${data.debug ? JSON.stringify(data.debug, null, 2).replace(/\n/g, '<br>') : ''}
-                        </small></td></tr>`;
-                } else if (data.debug) {
-                    const debug = data.debug;
-                    msg = `<tr><td colspan="10" style="text-align:center;color:#dc3545;padding:20px;">
-                        <strong>Kayıt bulunamadı</strong><br>
-                        <small style="color:#666;margin-top:10px;display:block;text-align:left;max-width:800px;margin:10px auto;">
-                            <strong>View Check:</strong> Status=${debug.viewCheckStatus || 'N/A'}, Error=${debug.viewCheckError ? JSON.stringify(debug.viewCheckError) : 'YOK'}<br>
-                            <strong>View Exposed:</strong> ${debug.isViewExposed ? 'EVET' : 'HAYIR'}<br>
-                            <strong>Expose Attempted:</strong> ${debug.exposeAttempted ? 'EVET' : 'HAYIR'}<br>
-                            ${debug.exposeStatus ? `<strong>Expose Status:</strong> ${debug.exposeStatus}<br>` : ''}
-                            ${debug.exposeError ? `<strong>Expose Error:</strong> ${JSON.stringify(debug.exposeError)}<br>` : ''}
-                            <strong>Items Query Status:</strong> ${debug.itemsStatus || 'N/A'}<br>
-                            <strong>Items Error:</strong> ${debug.itemsError ? JSON.stringify(debug.itemsError) : 'YOK'}<br>
-                            <strong>Test Items Count:</strong> ${debug.testItemsCount || 0}<br>
-                            <strong>Sample WhsCodes:</strong> ${debug.sampleWhsCodes ? debug.sampleWhsCodes.join(', ') : 'YOK'}<br>
-                            <strong>Sample FromWhsCodes:</strong> ${debug.sampleFromWhsCodes ? debug.sampleFromWhsCodes.join(', ') : 'YOK'}<br>
-                            <strong>Sample FromWhsNames:</strong> ${debug.sampleFromWhsNames ? debug.sampleFromWhsNames.join(', ') : 'YOK'}<br>
-                            <strong>Items Without WhsCode Filter Count:</strong> ${debug.itemsWithoutWhsFilterCount || 0}<br>
-                            <strong>ToWarehouse:</strong> ${debug.toWarehouse || 'BULUNAMADI'}<br>
-                            <strong>FromWarehouse:</strong> ${debug.fromWarehouse || 'BULUNAMADI'}<br>
-                            <strong>Raw Count:</strong> ${debug.rawCount || 0}<br>
-                            <strong>Other Warehouses:</strong> ${debug.otherWarehouses ? JSON.stringify(debug.otherWarehouses) : 'YOK'}<br>
-                            <strong>FromWhsName Conditions Count:</strong> ${debug.fromWhsNameConditionsCount || 0}<br>
-                            <strong>Filter:</strong> ${debug.filter || 'YOK'}<br>
-                            ${debug.filterWithoutWhs ? `<strong>Filter (WhsCode olmadan):</strong> ${debug.filterWithoutWhs}<br>` : ''}
-                            <strong>Query:</strong> ${debug.itemsQuery || 'YOK'}
-                        </small></td></tr>`;
-    } else {
-                    msg = '<tr><td colspan="10" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
+                        <strong>⚠️ HATA: ${data.error}</strong>
+                    </td></tr>`;
+                } else {
+                    msg = '<tr><td colspan="10" style="text-align:center;color:#888;padding:20px;">Kayıt bulunamadı.</td></tr>';
                 }
                 document.getElementById('itemsTableBody').innerHTML = msg;
             }
