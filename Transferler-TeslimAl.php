@@ -31,6 +31,14 @@ if (!$requestData) {
     die("Transfer talebi bulunamadı!");
 }
 
+// STATUS kontrolü: Eğer zaten tamamlandı (4) ise teslim al işlemi yapılamaz
+$currentStatus = $requestData['U_ASB2B_STATUS'] ?? '0';
+if ($currentStatus == '4') {
+    $_SESSION['error_message'] = "Bu transfer zaten tamamlanmış!";
+    header("Location: Transferler.php?view=incoming");
+    exit;
+}
+
 // Lines'ı çek - çoklu deneme stratejisi
 $lines = [];
 $linesQuery1 = "InventoryTransferRequests({$docEntry})?\$expand=InventoryTransferRequestLines";
@@ -91,7 +99,7 @@ if (empty($lines)) {
 }
 
 $fromWarehouse = $requestData['FromWarehouse'] ?? '';
-$toWarehouse = $requestData['ToWarehouse'] ?? '';
+$toWarehouse = $requestData['ToWarehouse'] ?? ''; // Bu sevkiyat deposu
 
 // Alıcı şubenin ana deposunu bul (U_ASB2B_MAIN='1')
 $targetWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '1'";
@@ -103,6 +111,14 @@ $targetWarehouse = !empty($targetWarehouses) ? $targetWarehouses[0]['WarehouseCo
 if (empty($targetWarehouse)) {
     die("Hedef depo (U_ASB2B_MAIN=1) bulunamadı!");
 }
+
+// Sevkiyat deposunu kontrol et (request'teki ToWarehouse sevkiyat deposu olmalı)
+// Eğer değilse, sevkiyat deposunu bul
+$sevkiyatDepoFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '2'";
+$sevkiyatDepoQuery = "Warehouses?\$filter=" . urlencode($sevkiyatDepoFilter);
+$sevkiyatDepoData = $sap->get($sevkiyatDepoQuery);
+$sevkiyatDepolar = $sevkiyatDepoData['response']['value'] ?? [];
+$sevkiyatDepo = !empty($sevkiyatDepolar) ? $sevkiyatDepolar[0]['WarehouseCode'] : $toWarehouse;
 
 // Fire & Zayi deposunu bul
 $fireZayiWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '3'";
@@ -122,6 +138,21 @@ if (empty($fireZayiWarehouse)) {
 // POST işlemi: StockTransfer oluştur
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'teslim_al') {
     header('Content-Type: application/json');
+
+    // STATUS kontrolü: Fresh data çek ve kontrol et
+    $freshRequestQuery = "InventoryTransferRequests({$docEntry})";
+    $freshRequestData = $sap->get($freshRequestQuery);
+    $freshRequestInfo = $freshRequestData['response'] ?? null;
+    
+    if ($freshRequestInfo) {
+        $currentStatus = $freshRequestInfo['U_ASB2B_STATUS'] ?? '0';
+        if ($currentStatus == '4') {
+            echo json_encode(['success' => false, 'message' => 'Bu transfer zaten tamamlanmış!']);
+            exit;
+        }
+        // Fresh data'yı kullan
+        $requestData = $freshRequestInfo;
+    }
 
     if (empty($lines)) {
         echo json_encode(['success' => false, 'message' => 'Transfer satırları bulunamadı!']);
@@ -191,8 +222,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $transferLines[] = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $normalTransferMiktar * $baseQty, // BaseQty ile çarp
-                'FromWarehouseCode' => $fromWarehouse, // Request'in FromWarehouse'u (gönderen şube)
-                'WarehouseCode' => $toWarehouse // Request'in ToWarehouse'u (alıcı şube)
+                'FromWarehouseCode' => $sevkiyatDepo, // Sevkiyat deposu (ikinci transfer: sevkiyat -> ana depo)
+                'WarehouseCode' => $targetWarehouse // Ana depo (U_ASB2B_MAIN=1)
             ];
         }
         
@@ -208,7 +239,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $zayiLine = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $zayiMiktar * $baseQty,
-                'FromWarehouseCode' => $fromWarehouse,
+                'FromWarehouseCode' => $sevkiyatDepo, // Sevkiyat deposundan Fire & Zayi deposuna
                 'WarehouseCode' => $targetFireZayiWarehouse,
                 'U_ASB2B_LOST' => '2', // Zayi
                 'U_ASB2B_Damaged' => 'E' // Eksik
@@ -236,7 +267,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $fireLine = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $eksikFazlaQty * $baseQty,
-                'FromWarehouseCode' => $fromWarehouse,
+                'FromWarehouseCode' => $sevkiyatDepo, // Sevkiyat deposundan Fire & Zayi deposuna
                 'WarehouseCode' => $targetFireZayiWarehouse,
                 'U_ASB2B_LOST' => '1' // Fire
             ];
@@ -263,7 +294,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $fireZayiLine = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $kusurluQty * $baseQty,
-                'FromWarehouseCode' => $fromWarehouse,
+                'FromWarehouseCode' => $sevkiyatDepo, // Sevkiyat deposundan Fire & Zayi deposuna
                 'WarehouseCode' => $targetFireZayiWarehouse,
                 'U_ASB2B_Damaged' => 'K' // Kusurlu
             ];
@@ -288,12 +319,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $docDate = $requestData['DocDate'] ?? date('Y-m-d');
     $headerCommentsText = !empty($headerComments) ? implode(" | ", $headerComments) : '';
 
-    // StockTransfer oluştur
-    // FromWarehouse: Request'in FromWarehouse'u (gönderen şube)
-    // ToWarehouse: Request'in ToWarehouse'u (alıcı şube)
+    // İkinci StockTransfer oluştur (sevkiyat depo -> ana depo)
+    // FromWarehouse: Sevkiyat deposu
+    // ToWarehouse: Ana depo (U_ASB2B_MAIN=1)
+    // NOT: İlişki U_ASB2B_QutMaster ve depo yönü ile kuruluyor:
+    // - İlk ST: U_ASB2B_QutMaster = requestDocEntry, ToWarehouse = sevkiyatDepo
+    // - İkinci ST: U_ASB2B_QutMaster = requestDocEntry, FromWarehouse = sevkiyatDepo, ToWarehouse = anaDepo
+    // Her iki StockTransfer de aynı InventoryTransferRequest'i DocumentReferences ile referans gösterir
+    $docNum = $requestData['DocNum'] ?? $docEntry;
+    
     $stockTransferPayload = [
-        'FromWarehouse' => $fromWarehouse, // Request'in FromWarehouse'u (gönderen şube)
-        'ToWarehouse' => $toWarehouse, // Request'in ToWarehouse'u (alıcı şube)
+        'FromWarehouse' => $sevkiyatDepo, // Sevkiyat deposu (ikinci transfer)
+        'ToWarehouse' => $targetWarehouse, // Ana depo (U_ASB2B_MAIN=1)
         'DocDate' => $docDate,
         'Comments' => $headerCommentsText,
         'U_ASB2B_BRAN' => $branch,
@@ -301,29 +338,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         'U_ASB2B_STATUS' => '4', // Tamamlandı
         'U_ASB2B_TYPE' => 'TRANSFER',
         'U_ASB2B_User' => $_SESSION["UserName"] ?? '',
-        'U_ASB2B_QutMaster' => (int)$docEntry, // InventoryTransferRequest DocEntry
+        'U_ASB2B_QutMaster' => (int)$docEntry, // InventoryTransferRequest DocEntry (ilişki bu alan ile kuruluyor)
+        'DocumentReferences' => [
+            [
+                'RefDocEntr' => (int)$docEntry,
+                'RefDocNum' => (int)$docNum,
+                'RefObjType' => 'rot_InventoryTransferRequest'
+            ]
+        ],
         'StockTransferLines' => $transferLines
     ];
 
     $result = $sap->post('StockTransfers', $stockTransferPayload);
 
     if ($result['status'] == 200 || $result['status'] == 201) {
-        // InventoryTransferRequest'i güncelle: Status = 4 (Tamamlandı)
+        // StockTransfer başarıyla oluşturuldu
+        $stockTransferResponse = $result['response'] ?? [];
+        
+        // InventoryTransferRequest'i Close et
+        $closeResult = $sap->post("InventoryTransferRequests({$docEntry})/Close", []);
+        
+        // STATUS'u her zaman 4'e güncelle (Close başarılı olsa bile)
         $updatePayload = [
             'U_ASB2B_STATUS' => '4'
         ];
-        
         $updateResult = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
         
-        if ($updateResult['status'] == 200 || $updateResult['status'] == 204) {
-            $_SESSION['success_message'] = "Transfer başarıyla teslim alındı!";
-            header('Location: Transferler.php?view=incoming');
-            exit;
-        } else {
-            $_SESSION['warning_message'] = "StockTransfer oluşturuldu ancak status güncellenemedi.";
-            header('Location: Transferler.php?view=incoming');
-            exit;
-        }
+        // Close başarısız olsa bile STATUS güncellendi, devam et
+        $_SESSION['success_message'] = "Transfer başarıyla teslim alındı!";
+        header('Location: Transferler.php?view=incoming');
+        exit;
     } else {
         $errorMsg = 'Teslim alma işlemi başarısız! HTTP ' . ($result['status'] ?? 'NO STATUS');
         if (isset($result['response']['error'])) {
@@ -707,16 +751,18 @@ input[name^="eksik_fazla"] {
                             <td><?= htmlspecialchars($itemCode) ?></td>
                             <td><?= htmlspecialchars($itemName) ?></td>
                             <td>
-                                <input type="number"
-                                       id="talep_<?= $index ?>"
-                                       value="<?= htmlspecialchars($requestedQty) ?>"
-                                       readonly
-                                       step="0.01"
-                                       class="qty-input">
-                                <small style="display: block; color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem;"><?= $uomCode ?></small>
+                                <div style="display: flex; align-items: center; justify-content: center; gap: 4px;">
+                                    <input type="number"
+                                           id="talep_<?= $index ?>"
+                                           value="<?= htmlspecialchars($requestedQty) ?>"
+                                           readonly
+                                           step="0.01"
+                                           class="qty-input">
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
+                                </div>
                             </td>
                             <td>
-                                <div class="quantity-controls">
+                                <div class="quantity-controls" style="display: flex; align-items: center; gap: 4px;">
                                     <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, -1)">-</button>
                                     <input type="number"
                                            name="eksik_fazla[<?= $index ?>]"
@@ -727,10 +773,11 @@ input[name^="eksik_fazla"] {
                                            onchange="calculatePhysical(<?= $index ?>)"
                                            oninput="updateEksikFazlaColor(this); calculatePhysical(<?= $index ?>)">
                                     <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, 1)">+</button>
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
                                 </div>
                             </td>
                             <td>
-                                <div class="quantity-controls">
+                                <div class="quantity-controls" style="display: flex; align-items: center; gap: 4px;">
                                     <button type="button" class="qty-btn" onclick="changeKusurlu(<?= $index ?>, -1)">-</button>
                                     <input type="number"
                                            name="kusurlu[<?= $index ?>]"
@@ -742,14 +789,18 @@ input[name^="eksik_fazla"] {
                                            onchange="calculatePhysical(<?= $index ?>)"
                                            oninput="calculatePhysical(<?= $index ?>)">
                                     <button type="button" class="qty-btn" onclick="changeKusurlu(<?= $index ?>, 1)">+</button>
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
                                 </div>
                             </td>
                             <td>
-                                <input type="text"
-                                       id="fiziksel_<?= $index ?>"
-                                       value="0"
-                                       readonly
-                                       class="qty-input">
+                                <div style="display: flex; align-items: center; justify-content: center; gap: 4px;">
+                                    <input type="text"
+                                           id="fiziksel_<?= $index ?>"
+                                           value="0"
+                                           readonly
+                                           class="qty-input">
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
+                                </div>
                             </td>
                             <td>
                                 <input type="text"

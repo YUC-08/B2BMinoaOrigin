@@ -533,8 +533,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
                         <th>Kalem Tanımı</th>
                         <th>Kalem Grubu</th>
                         <th>Şube Adı</th>
-                        <th>Stokta</th>
-                        <th>Stoktaki Miktar</th>
+                        <th class="stock-column" style="display: none;">Stokta</th>
+                        <th class="stock-column" style="display: none;">Stoktaki Miktar</th>
                         <th>Minimum Miktar</th>
                         <th>Sipariş Miktarı</th>
                         <th>Ölçü Birimi</th>
@@ -543,7 +543,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
                 </thead>
                 <tbody id="itemsTableBody">
                     <tr>
-                        <td colspan="10" style="text-align:center;color:#888;padding:20px;">Filtre seçerek veya arama yaparak kalemleri görüntüleyin.</td>
+                        <td colspan="8" style="text-align:center;color:#888;padding:20px;">Filtre seçerek veya arama yaparak kalemleri görüntüleyin.</td>
                     </tr>
                 </tbody>
             </table>
@@ -841,11 +841,11 @@ function loadItems() {
             if (itemsData.length === 0) {
                 let msg = '';
                 if (data.error) {
-                    msg = `<tr><td colspan="10" style="text-align:center;color:#dc3545;padding:20px;">
+                    msg = `<tr><td colspan="8" style="text-align:center;color:#dc3545;padding:20px;">
                         <strong>⚠️ HATA: ${data.error}</strong>
                     </td></tr>`;
-                } else {
-                    msg = '<tr><td colspan="10" style="text-align:center;color:#888;padding:20px;">Kayıt bulunamadı.</td></tr>';
+    } else {
+                    msg = '<tr><td colspan="8" style="text-align:center;color:#888;padding:20px;">Kayıt bulunamadı.</td></tr>';
                 }
                 document.getElementById('itemsTableBody').innerHTML = msg;
             }
@@ -853,7 +853,7 @@ function loadItems() {
         .catch(err => {
             console.error('Hata:', err);
             document.getElementById('itemsTableBody').innerHTML = 
-                '<tr><td colspan="10" style="text-align:center;color:#dc3545;">Veri yüklenirken hata oluştu: ' + err.message + '</td></tr>';
+                '<tr><td colspan="8" style="text-align:center;color:#dc3545;">Veri yüklenirken hata oluştu: ' + err.message + '</td></tr>';
         });
 }
 
@@ -861,7 +861,7 @@ function renderItems(items) {
     const tbody = document.getElementById('itemsTableBody');
     
     if (items.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#888;">Kayıt bulunamadı.</td></tr>';
         return;
     }
 
@@ -918,8 +918,8 @@ function renderItems(items) {
                 <td>${itemName}</td>
                 <td>${itemGroup}</td>
                 <td>${fromWhsName}</td>
-                <td><span class="stock-badge ${hasStock ? 'stock-yes' : 'stock-no'}">${hasStock ? 'Var' : 'Yok'}</span></td>
-                <td>${formatQuantity(stockQty)}</td>
+                <td class="stock-column" style="display: none;"><span class="stock-badge ${hasStock ? 'stock-yes' : 'stock-no'}">${hasStock ? 'Var' : 'Yok'}</span></td>
+                <td class="stock-column" style="display: none;">${formatQuantity(stockQty)}</td>
                 <td>${formatQuantity(minQty)}</td>
                 <td>
                     <div class="quantity-controls">

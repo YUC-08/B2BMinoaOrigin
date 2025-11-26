@@ -848,6 +848,7 @@ body {
                         $disabledAttr     = $isLineDisabled ? 'disabled' : '';
                         $disabledStyle    = $isLineDisabled ? 'background: #f3f4f6; color: #9ca3af; cursor: not-allowed;' : '';
                         $rowStyle         = $isLineDisabled ? 'background: #f9fafb; opacity: 0.7;' : '';
+                        $uomCode = $line['UoMCode'] ?? $line['UomCode'] ?? 'AD';
 
                         $irsaliyeQtyInputAttr = '';
                         if (!$isLineDisabled && $remainingQty > 0) {
@@ -881,6 +882,7 @@ body {
                                             title="Sipariş miktarını irsaliye miktarına kopyala">
                                         →
                                     </button>
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
                                 </div>
                                 <?php if (!empty($quantityTooltip)): ?>
                                     <small style="display: block; color: #6b7280; font-size: 0.75rem; margin-top: 0.25rem;">
@@ -889,7 +891,7 @@ body {
                                 <?php endif; ?>
                             </td>
                             <td>
-                                <div class="quantity-controls">
+                                <div class="quantity-controls" style="display: flex; align-items: center; gap: 4px;">
                                     <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'irsaliye', -1); checkRemainingQty(<?= $index ?>, <?= $remainingQty ?>);" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">-</button>
                                     <input type="number"
                                            name="irsaliye_qty[<?= $index ?>]"
@@ -903,6 +905,7 @@ body {
                                            <?= $irsaliyeQtyInputAttr ?>
                                            style="<?= $disabledStyle ?>">
                                     <button type="button" class="qty-btn" onclick="changeQuantity(<?= $index ?>, 'irsaliye', 1); checkRemainingQty(<?= $index ?>, <?= $remainingQty ?>);" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">+</button>
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
                                 </div>
                                 <?php if ($isLineDisabled): ?>
                                     <small style="color: #dc2626; display: block; margin-top: 0.25rem;">
@@ -918,7 +921,7 @@ body {
                                 <?php endif; ?>
                             </td>
                             <td>
-                                <div class="quantity-controls">
+                                <div class="quantity-controls" style="display: flex; align-items: center; gap: 4px;">
                                     <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, -1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">-</button>
                                     <input type="number"
                                            name="eksik_fazla[<?= $index ?>]"
@@ -930,10 +933,11 @@ body {
                                            <?= $disabledAttr ?>
                                            style="<?= $disabledStyle ?>">
                                     <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, 1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">+</button>
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
                                 </div>
                             </td>
                             <td>
-                                <div class="quantity-controls">
+                                <div class="quantity-controls" style="display: flex; align-items: center; gap: 4px;">
                                     <button type="button" class="qty-btn" onclick="changeKusurlu(<?= $index ?>, -1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">-</button>
                                     <input type="number"
                                            name="kusurlu[<?= $index ?>]"
@@ -946,6 +950,7 @@ body {
                                            <?= $disabledAttr ?>
                                            style="<?= $disabledStyle ?>">
                                     <button type="button" class="qty-btn" onclick="changeKusurlu(<?= $index ?>, 1)" <?= $disabledAttr ?> style="<?= $disabledStyle ?>">+</button>
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
                                 </div>
                             </td>
                             <td class="table-cell-center">
@@ -956,6 +961,7 @@ body {
                                            readonly
                                            class="qty-input"
                                            style="<?= $disabledStyle ?>">
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
                                 </div>
                             </td>
                             <td>

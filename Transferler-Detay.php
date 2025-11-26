@@ -16,7 +16,7 @@ if (empty($docEntry)) {
     exit;
 }
 
-// InventoryTransferRequests({docEntry}) çağır
+// InventoryTransferRequests({docEntry}) çağır - Her zaman fresh data çek
 $docQuery = "InventoryTransferRequests({$docEntry})";
 $docData = $sap->get($docQuery);
 $requestData = $docData['response'] ?? null;
@@ -25,6 +25,9 @@ if (!$requestData) {
     echo "Belge bulunamadı!";
     exit;
 }
+
+// STATUS'u fresh olarak al (cache'lenmiş değer kullanma)
+$status = $requestData['U_ASB2B_STATUS'] ?? '0';
 
 $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
 $branch = $_SESSION["WhsCode"] ?? $_SESSION["Branch2"]["Name"] ?? '';
@@ -76,6 +79,8 @@ function formatDate($date) {
 
 function isReceivableStatus($status) {
     $s = trim((string)$status);
+    // Sadece Hazırlanıyor (2) ve Sevk Edildi (3) durumlarında teslim al butonu görünür
+    // Tamamlandı (4) durumunda buton görünmez
     return in_array($s, ['2', '3'], true);
 }
 
@@ -86,7 +91,7 @@ function isApprovalStatus($status) {
 
 $docDate = formatDate($requestData['DocDate'] ?? '');
 $dueDate = formatDate($requestData['DueDate'] ?? '');
-$status = $requestData['U_ASB2B_STATUS'] ?? '0';
+// STATUS zaten yukarıda fresh olarak alındı
 $statusText = getStatusText($status);
 $statusClass = getStatusClass($status);
 $numAtCard = $requestData['U_ASB2B_NumAtCard'] ?? '-';
@@ -94,6 +99,29 @@ $comments = $requestData['Comments'] ?? '-';
 $fromWarehouse = $requestData['FromWarehouse'] ?? '';
 $toWarehouse = $requestData['ToWarehouse'] ?? '';
 $lines = $requestData['StockTransferLines'] ?? [];
+
+// Alıcı şubenin ana deposunu ve sevkiyat deposunu bul (detay sayfasında kullanılacak)
+$uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
+$branch = $_SESSION["Branch2"]["Name"] ?? $_SESSION["WhsCode"] ?? '';
+
+$anaDepo = null;
+$sevkiyatDepo = null;
+
+if (!empty($uAsOwnr) && !empty($branch)) {
+    // Ana depo (U_ASB2B_MAIN='1')
+    $anaDepoFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '1'";
+    $anaDepoQuery = "Warehouses?\$filter=" . urlencode($anaDepoFilter);
+    $anaDepoData = $sap->get($anaDepoQuery);
+    $anaDepolar = $anaDepoData['response']['value'] ?? [];
+    $anaDepo = !empty($anaDepolar) ? $anaDepolar[0]['WarehouseCode'] : null;
+    
+    // Sevkiyat depo (U_ASB2B_MAIN='2')
+    $sevkiyatDepoFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '2'";
+    $sevkiyatDepoQuery = "Warehouses?\$filter=" . urlencode($sevkiyatDepoFilter);
+    $sevkiyatDepoData = $sap->get($sevkiyatDepoQuery);
+    $sevkiyatDepolar = $sevkiyatDepoData['response']['value'] ?? [];
+    $sevkiyatDepo = !empty($sevkiyatDepolar) ? $sevkiyatDepolar[0]['WarehouseCode'] : $toWarehouse;
+}
 
 // Warehouse isimlerini çek
 $fromWarehouseName = '';
@@ -118,8 +146,36 @@ if (!empty($fromWarehouseName)) {
 }
 
 // Alıcı Şube formatı: 100-KT-1 / Şube Adı
+// STATUS = 4 (Tamamlandı) ise: ana depo (üst) ↓ sevkiyat depo (alt) şeklinde göster
 $aliciSubeDisplay = $toWarehouse;
-if (!empty($toWarehouseName)) {
+if ($status == '4' && $anaDepo) {
+    // Tamamlandı durumunda: ana depo (üst) ↓ sevkiyat depo (alt)
+    $anaDepoName = '';
+    if (!empty($anaDepo)) {
+        $anaDepoQuery = "Warehouses('{$anaDepo}')?\$select=WarehouseCode,WarehouseName";
+        $anaDepoData = $sap->get($anaDepoQuery);
+        $anaDepoName = $anaDepoData['response']['WarehouseName'] ?? '';
+    }
+    
+    $sevkiyatDepoDisplay = $toWarehouse;
+    if (!empty($toWarehouseName)) {
+        $sevkiyatDepoDisplay = $toWarehouse . ' / ' . $toWarehouseName;
+    }
+    
+    $anaDepoDisplay = $anaDepo;
+    if (!empty($anaDepoName)) {
+        $anaDepoDisplay = $anaDepo . ' / ' . $anaDepoName;
+    }
+    
+    // Sevkiyat depo üstte, ok ortada, ana depo altta
+    // Transfer akışı: sevkiyat depo (100-KT-1) → ana depo (100-KT-0)
+    // Diğer detail-item'lar gibi sol hizalı olacak, ok iki yazının ortasına denk gelecek
+    $aliciSubeDisplay = '<div style="display: flex; flex-direction: column; align-items: flex-start;">' .
+                        '<div style="margin-bottom: 4px;">' . htmlspecialchars($sevkiyatDepoDisplay) . '</div>' .
+                        '<div style="font-size: 1.2rem; margin: 5px 0; padding-left: 7.5rem;">↓</div>' .
+                        '<div style="margin-top: 4px;">' . htmlspecialchars($anaDepoDisplay) . '</div>' .
+                        '</div>';
+} elseif (!empty($toWarehouseName)) {
     $aliciSubeDisplay = $toWarehouse . ' / ' . $toWarehouseName;
 } elseif (empty($toWarehouse)) {
     $aliciSubeDisplay = '-';
@@ -132,17 +188,17 @@ $outgoingStockTransferInfo = null;
 $incomingStockTransferInfo = null;
 
 // Sevk miktarı: Hazırlanıyor (2), Sevk Edildi (3) ve Tamamlandı (4) durumlarında göster
-// Outgoing şube onayladığında (status == '2') sevk miktarı güncellenir
-if ($status == '2' || $status == '3' || $status == '4') {
-    // 1. Gönderen şubenin sevk ettiği belge (BaseType = 1250000001 => InventoryTransferRequest)
-    // Bu, outgoing şubenin onayladığı StockTransfer'dir
-    $stockTransferFilter = "BaseType eq 1250000001 and BaseEntry eq {$docEntry}";
-    $stockTransferQuery = "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
-    $stockTransferData = $sap->get($stockTransferQuery);
-    $stockTransfers = $stockTransferData['response']['value'] ?? [];
+// İlk StockTransfer: gönderici depo -> sevkiyat depo (U_ASB2B_QutMaster = docEntry)
+if (($status == '2' || $status == '3' || $status == '4') && $sevkiyatDepo) {
+    // İlk StockTransfer'i bul: U_ASB2B_QutMaster = docEntry ve ToWarehouse = sevkiyat depo
+    $docEntryInt = (int)$docEntry;
+    $sevkFilter = "U_ASB2B_QutMaster eq {$docEntryInt} and ToWarehouse eq '{$sevkiyatDepo}'";
+    $sevkQuery = "StockTransfers?\$filter=" . urlencode($sevkFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry asc&\$top=1";
+    $sevkData = $sap->get($sevkQuery);
+    $sevkTransfers = $sevkData['response']['value'] ?? [];
     
-    if (!empty($stockTransfers)) {
-        $outgoingStockTransferInfo = $stockTransfers[0];
+    if (!empty($sevkTransfers)) {
+        $outgoingStockTransferInfo = $sevkTransfers[0];
         
         // StockTransfer satırlarındaki Quantity'leri topla (sevk miktarı)
         $stLines = $outgoingStockTransferInfo['StockTransferLines'] ?? [];
@@ -154,7 +210,25 @@ if ($status == '2' || $status == '3' || $status == '4') {
             $isFireZayi = !empty($stLine['U_ASB2B_LOST']) || !empty($stLine['U_ASB2B_Damaged']);
             if ($isFireZayi) continue;
             
-            $sevkMiktarMap[$itemCode] = $qty;
+            // BaseQty'yi lines'dan bul (InventoryTransferRequest lines'dan)
+            $lineBaseQty = 1.0;
+            foreach ($lines as $reqLine) {
+                if (($reqLine['ItemCode'] ?? '') === $itemCode) {
+                    $lineBaseQty = (float)($reqLine['BaseQty'] ?? 1.0);
+                    if ($lineBaseQty == 0) $lineBaseQty = 1.0;
+                    break;
+                }
+            }
+            
+            // StockTransfer'deki Quantity BaseQty ile çarpılmış olarak geliyor
+            // Görüntülemek için BaseQty'ye böl
+            $normalizedQty = $lineBaseQty > 0 ? ($qty / $lineBaseQty) : $qty;
+            
+            // ItemCode'ya göre group by ve sum
+            if (!isset($sevkMiktarMap[$itemCode])) {
+                $sevkMiktarMap[$itemCode] = 0;
+            }
+            $sevkMiktarMap[$itemCode] += $normalizedQty;
         }
     }
 }
@@ -170,41 +244,7 @@ if ($status == '3' || $status == '4') {
     $deliveryQuery = "StockTransfers?\$filter=" . urlencode($deliveryFilter);
     $deliveryData = $sap->get($deliveryQuery);
     $deliveryList = $deliveryData['response']['value'] ?? [];
-    
-    // Eğer U_ASB2B_QutMaster ile bulunamazsa, BaseType ve BaseEntry ile çekilen StockTransfer'lerden
-    // en yeni olanı (onaylama StockTransfer'inden sonra oluşturulan) teslim alma StockTransfer'i olarak kabul et
-    if (empty($deliveryList)) {
-        // BaseType = 1250000001 ve BaseEntry = docEntry ile filtrele
-        // FromWarehouse = fromWarehouse ve ToWarehouse = toWarehouse olanları al
-        $deliveryFilter2 = "BaseType eq 1250000001 and BaseEntry eq {$docEntry} and FromWarehouse eq '{$fromWarehouse}' and ToWarehouse eq '{$toWarehouse}'";
-        
-        if (!empty($outgoingStockTransferInfo)) {
-            $outgoingDocEntry = $outgoingStockTransferInfo['DocEntry'] ?? null;
-            // DocEntry > outgoingDocEntry olanları al (onaylama StockTransfer'inden sonra oluşturulan)
-            if ($outgoingDocEntry) {
-                $deliveryFilter2 .= " and DocEntry gt {$outgoingDocEntry}";
-            }
-        }
-        
-        $deliveryQuery2 = "StockTransfers?\$filter=" . urlencode($deliveryFilter2) . "&\$orderby=DocEntry desc";
-        $deliveryData2 = $sap->get($deliveryQuery2);
-        $deliveryList2 = $deliveryData2['response']['value'] ?? [];
-        
-        // U_ASB2B_QutMaster kontrolü yap, eğer doğruysa ekle
-        // Eğer hiçbiri U_ASB2B_QutMaster ile eşleşmiyorsa, en yeni olanı al (teslim alma StockTransfer'i olabilir)
-        foreach ($deliveryList2 as $st2) {
-            $qutMaster = (int)($st2['U_ASB2B_QutMaster'] ?? 0);
-            if ($qutMaster == $docEntryInt) {
-                $deliveryList[] = $st2;
-            }
-        }
-        
-        // Eğer hala boşsa ve en az bir StockTransfer varsa, en yeni olanı al
-        if (empty($deliveryList) && !empty($deliveryList2)) {
-            $deliveryList = [$deliveryList2[0]]; // En yeni olanı al
-        }
-    }
-    
+
     // Her StockTransfer için satırları ayrı çek (expand çalışmıyor)
     foreach ($deliveryList as $idx => $st) {
         $stDocEntry = $st['DocEntry'] ?? null;
@@ -229,8 +269,17 @@ if ($status == '3' || $status == '4') {
             $deliveryList[$idx]['StockTransferLines'] = $dtLines;
         }
         
-        // İlk teslimat StockTransfer'ini $incomingStockTransferInfo olarak kullan 
+        // İkinci StockTransfer'i bul (sevkiyat depo -> ana depo)
+        // İlişki: U_ASB2B_QutMaster = docEntry, FromWarehouse = sevkiyatDepo, ToWarehouse = anaDepo
+        $isSecondTransfer = ($st['FromWarehouse'] ?? '') === $sevkiyatDepo && ($st['ToWarehouse'] ?? '') === $anaDepo;
+        
+        // İkinci StockTransfer'i $incomingStockTransferInfo olarak kullan
         if (empty($incomingStockTransferInfo)) {
+            if ($isSecondTransfer) {
+                $incomingStockTransferInfo = $st;
+            }
+        } else if ($isSecondTransfer) {
+            // Eğer daha önce bir StockTransfer bulunduysa ama bu ikinci StockTransfer ise, bunu kullan
             $incomingStockTransferInfo = $st;
         }
         
@@ -239,21 +288,39 @@ if ($status == '3' || $status == '4') {
             $qty = (float)($dtLine['Quantity'] ?? 0);
             if ($itemCode === '') continue;
             
-            // Transferler-TeslimAl.php'de:
-            // - Normal transfer satırları: WarehouseCode = toWarehouse
+            // Transferler-TeslimAl.php'de ikinci StockTransfer:
+            // - FromWarehouse = sevkiyat depo
+            // - ToWarehouse = ana depo
+            // - Normal transfer satırları: WarehouseCode = ana depo
             // - Fire & Zayi satırları: WarehouseCode = Fire & Zayi deposu (farklı bir depo)
             
-            // WarehouseCode kontrolü: Sadece toWarehouse'a giden satırları topla
-            // Fire & Zayi satırları farklı bir depoya kaydedildiği için otomatik olarak filtrelenir
+            // WarehouseCode kontrolü: Sadece ana depoya giden satırları topla
+            // Eğer ana depo bulunamazsa, toWarehouse ile kontrol et (geriye dönük uyumluluk)
             $lineToWhs = $dtLine['WarehouseCode'] ?? '';
-            if ($lineToWhs === $toWarehouse) {
+            $targetWhs = $anaDepo ? $anaDepo : $toWarehouse;
+            
+            if ($lineToWhs === $targetWhs) {
+                // BaseQty'yi lines'dan bul (InventoryTransferRequest lines'dan)
+                $lineBaseQty = 1.0;
+                foreach ($lines as $reqLine) {
+                    if (($reqLine['ItemCode'] ?? '') === $itemCode) {
+                        $lineBaseQty = (float)($reqLine['BaseQty'] ?? 1.0);
+                        if ($lineBaseQty == 0) $lineBaseQty = 1.0;
+                        break;
+                    }
+                }
+                
+                // StockTransfer'deki Quantity BaseQty ile çarpılmış olarak geliyor
+                // Görüntülemek için BaseQty'ye böl
+                $normalizedQty = $lineBaseQty > 0 ? ($qty / $lineBaseQty) : $qty;
+                
                 // Normal transfer satırı, topla
                 if (!isset($teslimatMiktarMap[$itemCode])) {
                     $teslimatMiktarMap[$itemCode] = 0;
                 }
-                $teslimatMiktarMap[$itemCode] += $qty;
+                $teslimatMiktarMap[$itemCode] += $normalizedQty;
             }
-            // Fire & Zayi satırları (WarehouseCode != toWarehouse) otomatik olarak atlanır
+            // Fire & Zayi satırları (WarehouseCode != targetWhs) otomatik olarak atlanır
         }
     }
 }
@@ -607,7 +674,13 @@ body {
                         </div>
                         <div class="detail-item">
                             <label>Teslimat Belge No:</label>
-                            <div class="detail-value"><?= htmlspecialchars($numAtCard) ?></div>
+                            <div class="detail-value">
+                                <?php if ($incomingStockTransferInfo): ?>
+                                    <?= htmlspecialchars($incomingStockTransferInfo['DocNum'] ?? $incomingStockTransferInfo['DocEntry'] ?? '-') ?>
+                                <?php else: ?>
+                                    <?= htmlspecialchars($numAtCard) ?>
+                                <?php endif; ?>
+                            </div>
                         </div>
                         <div class="detail-item">
                             <label>Not:</label>
@@ -623,7 +696,7 @@ body {
                         </div>
                         <div class="detail-item">
                             <label>Hedef Depo:</label>
-                            <div class="detail-value"><?= htmlspecialchars($aliciSubeDisplay) ?></div>
+                            <div class="detail-value"><?= $status == '4' && $anaDepo ? $aliciSubeDisplay : htmlspecialchars($aliciSubeDisplay) ?></div>
                         </div>
                         <div class="detail-item">
                             <label>Durum:</label>
@@ -650,6 +723,32 @@ body {
                                 <label>Teslimat DocEntry:</label>
                                 <div class="detail-value"><?= htmlspecialchars($incomingStockTransferInfo['DocEntry'] ?? '-') ?></div>
                             </div>
+                            <?php 
+                            // İlk StockTransfer bilgisini depo yönüne göre bul
+                            // İlişki: Aynı U_ASB2B_QutMaster, ToWarehouse = sevkiyatDepo
+                            if ($sevkiyatDepo && $incomingStockTransferInfo): 
+                                $qutMaster = (int)($incomingStockTransferInfo['U_ASB2B_QutMaster'] ?? 0);
+                                if ($qutMaster > 0) {
+                                    $firstSTFilter = "U_ASB2B_QutMaster eq {$qutMaster} and ToWarehouse eq '{$sevkiyatDepo}'";
+                                    $firstSTQuery = "StockTransfers?\$filter=" . urlencode($firstSTFilter) . "&\$orderby=DocEntry asc&\$top=1&\$select=DocEntry,DocNum,DocDate";
+                                    $firstSTData = $sap->get($firstSTQuery);
+                                    $firstSTList = $firstSTData['response']['value'] ?? [];
+                                    if (!empty($firstSTList)):
+                                        $firstSTInfo = $firstSTList[0];
+                            ?>
+                            <div class="detail-item">
+                                <label>İlk StockTransfer (Sevkiyat):</label>
+                                <div class="detail-value">
+                                    DocEntry: <?= htmlspecialchars($firstSTInfo['DocEntry'] ?? '-') ?>, 
+                                    DocNum: <?= htmlspecialchars($firstSTInfo['DocNum'] ?? '-') ?>, 
+                                    Tarih: <?= formatDate($firstSTInfo['DocDate'] ?? '') ?>
+                                </div>
+                            </div>
+                            <?php 
+                                    endif;
+                                }
+                            endif; 
+                            ?>
                         <?php endif; ?>
                     </div>
                 </div>

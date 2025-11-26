@@ -223,14 +223,15 @@ if ($status == '3' || $status == '4') {
             
             // Fire & Zayi satırlarını filtrele
             // Teslim alma sırasında:
-            // - Normal transfer satırları: U_ASB2B_LOST ve U_ASB2B_Damaged alanları boş
-            // - Fire & Zayi satırları: U_ASB2B_LOST veya U_ASB2B_Damaged dolu
+            // - Normal transfer satırları: U_ASB2B_LOST ve U_ASB2B_Damaged alanları boş, null veya '-'
+            // - Fire & Zayi satırları: U_ASB2B_LOST veya U_ASB2B_Damaged dolu (ve '-' değil)
             //   * Zayi (eksik): U_ASB2B_LOST = '2', U_ASB2B_Damaged = 'E'
             //   * Fire (fazla): U_ASB2B_LOST = '1'
             //   * Kusurlu: U_ASB2B_Damaged = 'K'
-            $uAsb2bLost = $dtLine['U_ASB2B_LOST'] ?? '';
-            $uAsb2bDamaged = $dtLine['U_ASB2B_Damaged'] ?? '';
-            $isFireZayi = !empty($uAsb2bLost) || !empty($uAsb2bDamaged);
+            $uAsb2bLost = trim($dtLine['U_ASB2B_LOST'] ?? '');
+            $uAsb2bDamaged = trim($dtLine['U_ASB2B_Damaged'] ?? '');
+            // Fire & Zayi: U_ASB2B_LOST veya U_ASB2B_Damaged dolu VE '-' değil
+            $isFireZayi = (!empty($uAsb2bLost) && $uAsb2bLost !== '-') || (!empty($uAsb2bDamaged) && $uAsb2bDamaged !== '-');
             
             if ($isFireZayi) {
                 // Fire & Zayi satırını atla, teslimat miktarına dahil etme

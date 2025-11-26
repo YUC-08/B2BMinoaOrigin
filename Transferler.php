@@ -456,6 +456,65 @@ body {
     background: whitesmoke;
     padding: 0;
     min-height: 100vh;
+    position: relative;
+    overflow-x: hidden;
+}
+
+/* Sayfa geçiş animasyonları */
+.main-content.page-slide-in {
+    animation: slideInFromRight 0.4s ease-out;
+}
+
+.main-content.page-slide-out-left {
+    animation: slideOutToLeft 0.3s ease-in;
+}
+
+.main-content.page-slide-out-right {
+    animation: slideOutToRight 0.3s ease-in;
+}
+
+@keyframes slideInFromRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideInFromLeft {
+    from {
+        transform: translateX(-100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOutToLeft {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(-100%);
+        opacity: 0;
+    }
+}
+
+@keyframes slideOutToRight {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(100%);
+        opacity: 0;
+    }
 }
 
 .sidebar.expanded ~ .main-content {
@@ -851,15 +910,15 @@ input[type="checkbox"]:focus {
         </div>
         <?php endif; ?>
         <header class="page-header">
-                <h2>Transferler</h2>
+                <h2><?= $viewType === 'incoming' ? 'Gelen Transferler' : 'Giden Transferler' ?></h2>
             <div style="display: flex; gap: 12px; align-items: center;">
                 <?php if ($viewType === 'incoming'): ?>
-                    <button class="btn btn-secondary" onclick="window.location.href='Transferler.php?view=outgoing<?= !empty($filterStatus) ? '&status=' . urlencode($filterStatus) : '' ?><?= !empty($filterStartDate) ? '&start_date=' . urlencode($filterStartDate) : '' ?><?= !empty($filterEndDate) ? '&end_date=' . urlencode($filterEndDate) : '' ?>'">
+                    <button class="btn btn-secondary" onclick="navigateToView('outgoing')">
                         📤 Giden Transferler
                     </button>
                     <button class="btn btn-primary" onclick="window.location.href='TransferlerSO.php'">+ Yeni Transfer Oluştur</button>
                 <?php else: ?>
-                    <button class="btn btn-secondary" onclick="window.location.href='Transferler.php?view=incoming<?= !empty($filterStatus) ? '&status=' . urlencode($filterStatus) : '' ?><?= !empty($filterStartDate) ? '&start_date=' . urlencode($filterStartDate) : '' ?><?= !empty($filterEndDate) ? '&end_date=' . urlencode($filterEndDate) : '' ?>'">
+                    <button class="btn btn-secondary" onclick="navigateToView('incoming')">
                         📥 Gelen Transferler
                     </button>
                     <button class="btn btn-primary" onclick="sepetToggle()" id="sepetBtn" style="display: inline-flex;">
@@ -1453,12 +1512,16 @@ input[type="checkbox"]:focus {
                         successCount++;
                     } else {
                         failedCount++;
-                        console.error('Onaylama hatası:', docEntry, data?.message || 'Bilinmeyen hata');
+                        const errorMsg = data?.message || 'Bilinmeyen hata';
+                        console.error('Onaylama hatası - DocEntry:', docEntry, 'Hata:', errorMsg);
+                        if (data?.debug) {
+                            console.error('Debug bilgisi:', data.debug);
+                        }
                     }
                 })
                 .catch(error => {
                     failedCount++;
-                    console.error('Onaylama hatası:', docEntry, error);
+                    console.error('Onaylama hatası - DocEntry:', docEntry, 'Exception:', error);
                 });
                 
                 promises.push(promise);
@@ -1469,7 +1532,8 @@ input[type="checkbox"]:focus {
                     alert(`Tüm transferler onaylandı! (${successCount} adet)`);
                     window.location.reload();
                 } else {
-                    alert(`${successCount} transfer onaylandı, ${failedCount} transfer onaylanamadı.`);
+                    const message = `${successCount} transfer onaylandı, ${failedCount} transfer onaylanamadı.\n\nLütfen konsolu kontrol edin (F12) veya hata loglarını inceleyin.`;
+                    alert(message);
                     if (successCount > 0) {
                         window.location.reload();
                     }
@@ -1477,8 +1541,53 @@ input[type="checkbox"]:focus {
             });
         }
         
-        // Sayfa yüklendiğinde
+        // Sayfa geçiş animasyonu
+        function navigateToView(targetView) {
+            const mainContent = document.querySelector('.main-content');
+            const currentView = '<?= $viewType ?>';
+            
+            // Çıkış animasyonu
+            if (targetView === 'outgoing') {
+                // Giden transferlere geçiş: sağa kayarak çık, sağdan gelen sayfa
+                mainContent.classList.add('page-slide-out-right');
+            } else {
+                // Gelen transferlere geçiş: sola kayarak çık, soldan gelen sayfa
+                mainContent.classList.add('page-slide-out-left');
+            }
+            
+            // Animasyon bitince sayfayı yükle
+            setTimeout(() => {
+                const params = new URLSearchParams();
+                params.append('view', targetView);
+                <?php if (!empty($filterStatus)): ?>
+                params.append('status', '<?= $filterStatus ?>');
+                <?php endif; ?>
+                <?php if (!empty($filterStartDate)): ?>
+                params.append('start_date', '<?= $filterStartDate ?>');
+                <?php endif; ?>
+                <?php if (!empty($filterEndDate)): ?>
+                params.append('end_date', '<?= $filterEndDate ?>');
+                <?php endif; ?>
+                window.location.href = 'Transferler.php?' + params.toString();
+            }, 300);
+        }
+        
+        // Sayfa yüklendiğinde giriş animasyonu
         document.addEventListener('DOMContentLoaded', function() {
+            const mainContent = document.querySelector('.main-content');
+            const currentView = '<?= $viewType ?>';
+            
+            // Sayfa yüklendiğinde animasyon ekle (kısa bir gecikme ile daha smooth)
+            setTimeout(() => {
+                if (currentView === 'outgoing') {
+                    // Giden transferler: sağdan kayarak gel
+                    mainContent.style.animation = 'slideInFromRight 0.6s ease-out';
+                } else {
+                    // Gelen transferler: soldan kayarak gel
+                    mainContent.style.animation = 'slideInFromLeft 0.6s ease-out'; 
+                }
+            }, 50);
+            
             // İlk güncelleme
             sepetGuncelle();
             
