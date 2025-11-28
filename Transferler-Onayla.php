@@ -10,7 +10,11 @@ $sap = new SAPConnect();
 // GET veya POST'tan parametreleri al
 $docEntry = $_GET['docEntry'] ?? $_POST['docEntry'] ?? '';
 $action = $_GET['action'] ?? $_POST['action'] ?? ''; // 'approve' veya 'reject'
-$lines = $_POST['lines'] ?? null; // POST ile gönderilen lines (şimdilik kullanılmıyor)
+$linesJson = $_POST['lines'] ?? null; // POST ile gönderilen lines (sepetteki "Gönderilecek" miktarları)
+$cartLines = null;
+if (!empty($linesJson)) {
+    $cartLines = json_decode($linesJson, true);
+}
 
 if (empty($docEntry) || empty($action)) {
     // JSON response döndür (AJAX istekleri için)
@@ -177,22 +181,102 @@ if ($action === 'approve' && $newStatus === '2') {
     
     $stockTransferLines = [];
     
-    foreach ($requestLines as $line) {
-        $itemCode = $line['ItemCode'] ?? '';
-        $quantity = floatval($line['Quantity'] ?? 0);
-        
-        if (empty($itemCode) || $quantity <= 0) {
-            continue;
+    // Item cost bilgisini almak için helper fonksiyon
+    $getItemCost = function($itemCode, $warehouseCode, $line = null) use ($sap) {
+        $itemCost = 0;
+        try {
+            // Önce warehouse'a özel maliyet bilgisini al
+            $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$warehouseCode}'";
+            $itemWhResult = $sap->get($itemWhQuery);
+            $itemWhData = $itemWhResult['response'] ?? null;
+            
+            if ($itemWhData && isset($itemWhData['value']) && !empty($itemWhData['value'])) {
+                $whInfo = $itemWhData['value'][0];
+                $itemCost = floatval($whInfo['AveragePrice'] ?? $whInfo['LastPrice'] ?? 0);
+            }
+            
+            // Eğer warehouse'a özel maliyet yoksa, item'ın genel maliyetini al
+            if ($itemCost == 0) {
+                $itemQuery = "Items('{$itemCode}')?\$select=ItemCode,StandardPrice,LastPurchasePrice,AvgPrice";
+                $itemResult = $sap->get($itemQuery);
+                $itemData = $itemResult['response'] ?? null;
+                
+                if ($itemData) {
+                    $itemCost = floatval($itemData['AvgPrice'] ?? $itemData['StandardPrice'] ?? $itemData['LastPurchasePrice'] ?? 0);
+                }
+            }
+            
+            // Eğer hala maliyet yoksa, line'dan al (varsa)
+            if ($itemCost == 0 && $line) {
+                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
+            }
+        } catch (Exception $e) {
+            // Hata durumunda line'dan al (varsa)
+            if ($line) {
+                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
+            }
         }
-        
-        // StockTransfer için: Line'lardaki FromWarehouseCode header'daki FromWarehouse ile aynı olmalı
-        // TransferlerSO.php'deki gibi, line'larda FromWarehouseCode kullanılıyor ama header'daki FromWarehouse ile uyumlu olmalı
-        $stockTransferLines[] = [
-            'ItemCode' => $itemCode,
-            'Quantity' => $quantity,
-            'FromWarehouseCode' => $fromWarehouse, // Header'daki FromWarehouse (gönderen şube deposu)
-            'WarehouseCode' => $sevkiyatDepo // Alıcı şubenin sevkiyat deposu
-        ];
+        return $itemCost;
+    };
+    
+    // Eğer sepetteki lines gönderilmişse, onları kullan (kullanıcının seçtiği "Gönderilecek" miktarları)
+    // ÖNEMLİ: cartLines içindeki Quantity değeri zaten sentQty * baseQty olarak hesaplanmış (Transferler.php'den geliyor)
+    if (!empty($cartLines) && is_array($cartLines)) {
+        // Sepetteki lines'ı kullan (Quantity zaten sentQty * baseQty olarak hesaplanmış)
+        foreach ($cartLines as $cartLine) {
+            $itemCode = $cartLine['ItemCode'] ?? '';
+            // Quantity değeri zaten sentQty * baseQty olarak hesaplanmış (Transferler.php'den geliyor)
+            $quantity = floatval($cartLine['Quantity'] ?? 0);
+            
+            if (empty($itemCode) || $quantity <= 0) {
+                continue;
+            }
+            
+            // Item cost bilgisini al
+            $itemCost = $getItemCost($itemCode, $fromWarehouse, $cartLine);
+            
+            $lineData = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $quantity, // Sepetteki "Gönderilecek" miktar × baseQty (kullanıcının seçtiği miktar)
+                'FromWarehouseCode' => $fromWarehouse,
+                'WarehouseCode' => $sevkiyatDepo
+            ];
+            
+            // Cost bilgisi varsa ekle
+            if ($itemCost > 0) {
+                $lineData['Price'] = $itemCost;
+            }
+            
+            $stockTransferLines[] = $lineData;
+        }
+    } else {
+        // Sepetteki lines yoksa, eski mantıkla devam et (talep edilen miktarları kullan)
+        // NOT: Bu durum normalde olmamalı çünkü sepetteki lines her zaman gönderilmeli
+        foreach ($requestLines as $line) {
+            $itemCode = $line['ItemCode'] ?? '';
+            $quantity = floatval($line['Quantity'] ?? 0);
+            
+            if (empty($itemCode) || $quantity <= 0) {
+                continue;
+            }
+            
+            // Item cost bilgisini al
+            $itemCost = $getItemCost($itemCode, $fromWarehouse, $line);
+            
+            $lineData = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $quantity, // Talep edilen miktar (fallback - normalde kullanılmamalı)
+                'FromWarehouseCode' => $fromWarehouse,
+                'WarehouseCode' => $sevkiyatDepo
+            ];
+            
+            // Cost bilgisi varsa ekle
+            if ($itemCost > 0) {
+                $lineData['Price'] = $itemCost;
+            }
+            
+            $stockTransferLines[] = $lineData;
+        }
     }
     
     // İlk StockTransfer oluştur (gönderici depo -> sevkiyat depo)
@@ -251,14 +335,18 @@ if ($action === 'approve' && $newStatus === '2') {
             if (isset($error['code'])) {
                 $errorMsg .= ' (Kod: ' . $error['code'] . ')';
             }
-            if (isset($error['details']) && is_array($error['details']) && !empty($error['details'])) {
+            if (isset($error['details'])) {
                 $detailMsgs = [];
-                foreach ($error['details'] as $detail) {
-                    if (is_array($detail) && isset($detail['message'])) {
-                        $detailMsgs[] = $detail['message'];
-                    } elseif (is_string($detail)) {
-                        $detailMsgs[] = $detail;
+                if (is_array($error['details']) && !empty($error['details'])) {
+                    foreach ($error['details'] as $detail) {
+                        if (is_array($detail) && isset($detail['message'])) {
+                            $detailMsgs[] = $detail['message'];
+                        } elseif (is_string($detail)) {
+                            $detailMsgs[] = $detail;
+                        }
                     }
+                } elseif (is_string($error['details'])) {
+                    $detailMsgs[] = $error['details'];
                 }
                 if (!empty($detailMsgs)) {
                     $errorMsg .= ' - Detaylar: ' . implode(', ', $detailMsgs);

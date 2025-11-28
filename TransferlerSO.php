@@ -30,7 +30,8 @@ function formatQuantity($qty) {
 
 $branch = (string)$branch;
 
-// ToWarehouse (talep eden depo)
+// ToWarehouse (talep eden depo - sevkiyat deposu)
+// Transferler.php'deki gibi $branch'ı doğrudan kullan (U_ASB2B_BRAN ile eşleşmeli)
 $toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '{$branch}'";
 $toWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&\$filter=" . urlencode($toWarehouseFilter);
 $toWarehouseData = $sap->get($toWarehouseQuery);
@@ -38,6 +39,7 @@ $toWarehouses = $toWarehouseData['response']['value'] ?? [];
 $toWarehouse = !empty($toWarehouses) ? $toWarehouses[0]['WarehouseCode'] : null;
 
 // FromWarehouse (gönderen şube deposu)
+// Transferler.php'deki gibi $branch'ı doğrudan kullan (U_ASB2B_BRAN ile eşleşmeli)
 $fromWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '{$branch}'";
 $fromWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&\$filter=" . urlencode($fromWarehouseFilter);
 $fromWarehouseData = $sap->get($fromWarehouseQuery);
@@ -68,10 +70,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
     
-    if (empty($fromWarehouse) || empty($toWarehouse)) {
-        echo json_encode(['success' => false, 'message' => 'Depo bilgileri bulunamadı! FromWarehouse: ' . ($fromWarehouse ?: 'BULUNAMADI') . ', ToWarehouse: ' . ($toWarehouse ?: 'BULUNAMADI')]);
-    exit;
-}
+    // ToWarehouse kontrolü: Kullanıcının kendi şubesinin sevkiyat deposu olmalı
+    // FromWarehouse kontrolü yapmıyoruz çünkü her item farklı şubeden olabilir
+    if (empty($toWarehouse)) {
+        $errorMsg = 'ToWarehouse (Sevkiyat Deposu) bulunamadı. ';
+        $errorMsg .= 'Şube: ' . htmlspecialchars($branch) . ' için sevkiyat deposu (U_ASB2B_MAIN=2) SAP\'de tanımlı değil.';
+        
+        echo json_encode([
+            'success' => false, 
+            'message' => $errorMsg
+        ]);
+        exit;
+    }
 
     $stockTransferLines = [];
     foreach ($selectedItems as $item) {

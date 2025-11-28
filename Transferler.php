@@ -1398,8 +1398,9 @@ input[type="checkbox"]:focus {
                             const send = parseFloat(line.SentQty || req);
                             const uomCode = line.UoMCode || 'AD';
                             
-                            // En fazla talep edilen kadar gönderilebilir (stok kontrolü yok)
-                            const max = req;
+                            // Üst limit yok, kullanıcı istediği kadar gönderebilir (sadece negatif olamaz)
+                            // max parametresi artık kullanılmıyor ama geriye dönük uyumluluk için bırakıyoruz
+                            const max = 999999; // Çok yüksek bir değer (pratikte sınırsız)
                             
                             // BaseQty dönüşüm bilgisi
                             let conversionText = '';
@@ -1417,7 +1418,7 @@ input[type="checkbox"]:focus {
                             html += `<div style="display: flex; align-items: center; gap: 0.5rem;">`;
                             html += `<span style="font-size: 0.85rem; color: #6b7280;">Gönderilecek:</span>`;
                             html += `<button onclick="sepetMiktarDegistir('${docEntry}', ${idx}, -1)" style="width: 32px; height: 32px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px;">-</button>`;
-                            html += `<input type="number" id="sent_${docEntry}_${idx}" value="${send.toFixed(2)}" min="0" max="${max.toFixed(2)}" step="0.01" onchange="sepetMiktarInput('${docEntry}', ${idx}, ${max}, this.value)" style="width: 80px; padding: 0.25rem; text-align: center; border: 1px solid #d1d5db; border-radius: 6px; font-weight: 600; font-size: 14px;">`;
+                            html += `<input type="number" id="sent_${docEntry}_${idx}" value="${send.toFixed(2)}" min="0" step="0.01" onchange="sepetMiktarInput('${docEntry}', ${idx}, ${max}, this.value)" style="width: 80px; padding: 0.25rem; text-align: center; border: 1px solid #d1d5db; border-radius: 6px; font-weight: 600; font-size: 14px;">`;
                             html += `<button onclick="sepetMiktarDegistir('${docEntry}', ${idx}, 1)" style="width: 32px; height: 32px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px;">+</button>`;
                             html += `<span style="font-size: 0.85rem; color: #6b7280;">${uomCode}</span>`;
                             html += `</div>`;
@@ -1436,13 +1437,10 @@ input[type="checkbox"]:focus {
             if (!t || !t.lines[idx]) return;
             
             const line = t.lines[idx];
-            const req = parseFloat(line.RequestedQty || 0);
-            // Stok olsa bile max = req (talep edilen kadar)
-            const max = req;
             
             let yeni = parseFloat(line.SentQty || 0) + delta;
+            // Sadece negatif olamaz, üst limit yok (kullanıcı istediği kadar gönderebilir)
             if (yeni < 0) yeni = 0;
-            if (yeni > max) yeni = max;
             
             line.SentQty = yeni;
             sepetGuncelle();
@@ -1454,8 +1452,9 @@ input[type="checkbox"]:focus {
             if (!t || !t.lines[idx]) return;
             
             let v = parseFloat(value) || 0;
+            // Sadece negatif olamaz, üst limit yok (kullanıcı istediği kadar gönderebilir)
             if (v < 0) v = 0;
-            if (v > max) v = max;
+            // max parametresini kullanmıyoruz, kullanıcı istediği kadar gönderebilir
             
             t.lines[idx].SentQty = v;
             sepetGuncelle();

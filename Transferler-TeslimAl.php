@@ -158,13 +158,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         echo json_encode(['success' => false, 'message' => 'Transfer satırları bulunamadı!']);
         exit;
     }
+    
+    // POST işleminde sevk miktarını tekrar çek
+    $sevkMiktarMap = [];
+    $docEntryInt = (int)$docEntry;
+    $sevkQuery = "StockTransfers?\$filter=U_ASB2B_QutMaster%20eq%20{$docEntryInt}"
+               . "&\$orderby=DocEntry%20asc"
+               . "&\$top=1";
+    $sevkData = $sap->get($sevkQuery);
+    $sevkList = $sevkData['response']['value'] ?? [];
+    $outgoingStockTransferInfo = $sevkList[0] ?? null;
+    
+    if ($outgoingStockTransferInfo) {
+        $stLines = $outgoingStockTransferInfo['StockTransferLines'] ?? [];
+        
+        foreach ($stLines as $stLine) {
+            $itemCode = $stLine['ItemCode'] ?? '';
+            $qty = (float)($stLine['Quantity'] ?? 0);
+            
+            if ($itemCode === '' || $qty <= 0) {
+                continue;
+            }
+            
+            // Fire/Zayi'yi filtrele
+            $lost = trim($stLine['U_ASB2B_LOST'] ?? '');
+            $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
+            if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
+                continue;
+            }
+            
+            if (!isset($sevkMiktarMap[$itemCode])) {
+                $sevkMiktarMap[$itemCode] = 0;
+            }
+            $sevkMiktarMap[$itemCode] += $qty;
+        }
+    }
 
     $transferLines = [];
     $headerComments = [];
 
     foreach ($lines as $index => $line) {
-        // Talep miktarı (read-only)
-        $talepMiktari = floatval($line['Quantity'] ?? 0);
+        // Sevk miktarı (read-only) - StockTransferLines'dan
+        $itemCode = $line['ItemCode'] ?? '';
+        $sevkMiktari = $sevkMiktarMap[$itemCode] ?? 0;
+        $baseQty = floatval($line['BaseQty'] ?? 1.0);
+        // Normalize et (BaseQty'ye böl)
+        $sevkMiktariNormalized = $baseQty > 0 ? ($sevkMiktari / $baseQty) : $sevkMiktari;
         
         // Eksik/Fazla miktar (cebirsel - negatif/pozitif olabilir)
         $eksikFazlaQty = floatval($_POST['eksik_fazla'][$index] ?? 0);
@@ -173,8 +212,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $kusurluQty = floatval($_POST['kusurlu'][$index] ?? 0);
         if ($kusurluQty < 0) $kusurluQty = 0;
         
-        // Fiziksel miktar = Talep + EksikFazla
-        $fizikselMiktar = $talepMiktari + $eksikFazlaQty;
+        // Talep miktarı
+        $talepMiktar = floatval($line['Quantity'] ?? 0);
+        $talepMiktarNormalized = $baseQty > 0 ? ($talepMiktar / $baseQty) : $talepMiktar;
+        
+        // Fiziksel miktar = Talep + Eksik/Fazla (Sevk ile aynı olmalı)
+        // Kullanıcı eksik/fazla değiştirdiğinde anlık güncellenir
+        $fizikselMiktar = $talepMiktarNormalized + $eksikFazlaQty;
         if ($fizikselMiktar < 0) $fizikselMiktar = 0;
         
         // Kusurlu miktar fiziksel miktarı aşamaz
@@ -210,8 +254,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $headerComments[] = "{$itemCode} ({$itemName}): " . implode(", ", $commentParts);
         }
         
-        // Normal transfer miktarı = Fiziksel - Kusurlu
-        $normalTransferMiktar = $fizikselMiktar - $kusurluQty;
+        // ÖNEMLİ: Normal transfer satırı = Sevk miktarı (kusurlu hariç)
+        // Kusurlu miktar ayrı bir satır olarak Fire & Zayi deposuna gidecek
+        // Normal transfer miktarı = Sevk miktarı
+        $normalTransferMiktar = $sevkMiktariNormalized;
         if ($normalTransferMiktar < 0) {
             $normalTransferMiktar = 0;
         }
@@ -221,7 +267,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $baseQty = floatval($line['BaseQty'] ?? 1.0);
             $transferLines[] = [
                 'ItemCode' => $itemCode,
-                'Quantity' => $normalTransferMiktar * $baseQty, // BaseQty ile çarp
+                'Quantity' => $normalTransferMiktar * $baseQty, // BaseQty ile çarp (Sevk miktarı)
                 'FromWarehouseCode' => $sevkiyatDepo, // Sevkiyat deposu (ikinci transfer: sevkiyat -> ana depo)
                 'WarehouseCode' => $targetWarehouse // Ana depo (U_ASB2B_MAIN=1)
             ];
@@ -414,12 +460,53 @@ $dueDate = formatDate($requestData['DueDate'] ?? '');
 $numAtCard = htmlspecialchars($requestData['U_ASB2B_NumAtCard'] ?? '-');
 $status = $requestData['U_ASB2B_STATUS'] ?? '';
 
+// Sevk miktarını çek (İlk StockTransfer'den)
+$sevkMiktarMap = [];
+$docEntryInt = (int)$docEntry;
+$sevkQuery = "StockTransfers?\$filter=U_ASB2B_QutMaster%20eq%20{$docEntryInt}"
+           . "&\$orderby=DocEntry%20asc"
+           . "&\$top=1";
+$sevkData = $sap->get($sevkQuery);
+$sevkList = $sevkData['response']['value'] ?? [];
+$outgoingStockTransferInfo = $sevkList[0] ?? null;
+
+if ($outgoingStockTransferInfo) {
+    $stLines = $outgoingStockTransferInfo['StockTransferLines'] ?? [];
+    
+    foreach ($stLines as $stLine) {
+        $itemCode = $stLine['ItemCode'] ?? '';
+        $qty = (float)($stLine['Quantity'] ?? 0);
+        
+        if ($itemCode === '' || $qty <= 0) {
+            continue;
+        }
+        
+        // Fire/Zayi'yi filtrele
+        $lost = trim($stLine['U_ASB2B_LOST'] ?? '');
+        $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
+        if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
+            continue;
+        }
+        
+        if (!isset($sevkMiktarMap[$itemCode])) {
+            $sevkMiktarMap[$itemCode] = 0;
+        }
+        $sevkMiktarMap[$itemCode] += $qty;
+    }
+}
+
 // Her line için BaseQty ve normalize edilmiş miktarları hesapla
 foreach ($lines as &$line) {
     $baseQty = floatval($line['BaseQty'] ?? 1.0);
     $quantity = floatval($line['Quantity'] ?? 0);
+    $itemCode = $line['ItemCode'] ?? '';
+    
     $line['_BaseQty'] = $baseQty;
     $line['_RequestedQty'] = $baseQty > 0 ? ($quantity / $baseQty) : $quantity;
+    
+    // Sevk miktarını normalize et (BaseQty'ye böl)
+    $sevkQty = $sevkMiktarMap[$itemCode] ?? 0;
+    $line['_SevkQty'] = $baseQty > 0 ? ($sevkQty / $baseQty) : $sevkQty;
 }
 unset($line);
 ?>
@@ -733,6 +820,7 @@ input[name^="eksik_fazla"] {
                             <th>Kalem Kodu</th>
                             <th>Kalem Tanımı</th>
                             <th>Talep Miktarı</th>
+                            <th>Sevk Miktarı</th>
                             <th>Eksik/Fazla Miktar</th>
                             <th>Kusurlu Miktar</th>
                             <th>Fiziksel</th>
@@ -745,7 +833,14 @@ input[name^="eksik_fazla"] {
                         $itemName = $line['ItemDescription'] ?? '-';
                         $baseQty = floatval($line['_BaseQty'] ?? 1.0);
                         $requestedQty = floatval($line['_RequestedQty'] ?? 0);
+                        $sevkQty = floatval($line['_SevkQty'] ?? 0);
                         $uomCode = $line['UoMCode'] ?? 'AD';
+                        
+                        // Eksik/Fazla miktarını otomatik hesapla
+                        // Talep > Sevk ise → Eksik (negatif)
+                        // Talep < Sevk ise → Fazla (pozitif)
+                        // Talep = Sevk ise → 0
+                        $eksikFazlaOtomatik = $sevkQty - $requestedQty;
                     ?>
                         <tr>
                             <td><?= htmlspecialchars($itemCode) ?></td>
@@ -762,12 +857,23 @@ input[name^="eksik_fazla"] {
                                 </div>
                             </td>
                             <td>
+                                <div style="display: flex; align-items: center; justify-content: center; gap: 4px;">
+                                    <input type="number"
+                                           id="sevk_<?= $index ?>"
+                                           value="<?= htmlspecialchars($sevkQty) ?>"
+                                           readonly
+                                           step="0.01"
+                                           class="qty-input">
+                                    <span style="font-size: 0.875rem; color: #6b7280; font-weight: 500;"><?= htmlspecialchars($uomCode) ?></span>
+                                </div>
+                            </td>
+                            <td>
                                 <div class="quantity-controls" style="display: flex; align-items: center; gap: 4px;">
                                     <button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, -1)">-</button>
                                     <input type="number"
                                            name="eksik_fazla[<?= $index ?>]"
                                            id="eksik_<?= $index ?>"
-                                           value="0"
+                                           value="<?= htmlspecialchars($eksikFazlaOtomatik) ?>"
                                            step="0.01"
                                            class="qty-input"
                                            onchange="calculatePhysical(<?= $index ?>)"
@@ -832,6 +938,13 @@ document.addEventListener('DOMContentLoaded', function() {
         updateEksikFazlaColor(input);
         calculatePhysical(parseInt(index));
     });
+    
+    // İlk yüklemede fiziksel miktarları hesapla (sevk miktarı üzerinden)
+    const sevkInputs = document.querySelectorAll('input[id^="sevk_"]');
+    sevkInputs.forEach(function(sevkInput) {
+        const index = sevkInput.id.replace('sevk_', '');
+        calculatePhysical(parseInt(index));
+    });
 });
 
 function changeEksikFazla(index, delta) {
@@ -869,6 +982,7 @@ function changeKusurlu(index, delta) {
     
     const talep = parseFloat(talepInput.value) || 0;
     const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
+    // Fiziksel = Talep + Eksik/Fazla
     const fizikselMiktar = Math.max(0, talep + eksikFazla);
     
     let value = parseFloat(input.value) || 0;
@@ -881,16 +995,20 @@ function changeKusurlu(index, delta) {
 
 function calculatePhysical(index) {
     const talepInput = document.getElementById('talep_' + index);
+    const sevkInput = document.getElementById('sevk_' + index);
     const eksikFazlaInput = document.getElementById('eksik_' + index);
     const kusurluInput = document.getElementById('kusurlu_' + index);
     const fizikselInput = document.getElementById('fiziksel_' + index);
     
-    if (!talepInput || !eksikFazlaInput || !kusurluInput || !fizikselInput) return;
+    if (!talepInput || !sevkInput || !eksikFazlaInput || !kusurluInput || !fizikselInput) return;
     
     const talep = parseFloat(talepInput.value) || 0;
+    const sevk = parseFloat(sevkInput.value) || 0;
     const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
     let kusurlu = parseFloat(kusurluInput.value) || 0;
     
+    // Fiziksel = Talep + Eksik/Fazla (Sevk ile aynı olmalı)
+    // Kullanıcı eksik/fazla değiştirdiğinde anlık güncellenir
     let fiziksel = talep + eksikFazla;
     if (fiziksel < 0) fiziksel = 0;
     
@@ -912,11 +1030,13 @@ function calculatePhysical(index) {
 function validateForm() {
     let hasQuantity = false;
     const eksikFazlaInputs = document.querySelectorAll('input[name^="eksik_fazla"]');
-    const talepInputs = document.querySelectorAll('input[id^="talep_"]');
+    const sevkInputs = document.querySelectorAll('input[id^="sevk_"]');
     
-    talepInputs.forEach((talepInput, index) => {
-        const talep = parseFloat(talepInput.value) || 0;
+    sevkInputs.forEach((sevkInput, index) => {
+        const talepInput = document.getElementById('talep_' + index);
         const eksikFazla = parseFloat(eksikFazlaInputs[index].value) || 0;
+        const talep = parseFloat(talepInput?.value || 0) || 0;
+        // Fiziksel = Talep + Eksik/Fazla
         const fiziksel = talep + eksikFazla;
         
         if (fiziksel > 0) {

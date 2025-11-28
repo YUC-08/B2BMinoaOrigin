@@ -239,4 +239,90 @@ https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseNa
 
 https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&$filter=U_AS_OWNR eq 'KT' and U_ASB2B_MAIN eq '1' 
 
-https://192.168.54.185:50000/b1s/v2/BusinessPartners?$select=CardCode,CardName&$filter=CardType eq 'cSupplier' Dış Tedarik Supplier Tedarikçiler 
+https://192.168.54.185:50000/b1s/v2/BusinessPartners?$select=CardCode,CardName&$filter=CardType eq 'cSupplier' Dış Tedarik Supplier Tedarikçiler
+
+---
+
+## 10. Transferler - Warehouses (ToWarehouse - Sevkiyat Deposu)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/Warehouses`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN
+$filter=U_AS_OWNR eq 'KT' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '150'
+```
+
+**Tam URL (encoded):**
+```
+https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&$filter=U_AS_OWNR%20eq%20%27KT%27%20and%20U_ASB2B_MAIN%20eq%20%272%27%20and%20U_ASB2B_BRAN%20eq%20%27150%27
+```
+
+**Örnek Şube Kodları:**
+- Taksim Pera: `U_ASB2B_BRAN eq '100'`
+- Kadıköy: `U_ASB2B_BRAN eq '200'`
+- Beşiktaş: `U_ASB2B_BRAN eq '150'`
+
+---
+
+## 11. Transferler - Warehouses (FromWarehouse - Ana Depo)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/Warehouses`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN
+$filter=U_AS_OWNR eq 'KT' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '150'
+```
+
+**Tam URL (encoded):**
+```
+https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&$filter=U_AS_OWNR%20eq%20%27KT%27%20and%20U_ASB2B_MAIN%20eq%20%271%27%20and%20U_ASB2B_BRAN%20eq%20%27150%27
+```
+
+---
+
+## 12. Transferler - InventoryTransferRequests - POST (Yeni Transfer Talebi)
+**Method:** POST  
+**URL:** `https://192.168.54.185:50000/b1s/v2/InventoryTransferRequests`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Body:**
+```json
+{
+  "DocDate": "2025-01-30",
+  "FromWarehouse": "150-KT-0",
+  "ToWarehouse": "150-KT-1",
+  "Comments": "Transfer nakil talebi",
+  "U_ASB2B_BRAN": "150",
+  "U_AS_OWNR": "KT",
+  "U_ASB2B_STATUS": "1",
+  "U_ASB2B_TYPE": "TRANSFER",
+  "U_ASB2B_User": "ekin",
+  "StockTransferLines": [
+    {
+      "ItemCode": "90228",
+      "Quantity": 10,
+      "FromWarehouseCode": "150-KT-0",
+      "WarehouseCode": "150-KT-1"
+    }
+  ]
+}
+```
+
+**ÖNEMLİ:** 
+- `FromWarehouse`: Gönderen şube ana deposu (U_ASB2B_MAIN='1', örn: "150-KT-0")
+- `ToWarehouse`: Alıcı şube sevkiyat deposu (U_ASB2B_MAIN='2', örn: "150-KT-1")
+- `U_ASB2B_BRAN`: Şube kodu (sadece sayı, örn: "100", "150", "200")
+- `StockTransferLines`: Her satır için `FromWarehouseCode` ve `WarehouseCode` belirtilmeli 
