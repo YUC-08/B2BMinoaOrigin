@@ -684,7 +684,7 @@ body {
 .data-table td:nth-child(6) {
     text-align: center;
 }
-}
+
 
 .quantity-controls {
     display: flex;

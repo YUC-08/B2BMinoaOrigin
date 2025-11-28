@@ -151,9 +151,71 @@ if (!empty($gonderSube)) {
     $gonderSubeDisplay = $fromWarehouse . ' / ' . $fromWarehouseName;
 }
 
-// Alıcı Şube formatı: 200-KT-1 / Kadıköy Rıhtım Depo
+// Alıcı şubenin ana deposunu ve sevkiyat deposunu bul
+$uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
+$aliciBranch = '';
+
+// ToWarehouse'dan branch'i çıkar (ör: 100-KT-1 -> 100)
+if (!empty($toWarehouse) && preg_match('/^(\d+)-/', $toWarehouse, $matches)) {
+    $aliciBranch = $matches[1];
+}
+
+$anaDepo = null;
+$sevkiyatDepo = null;
+
+// Alıcı şubenin ana ve sevkiyat deposunu bul
+if (!empty($aliciBranch) && !empty($uAsOwnr)) {
+    // Ana depo (U_ASB2B_MAIN='1')
+    $anaDepoFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$aliciBranch}' and U_ASB2B_MAIN eq '1'";
+    $anaDepoQuery = "Warehouses?\$filter=" . urlencode($anaDepoFilter);
+    $anaDepoData = $sap->get($anaDepoQuery);
+    $anaDepolar = $anaDepoData['response']['value'] ?? [];
+    $anaDepo = !empty($anaDepolar) ? $anaDepolar[0]['WarehouseCode'] : null;
+    
+    // Sevkiyat depo (U_ASB2B_MAIN='2')
+    $sevkiyatDepoFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$aliciBranch}' and U_ASB2B_MAIN eq '2'";
+    $sevkiyatDepoQuery = "Warehouses?\$filter=" . urlencode($sevkiyatDepoFilter);
+    $sevkiyatDepoData = $sap->get($sevkiyatDepoQuery);
+    $sevkiyatDepolar = $sevkiyatDepoData['response']['value'] ?? [];
+    $sevkiyatDepo = !empty($sevkiyatDepolar) ? $sevkiyatDepolar[0]['WarehouseCode'] : $toWarehouse;
+}
+
+// Alıcı Şube formatı
+// STATUS = 4 (Tamamlandı) ise: sevkiyat depo (üst) ↓ ana depo (alt) şeklinde göster
 $aliciSubeDisplay = $toWarehouse;
-if (!empty($toWarehouseName)) {
+if ($status == '4' && $anaDepo && $sevkiyatDepo) {
+    // Tamamlandı durumunda: sevkiyat depo (üst) ↓ ana depo (alt)
+    $anaDepoName = '';
+    if (!empty($anaDepo)) {
+        $anaDepoQuery = "Warehouses('{$anaDepo}')?\$select=WarehouseCode,WarehouseName";
+        $anaDepoData = $sap->get($anaDepoQuery);
+        $anaDepoName = $anaDepoData['response']['WarehouseName'] ?? '';
+    }
+    
+    $sevkiyatDepoName = '';
+    if (!empty($sevkiyatDepo)) {
+        $sevkiyatDepoQuery = "Warehouses('{$sevkiyatDepo}')?\$select=WarehouseCode,WarehouseName";
+        $sevkiyatDepoData = $sap->get($sevkiyatDepoQuery);
+        $sevkiyatDepoName = $sevkiyatDepoData['response']['WarehouseName'] ?? '';
+    }
+    
+    $sevkiyatDepoDisplay = $sevkiyatDepo;
+    if (!empty($sevkiyatDepoName)) {
+        $sevkiyatDepoDisplay = $sevkiyatDepo . ' / ' . $sevkiyatDepoName;
+    }
+    
+    $anaDepoDisplay = $anaDepo;
+    if (!empty($anaDepoName)) {
+        $anaDepoDisplay = $anaDepo . ' / ' . $anaDepoName;
+    }
+    
+    // Sevkiyat depo üstte, ok ortada, ana depo altta
+    $aliciSubeDisplay = '<div style="display: flex; flex-direction: column; align-items: flex-start;">' .
+                        '<div style="margin-bottom: 4px;">' . htmlspecialchars($sevkiyatDepoDisplay) . '</div>' .
+                        '<div style="font-size: 1.2rem; margin: 5px 0; padding-left: 7.5rem;">↓</div>' .
+                        '<div style="margin-top: 4px;">' . htmlspecialchars($anaDepoDisplay) . '</div>' .
+                        '</div>';
+} elseif (!empty($toWarehouseName)) {
     $aliciSubeDisplay = $toWarehouse . ' / ' . $toWarehouseName;
 }
 
@@ -247,17 +309,47 @@ if ($status == '3' || $status == '4') {
         }
     }
     
-    // 1. Ana deponun sevk ettiği belge (BaseType = 1250000001 => InventoryTransferRequest)
-    $stockTransferFilter = "BaseType eq 1250000001 and BaseEntry eq {$docEntry}";
-    $stockTransferQuery 	= "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
+    // Teslimat belgelerinden sonuncusunu (veya ilkini) yakala
+    $deliveryTransferInfo = !empty($deliveryList) ? $deliveryList[array_key_last($deliveryList)] : null;
+    
+    // Teslimat Tarihi: Önce deliveryTransferInfo'dan, yoksa stockTransferInfo'dan al
+    if (!empty($deliveryTransferInfo)) {
+        $teslimatTarihi = formatDate($deliveryTransferInfo['DocDate'] ?? '');
+    }
+    
+    // 1. Ana deponun sevk ettiği belge
+    $stockTransferInfo = null;
+    
+    $stockTransferFilter = "U_ASB2B_QutMaster eq {$docEntry}";
+    $stockTransferQuery 	= "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$select=DocEntry,DocNum,DocDate,FromWarehouse,ToWarehouse,DocumentStatus&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
     $stockTransferData = $sap->get($stockTransferQuery);
     $stockTransfers 	 = $stockTransferData['response']['value'] ?? [];
+    
+    if (empty($stockTransfers)) {
+        $stockTransferFilter2 = "BaseType eq 1250000001 and BaseEntry eq {$docEntry}";
+        $stockTransferQuery2 = "StockTransfers?\$filter=" . urlencode($stockTransferFilter2) . "&\$select=DocEntry,DocNum,DocDate,FromWarehouse,ToWarehouse,DocumentStatus&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
+        $stockTransferData2 = $sap->get($stockTransferQuery2);
+        $stockTransfers = $stockTransferData2['response']['value'] ?? [];
+    }
     
     if (!empty($stockTransfers)) {
         $stockTransferInfo = $stockTransfers[0];
         
-        // Teslimat Tarihi: StockTransfer'in DocDate'i
-        $teslimatTarihi = formatDate($stockTransferInfo['DocDate'] ?? '');
+        // Eğer DocNum gelmediyse, direkt StockTransfer sorgusu yap
+        if (empty($stockTransferInfo['DocNum']) && !empty($stockTransferInfo['DocEntry'])) {
+            $stDocEntry = $stockTransferInfo['DocEntry'];
+            $stDirectQuery = "StockTransfers({$stDocEntry})?\$select=DocEntry,DocNum,DocDate";
+            $stDirectData = $sap->get($stDirectQuery);
+            $stDirectInfo = $stDirectData['response'] ?? null;
+            if ($stDirectInfo) {
+                $stockTransferInfo['DocNum'] = $stDirectInfo['DocNum'] ?? null;
+            }
+        }
+        
+        // Teslimat Tarihi: Eğer deliveryTransferInfo'dan alınmadıysa, stockTransferInfo'dan al
+        if (empty($teslimatTarihi)) {
+            $teslimatTarihi = formatDate($stockTransferInfo['DocDate'] ?? '');
+        }
         
         // StockTransfer satırlarındaki Quantity'leri topla (sevk miktarı)
         $stLines = $stockTransferInfo['StockTransferLines'] ?? [];
@@ -646,7 +738,15 @@ body {
                     </div>
                     <div class="detail-item">
                             <label>Teslimat Belge No:</label>
-                            <div class="detail-value"><?= htmlspecialchars($numAtCard) ?></div>
+                            <div class="detail-value">
+                                <?php if (!empty($deliveryTransferInfo)): ?>
+                                    <?= htmlspecialchars($deliveryTransferInfo['DocNum'] ?? $deliveryTransferInfo['DocEntry'] ?? '-') ?>
+                                <?php elseif (!empty($stockTransferInfo)): ?>
+                                    <?= htmlspecialchars($stockTransferInfo['DocNum'] ?? $stockTransferInfo['DocEntry'] ?? '-') ?>
+                                <?php else: ?>
+                                    <?= htmlspecialchars($numAtCard) ?>
+                                <?php endif; ?>
+                            </div>
                         </div>
                         <div class="detail-item">
                             <label>Talep Özeti:</label>
@@ -676,7 +776,7 @@ body {
                     </div>
                     <div class="detail-item">
                         <label>Alıcı Şube:</label>
-                            <div class="detail-value"><?= htmlspecialchars($aliciSubeDisplay) ?></div> 
+                            <div class="detail-value"><?= $aliciSubeDisplay ?></div> 
                     </div>
                     <div class="detail-item">
                             <label>Teslimat Tarihi:</label>

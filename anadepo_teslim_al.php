@@ -33,26 +33,16 @@ if (!$requestData) {
     exit;
 }
 
-
-error_log("[TESLIM AL] DocEntry: {$doc}");
-error_log("[TESLIM AL] RequestData keys: " . implode(', ', array_keys($requestData ?? [])));
-error_log("[TESLIM AL] Has StockTransferLines key: " . (isset($requestData['StockTransferLines']) ? 'YES' : 'NO'));
-
 $lines = $requestData['StockTransferLines'] ?? [];
 
-
-error_log("[TESLIM AL] Lines count: " . count($lines));
 if (empty($lines)) {
-    error_log("[TESLIM AL] Lines is empty! Full requestData structure: " . print_r($requestData, true));
     $linesQuery = "InventoryTransferRequests({$doc})/StockTransferLines";
     $linesData = $sap->get($linesQuery);
     $linesResponse = $linesData['response'] ?? null;
     if ($linesResponse && isset($linesResponse['value'])) {
         $lines = $linesResponse['value'];
-        error_log("[TESLIM AL] Lines found via direct query, count: " . count($lines));
     } elseif ($linesResponse && is_array($linesResponse)) {
         $lines = $linesResponse;
-        error_log("[TESLIM AL] Lines found via direct query (array), count: " . count($lines));
     }
 }
 $fromWarehouse = $requestData['FromWarehouse'] ?? '';
@@ -366,6 +356,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // FromWarehouse: teslim al transferde kullanılacak olan "ToWarehouse" (requestData'dan gelen)
         // ToWarehouse: teslim al transferde kullanılacak gideceği depo (targetWarehouse)
+        $docNum = $requestData['DocNum'] ?? $doc;
+        
         $stockTransferPayload = [
             'FromWarehouse' => $toWarehouse, // requestData'dan gelen ToWarehouse
             'ToWarehouse' => $targetWarehouse, // U_ASB2B_MAIN=1 olan depo
@@ -377,45 +369,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'U_ASB2B_TYPE' => 'MAIN',
             'U_ASB2B_User' => $_SESSION["UserName"] ?? '',
             'U_ASB2B_QutMaster' => (int)$doc, // InventoryTransferRequest DocEntry
+            'DocumentReferences' => [
+                [
+                    'RefDocEntr' => (int)$doc,
+                    'RefDocNum' => (int)$docNum,
+                    'RefObjType' => 'rot_InventoryTransferRequest'
+                ]
+            ],
             'StockTransferLines' => $transferLines
         ];
 
         
         $result = $sap->post('StockTransfers', $stockTransferPayload);
         
-        // Debug: POST sonucunu logla
-        error_log("[TESLIM AL] StockTransfer POST RESULT: " . json_encode($result));
-        
         if ($result['status'] == 200 || $result['status'] == 201) {
-            // StockTransfer oluşturulduktan sonra DocEntry'yi al ve kontrol et
-            $stockTransferDocEntry = $result['response']['DocEntry'] ?? null;
-            if ($stockTransferDocEntry) {
-                $test = $sap->get("StockTransfers({$stockTransferDocEntry})");
-                error_log("[DEBUG] StockTransfers({$stockTransferDocEntry}): " . json_encode($test));
-                if (isset($test['response']['U_ASB2B_QutMaster'])) {
-                    error_log("[DEBUG] U_ASB2B_QutMaster değeri: " . $test['response']['U_ASB2B_QutMaster']);
-                } else {
-                    error_log("[DEBUG] U_ASB2B_QutMaster bulunamadı!");
-                }
-            }
-            // StockTransfer oluşturulduktan sonra DocEntry'yi al
-            $stockTransferDocEntry = $result['response']['DocEntry'] ?? null;
-            
-            // InventoryTransferRequest'i güncelle: Status ve Teslimat DocEntry'si
             $updatePayload = [
                 'U_ASB2B_STATUS' => '4'
             ];
-            
             
             $updateResult = $sap->patch("InventoryTransferRequests({$doc})", $updatePayload);
             
             if ($updateResult['status'] == 200 || $updateResult['status'] == 204) {
                 header("Location: AnaDepo.php?msg=ok");
             } else {
-                error_log("[TESLIM AL] StockTransfer başarılı ama status güncellenemedi: " . ($updateResult['status'] ?? 'NO STATUS'));
-                if (isset($updateResult['response']['error'])) {
-                    error_log("[TESLIM AL] Update Error: " . json_encode($updateResult['response']['error']));
-                }
                 header("Location: AnaDepo.php?msg=ok");
             }
             exit;

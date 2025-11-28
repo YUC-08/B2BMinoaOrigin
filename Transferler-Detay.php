@@ -189,13 +189,22 @@ $incomingStockTransferInfo = null;
 
 // Sevk miktarı: Hazırlanıyor (2), Sevk Edildi (3) ve Tamamlandı (4) durumlarında göster
 // İlk StockTransfer: gönderici depo -> sevkiyat depo (U_ASB2B_QutMaster = docEntry)
-if (($status == '2' || $status == '3' || $status == '4') && $sevkiyatDepo) {
-    // İlk StockTransfer'i bul: U_ASB2B_QutMaster = docEntry ve ToWarehouse = sevkiyat depo
+if ($status == '2' || $status == '3' || $status == '4') {
     $docEntryInt = (int)$docEntry;
-    $sevkFilter = "U_ASB2B_QutMaster eq {$docEntryInt} and ToWarehouse eq '{$sevkiyatDepo}'";
-    $sevkQuery = "StockTransfers?\$filter=" . urlencode($sevkFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry asc&\$top=1";
-    $sevkData = $sap->get($sevkQuery);
-    $sevkTransfers = $sevkData['response']['value'] ?? [];
+    
+    // İlk StockTransfer'i bul: U_ASB2B_QutMaster = docEntry ve ToWarehouse = sevkiyat depo
+    if ($sevkiyatDepo) {
+        $sevkFilter = "U_ASB2B_QutMaster eq {$docEntryInt} and ToWarehouse eq '{$sevkiyatDepo}'";
+        $sevkQuery = "StockTransfers?\$filter=" . urlencode($sevkFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry asc&\$top=1";
+        $sevkData = $sap->get($sevkQuery);
+        $sevkTransfers = $sevkData['response']['value'] ?? [];
+    } else {
+        // Sevkiyat depo bulunamadıysa, ToWarehouse ile dene
+        $sevkFilter = "U_ASB2B_QutMaster eq {$docEntryInt} and ToWarehouse eq '{$toWarehouse}'";
+        $sevkQuery = "StockTransfers?\$filter=" . urlencode($sevkFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry asc&\$top=1";
+        $sevkData = $sap->get($sevkQuery);
+        $sevkTransfers = $sevkData['response']['value'] ?? [];
+    }
     
     if (!empty($sevkTransfers)) {
         $outgoingStockTransferInfo = $sevkTransfers[0];
@@ -269,9 +278,20 @@ if ($status == '3' || $status == '4') {
             $deliveryList[$idx]['StockTransferLines'] = $dtLines;
         }
         
+        // İlk StockTransfer'i bul (ToWarehouse = sevkiyatDepo olan)
+        // Eğer $outgoingStockTransferInfo henüz bulunamadıysa, deliveryList'ten bul
+        if (empty($outgoingStockTransferInfo)) {
+            $isFirstTransfer = ($st['ToWarehouse'] ?? '') === $sevkiyatDepo;
+            if ($isFirstTransfer) {
+                $outgoingStockTransferInfo = $st;
+            }
+        }
+        
         // İkinci StockTransfer'i bul (sevkiyat depo -> ana depo)
         // İlişki: U_ASB2B_QutMaster = docEntry, FromWarehouse = sevkiyatDepo, ToWarehouse = anaDepo
-        $isSecondTransfer = ($st['FromWarehouse'] ?? '') === $sevkiyatDepo && ($st['ToWarehouse'] ?? '') === $anaDepo;
+        // İlk StockTransfer'i atla (ToWarehouse = sevkiyatDepo olan)
+        $isFirstTransfer = ($st['ToWarehouse'] ?? '') === $sevkiyatDepo;
+        $isSecondTransfer = !$isFirstTransfer && ($st['FromWarehouse'] ?? '') === $sevkiyatDepo && ($st['ToWarehouse'] ?? '') === $anaDepo;
         
         // İkinci StockTransfer'i $incomingStockTransferInfo olarak kullan
         if (empty($incomingStockTransferInfo)) {
@@ -675,7 +695,9 @@ body {
                         <div class="detail-item">
                             <label>Teslimat Belge No:</label>
                             <div class="detail-value">
-                                <?php if ($incomingStockTransferInfo): ?>
+                                <?php if ($outgoingStockTransferInfo): ?>
+                                    <?= htmlspecialchars($outgoingStockTransferInfo['DocNum'] ?? $outgoingStockTransferInfo['DocEntry'] ?? '-') ?>
+                                <?php elseif ($incomingStockTransferInfo): ?>
                                     <?= htmlspecialchars($incomingStockTransferInfo['DocNum'] ?? $incomingStockTransferInfo['DocEntry'] ?? '-') ?>
                                 <?php else: ?>
                                     <?= htmlspecialchars($numAtCard) ?>
@@ -692,11 +714,52 @@ body {
                     <div class="detail-column">
                         <div class="detail-item">
                             <label>Kaynak Depo:</label>
-                            <div class="detail-value"><?= htmlspecialchars($gonderSubeDisplay) ?></div>
+                            <div class="detail-value">
+                                <?php if ($outgoingStockTransferInfo): ?>
+                                    <?php
+                                    $fromWhs = $outgoingStockTransferInfo['FromWarehouse'] ?? '';
+                                    $fromWhsName = '';
+                                    if (!empty($fromWhs)) {
+                                        $fromWhsQuery = "Warehouses('{$fromWhs}')?\$select=WarehouseCode,WarehouseName";
+                                        $fromWhsData = $sap->get($fromWhsQuery);
+                                        $fromWhsName = $fromWhsData['response']['WarehouseName'] ?? '';
+                                    }
+                                    $fromWhsDisplay = $fromWhs;
+                                    if (!empty($fromWhsName)) {
+                                        $fromWhsDisplay = $fromWhs . ' / ' . $fromWhsName;
+                                    }
+                                    echo htmlspecialchars($fromWhsDisplay);
+                                    ?>
+                                <?php else: ?>
+                                    <?= htmlspecialchars($gonderSubeDisplay) ?>
+                                <?php endif; ?>
+                            </div>
                         </div>
                         <div class="detail-item">
                             <label>Hedef Depo:</label>
-                            <div class="detail-value"><?= $status == '4' && $anaDepo ? $aliciSubeDisplay : htmlspecialchars($aliciSubeDisplay) ?></div>
+                            <div class="detail-value">
+                                <?php if ($outgoingStockTransferInfo): ?>
+                                    <?php
+                                    // İlk StockTransfer'in ToWarehouse'u (sevkiyat depo)
+                                    $firstToWhs = $outgoingStockTransferInfo['ToWarehouse'] ?? $sevkiyatDepo;
+                                    $firstToWhsName = '';
+                                    if (!empty($firstToWhs)) {
+                                        $firstToWhsQuery = "Warehouses('{$firstToWhs}')?\$select=WarehouseCode,WarehouseName";
+                                        $firstToWhsData = $sap->get($firstToWhsQuery);
+                                        $firstToWhsName = $firstToWhsData['response']['WarehouseName'] ?? '';
+                                    }
+                                    $firstToWhsDisplay = $firstToWhs;
+                                    if (!empty($firstToWhsName)) {
+                                        $firstToWhsDisplay = $firstToWhs . ' / ' . $firstToWhsName;
+                                    }
+                                    echo htmlspecialchars($firstToWhsDisplay);
+                                    ?>
+                                <?php elseif ($status == '4' && $anaDepo): ?>
+                                    <?= $aliciSubeDisplay ?>
+                                <?php else: ?>
+                                    <?= htmlspecialchars($aliciSubeDisplay) ?>
+                                <?php endif; ?>
+                            </div>
                         </div>
                         <div class="detail-item">
                             <label>Durum:</label>
@@ -709,19 +772,11 @@ body {
                                 <label>Sevk Tarihi:</label>
                                 <div class="detail-value"><?= formatDate($outgoingStockTransferInfo['DocDate'] ?? '') ?></div>
                             </div>
-                            <div class="detail-item">
-                                <label>Sevk DocEntry:</label>
-                                <div class="detail-value"><?= htmlspecialchars($outgoingStockTransferInfo['DocEntry'] ?? '-') ?></div>
-                            </div>
                         <?php endif; ?>
                         <?php if ($incomingStockTransferInfo): ?>
                             <div class="detail-item">
                                 <label>Teslimat Tarihi:</label>
                                 <div class="detail-value"><?= formatDate($incomingStockTransferInfo['DocDate'] ?? '') ?></div>
-                            </div>
-                            <div class="detail-item">
-                                <label>Teslimat DocEntry:</label>
-                                <div class="detail-value"><?= htmlspecialchars($incomingStockTransferInfo['DocEntry'] ?? '-') ?></div>
                             </div>
                             <?php 
                             // İlk StockTransfer bilgisini depo yönüne göre bul
@@ -753,6 +808,60 @@ body {
                     </div>
                 </div>
             </div>
+            
+            <?php if ($incomingStockTransferInfo): ?>
+                <div class="section-title">Teslimat Bilgileri (İkinci Stok Nakil)</div>
+                <div class="detail-card">
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <label>Teslimat Belge No:</label>
+                            <div class="detail-value"><?= htmlspecialchars($incomingStockTransferInfo['DocNum'] ?? $incomingStockTransferInfo['DocEntry'] ?? '-') ?></div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Gönderen Depo:</label>
+                            <div class="detail-value">
+                                <?php
+                                $fromWhs = $incomingStockTransferInfo['FromWarehouse'] ?? '';
+                                $fromWhsName = '';
+                                if (!empty($fromWhs)) {
+                                    $fromWhsQuery = "Warehouses('{$fromWhs}')?\$select=WarehouseCode,WarehouseName";
+                                    $fromWhsData = $sap->get($fromWhsQuery);
+                                    $fromWhsName = $fromWhsData['response']['WarehouseName'] ?? '';
+                                }
+                                $fromWhsDisplay = $fromWhs;
+                                if (!empty($fromWhsName)) {
+                                    $fromWhsDisplay = $fromWhs . ' / ' . $fromWhsName;
+                                }
+                                echo htmlspecialchars($fromWhsDisplay);
+                                ?>
+                            </div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Teslimat Tarihi:</label>
+                            <div class="detail-value"><?= formatDate($incomingStockTransferInfo['DocDate'] ?? '') ?></div>
+                        </div>
+                        <div class="detail-item">
+                            <label>Gittiği Depo:</label>
+                            <div class="detail-value">
+                                <?php
+                                $toWhs = $incomingStockTransferInfo['ToWarehouse'] ?? '';
+                                $toWhsName = '';
+                                if (!empty($toWhs)) {
+                                    $toWhsQuery = "Warehouses('{$toWhs}')?\$select=WarehouseCode,WarehouseName";
+                                    $toWhsData = $sap->get($toWhsQuery);
+                                    $toWhsName = $toWhsData['response']['WarehouseName'] ?? '';
+                                }
+                                $toWhsDisplay = $toWhs;
+                                if (!empty($toWhsName)) {
+                                    $toWhsDisplay = $toWhs . ' / ' . $toWhsName;
+                                }
+                                echo htmlspecialchars($toWhsDisplay);
+                                ?>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            <?php endif; ?>
             
             <section class="card">
                 <div class="section-title">Transfer Detayı</div>
