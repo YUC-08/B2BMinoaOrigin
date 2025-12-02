@@ -630,7 +630,7 @@
                     belgeNo: 9909,
                     tarih: '2025-11-24',
                     kalemKodu: '20064',
-                    kalemTanim: 'MAGNOLIA KREMASI',
+                    kalemTanim: '-',
                     miktar: 2333,
                     olcuBirimi: 'GR',
                     durum: 'fire',
@@ -641,7 +641,7 @@
                     belgeNo: 9908,
                     tarih: '2025-11-24',
                     kalemKodu: '10133',
-                    kalemTanim: 'KÖZLENMİŞ BİBER',
+                    kalemTanim: '-',
                     miktar: 100,
                     olcuBirimi: 'GR',
                     durum: 'fire',
@@ -656,6 +656,10 @@
     </script>
 </body>
 </html>
+
+
+
+
 
 
 

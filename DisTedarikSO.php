@@ -54,20 +54,7 @@ if ($isUnregisteredMode) {
     $filterValue = "CardType eq 'cSupplier'";
     $vendorsQuery = 'BusinessPartners?$select=CardCode,CardName&$filter=' . urlencode($filterValue) . '&$orderby=CardName&$top=500';
     $vendorsData = $sap->get($vendorsQuery);
-    
-    // Debug: Response'u logla
-    error_log("[DisTedarikSO] Tedarikçi Query: " . $vendorsQuery);
-    error_log("[DisTedarikSO] HTTP Status: " . ($vendorsData['status'] ?? 'NO STATUS'));
-    error_log("[DisTedarikSO] Response Keys: " . (isset($vendorsData['response']) ? implode(', ', array_keys($vendorsData['response'])) : 'NO RESPONSE'));
-    
     $vendors = $vendorsData['response']['value'] ?? [];
-    
-    // Debug: Eğer tedarikçi gelmediyse logla
-    if (empty($vendors)) {
-        error_log("[DisTedarikSO] Tedarikçi listesi boş. Full Response: " . json_encode($vendorsData, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-    } else {
-        error_log("[DisTedarikSO] Tedarikçi sayısı: " . count($vendors));
-    }
 }
 
 // POST işlemi: PurchaseRequests oluştur
@@ -147,16 +134,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $payload['Comments'] = $comments . ' | ' . implode(' | ', $unregisteredInfo);
         }
     }
-    
-    // Debug: Payload'ı logla
-    $logDir = __DIR__ . '/logs';
-    if (!is_dir($logDir)) {
-        @mkdir($logDir, 0755, true);
-    }
-    file_put_contents(
-        $logDir . '/pr_payload_' . date('Ymd_His') . '.json',
-        json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)
-    );
     
     $result = $sap->post('PurchaseRequests', $payload);
     
@@ -280,22 +257,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
         'hasMore' => count($items) >= $top
     ];
     
-    // Debug bilgileri ekle (eğer hata varsa veya veri yoksa)
-    if (empty($items) || ($itemsData['status'] ?? 0) != 200) {
-        $response['debug'] = [
-            'session_uAsOwnr' => $uAsOwnr,
-            'session_branch' => $branch,
-            'filter' => $filter,
-            'query' => $itemsQuery,
-            'http_status' => $itemsData['status'] ?? 'NO STATUS',
-            'response_keys' => isset($itemsData['response']) ? array_keys($itemsData['response']) : [],
-            'has_value' => isset($itemsData['response']['value']),
-            'error' => $itemsData['error'] ?? null,
-            'response_error' => $itemsData['response']['error'] ?? null,
-            'full_response' => $itemsData['response'] ?? null
-        ];
-    }
-    
     echo json_encode($response, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -371,6 +332,61 @@ body {
     background: whitesmoke;
     padding: 0;
     min-height: 100vh;
+    position: relative;
+    overflow-x: hidden;
+}
+
+/* Sayfa geçiş animasyonları */
+.main-content.page-slide-out-left {
+    animation: slideOutToLeft 0.3s ease-in;
+}
+
+.main-content.page-slide-out-right {
+    animation: slideOutToRight 0.3s ease-in;
+}
+
+@keyframes slideInFromLeft {
+    from {
+        transform: translateX(-100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideInFromRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOutToLeft {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(-100%);
+        opacity: 0;
+    }
+}
+
+@keyframes slideOutToRight {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(100%);
+        opacity: 0;
+    }
 }
 
 .page-header {
@@ -960,9 +976,9 @@ body {
             <h2>Dış Tedarik Talebi Oluştur</h2>
             <div style="display: flex; gap: 12px; align-items: center;">
                 <?php if (!$isUnregisteredMode): ?>
-                <button class="btn btn-secondary" onclick="window.location.href='DisTedarikSO.php?mode=unregistered'" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; border: none; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">📦 Kayıt Dışı Gelen Mal</button>
+                <button class="btn btn-secondary" onclick="navigateToUnregistered()" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; border: none; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">📦 Kayıt Dışı Gelen Mal</button>
                 <?php else: ?>
-                <button class="btn btn-secondary" onclick="window.location.href='DisTedarikSO.php'" style="background: #3b82f6; color: white; border: none;">📝 Normal Talep Oluştur</button>
+                <button class="btn btn-secondary" onclick="navigateToNormal()" style="background: #3b82f6; color: white; border: none;">📝 Talep Oluştur</button>
                 <?php endif; ?>
                 <button class="btn btn-primary sepet-btn" id="sepetToggleBtn" onclick="toggleSepet()" style="position: relative;">
                     🛒 Sepet
@@ -973,99 +989,11 @@ body {
         </header>
 
         <div class="content-wrapper">
-            <?php if (empty($toWarehouse)): ?>
-                <div class="alert alert-warning">
-                    <strong>Uyarı:</strong> Hedef depo bilgisi bulunamadı! Lütfen SAP'de "U_ASB2B_MAIN=2" olarak tanımlanmış bir depo olduğundan emin olun.
-                </div>
-            <?php else: ?>
-                <!-- Spec'e göre: Gideceği depo (talep eden depo) bilgisi -->
-                <div class="card" style="background: #eff6ff; border: 2px solid #3b82f6; margin-bottom: 1.5rem;">
-                    <div style="display: flex; align-items: center; gap: 1rem;">
-                        <div>
-                            <div style="font-size: 0.75rem; font-weight: 600; color: #1e40af; text-transform: uppercase; margin-bottom: 0.25rem;">Gideceği Depo (Talep Edilen Depo)</div>
-                            <div style="font-size: 1.25rem; color: #1e3a8a; font-weight: 700;"><?= htmlspecialchars($toWarehouse) ?></div>
-                        </div>
-                    </div>
-                </div>
-            <?php endif; ?>
-
             <!-- Ana Container - Sepet açıkken ikiye bölünecek -->
             <div class="main-layout-container" id="mainLayoutContainer">
                 <!-- Sol taraf: Filtreler ve Tablo -->
                 <div class="main-content-left" id="mainContentLeft">
-                    <!-- Filtreler -->
-            <section class="card" id="filterSection" style="<?= $isUnregisteredMode ? 'display: none;' : '' ?>">
-                <div class="filter-section">
-                    <div class="filter-group">
-                        
-                        <div class="multi-select-container">
-                            <div class="multi-select-input" onclick="toggleDropdown('itemName')">
-                                <div id="itemNameTags"></div>
-                                <input type="text" id="filterItemName" class="filter-input" placeholder="KALEM TANIMI" onkeyup="handleFilterInput('itemName', this.value)" onfocus="openDropdownIfClosed('itemName')" onclick="event.stopPropagation();">
-                            </div>
-                            <div class="multi-select-dropdown" id="itemNameDropdown">
-                                <div class="multi-select-option" data-value="" onclick="selectOption('itemName', '', 'Tümü')">Tümü</div>
-                                <div id="itemNameOptions"></div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="filter-group">
-                        
-                        <div class="multi-select-container">
-                            <div class="multi-select-input" onclick="toggleDropdown('itemGroup')">
-                                <div id="itemGroupTags"></div>
-                                <input type="text" id="filterItemGroup" class="filter-input" placeholder="KALEM GRUBU" onkeyup="handleFilterInput('itemGroup', this.value)" onfocus="openDropdownIfClosed('itemGroup')" onclick="event.stopPropagation();">
-                            </div>
-                            <div class="multi-select-dropdown" id="itemGroupDropdown">
-                                <div class="multi-select-option" data-value="" onclick="selectOption('itemGroup', '', 'Tümü')">Tümü</div>
-                                <div id="itemGroupOptions"></div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="filter-group">
-                        
-                        <div class="multi-select-container">
-                            <div class="multi-select-input" onclick="toggleDropdown('stockStatus')">
-                                <div id="stockStatusTags"></div>
-                                <input type="text" id="filterStockStatus" class="filter-input" placeholder="ŞUBE STOK DURUMU" readonly>
-                            </div>
-                            <div class="multi-select-dropdown" id="stockStatusDropdown">
-                                <div class="multi-select-option" data-value="" onclick="selectOption('stockStatus', '', 'Tümü')">Tümü</div>
-                                <div class="multi-select-option" data-value="Var" onclick="selectOption('stockStatus', 'Var', 'Var')">Var</div>
-                                <div class="multi-select-option" data-value="Yok" onclick="selectOption('stockStatus', 'Yok', 'Yok')">Yok</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Debug Panel -->
-            <?php if ($isUnregisteredMode): ?>
-            <div class="card" style="background: #fef3c7; border: 2px solid #f59e0b; margin-bottom: 1.5rem;">
-                <h3 style="color: #92400e; margin-bottom: 1rem;">🔍 Debug - Tedarikçi Bilgileri</h3>
-                <div style="font-family: monospace; font-size: 0.85rem; color: #78350f;">
-                    <p><strong>Query:</strong> <?= htmlspecialchars($vendorsQuery ?? 'N/A') ?></p>
-                    <p><strong>HTTP Status:</strong> <?= htmlspecialchars($vendorsData['status'] ?? 'NO STATUS') ?></p>
-                    <p><strong>Response Keys:</strong> <?= isset($vendorsData['response']) ? htmlspecialchars(implode(', ', array_keys($vendorsData['response']))) : 'NO RESPONSE' ?></p>
-                    <p><strong>Tedarikçi Sayısı:</strong> <?= count($vendors) ?></p>
-                    <?php if (!empty($vendors)): ?>
-                        <p><strong>İlk 3 Tedarikçi:</strong></p>
-                        <ul>
-                            <?php foreach (array_slice($vendors, 0, 3) as $vendor): ?>
-                                <li><?= htmlspecialchars($vendor['CardCode'] ?? '') ?> - <?= htmlspecialchars($vendor['CardName'] ?? '') ?></li>
-                            <?php endforeach; ?>
-                        </ul>
-                    <?php else: ?>
-                        <p style="color: #dc2626;"><strong>Hata:</strong> Tedarikçi bulunamadı!</p>
-                        <pre style="background: white; padding: 0.5rem; border-radius: 4px; overflow-x: auto; max-height: 200px; overflow-y: auto;"><?= htmlspecialchars(json_encode($vendorsData ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
-                    <?php endif; ?>
-                </div>
-            </div>
-            <?php endif; ?>
-            
-            <!-- Kayıt Dışı Mod için Bilgi Alanları -->
+                    <!-- Kayıt Dışı Mod için Bilgi Alanları -->
             <?php if ($isUnregisteredMode): ?>
             <section class="card" style="background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border: 2px solid #3b82f6; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);">
                 <div style="padding: 20px;">
@@ -1116,9 +1044,54 @@ body {
                 </div>
             </section>
             <?php endif; ?>
-
-            <!-- Debug Container -->
-            <div id="debugContainer" style="display: none;"></div>
+            
+                    <!-- Filtreler -->
+            <section class="card" id="filterSection">
+                <div class="filter-section">
+                    <div class="filter-group">
+                        
+                        <div class="multi-select-container">
+                            <div class="multi-select-input" onclick="toggleDropdown('itemName')">
+                                <div id="itemNameTags"></div>
+                                <input type="text" id="filterItemName" class="filter-input" placeholder="KALEM TANIMI" onkeyup="handleFilterInput('itemName', this.value)" onfocus="openDropdownIfClosed('itemName')" onclick="event.stopPropagation();">
+                            </div>
+                            <div class="multi-select-dropdown" id="itemNameDropdown">
+                                <div class="multi-select-option" data-value="" onclick="selectOption('itemName', '', 'Tümü')">Tümü</div>
+                                <div id="itemNameOptions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="filter-group">
+                        
+                        <div class="multi-select-container">
+                            <div class="multi-select-input" onclick="toggleDropdown('itemGroup')">
+                                <div id="itemGroupTags"></div>
+                                <input type="text" id="filterItemGroup" class="filter-input" placeholder="KALEM GRUBU" onkeyup="handleFilterInput('itemGroup', this.value)" onfocus="openDropdownIfClosed('itemGroup')" onclick="event.stopPropagation();">
+                            </div>
+                            <div class="multi-select-dropdown" id="itemGroupDropdown">
+                                <div class="multi-select-option" data-value="" onclick="selectOption('itemGroup', '', 'Tümü')">Tümü</div>
+                                <div id="itemGroupOptions"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="filter-group">
+                        
+                        <div class="multi-select-container">
+                            <div class="multi-select-input" onclick="toggleDropdown('stockStatus')">
+                                <div id="stockStatusTags"></div>
+                                <input type="text" id="filterStockStatus" class="filter-input" placeholder="ŞUBE STOK DURUMU" readonly>
+                            </div>
+                            <div class="multi-select-dropdown" id="stockStatusDropdown">
+                                <div class="multi-select-option" data-value="" onclick="selectOption('stockStatus', '', 'Tümü')">Tümü</div>
+                                <div class="multi-select-option" data-value="Var" onclick="selectOption('stockStatus', 'Var', 'Var')">Var</div>
+                                <div class="multi-select-option" data-value="Yok" onclick="selectOption('stockStatus', 'Yok', 'Yok')">Yok</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
             <!-- Tablo -->
             <section class="card">
@@ -1223,41 +1196,6 @@ let allItemGroups = [];
 let filteredItemNames = [];
 let filteredItemGroups = [];
 let itemsData = [];
-
-// Debug bilgilerini göster
-function showDebugInfo(debug) {
-    const container = document.getElementById('debugContainer');
-    if (!container) return;
-    
-    let html = '<div class="card" style="background: #fef3c7; border: 2px solid #f59e0b; margin-bottom: 1.5rem;">';
-    html += '<h3 style="color: #92400e; margin-bottom: 1rem;">🔍 Debug Bilgileri</h3>';
-    html += '<div style="font-family: monospace; font-size: 0.85rem; color: #78350f;">';
-    html += `<p><strong>Session U_AS_OWNR:</strong> ${debug.session_uAsOwnr || 'N/A'}</p>`;
-    html += `<p><strong>Session Branch:</strong> ${debug.session_branch || 'N/A'}</p>`;
-    html += `<p><strong>Filter:</strong> ${debug.filter || 'N/A'}</p>`;
-    html += `<p><strong>Query URL:</strong> ${debug.query || 'N/A'}</p>`;
-    html += `<p><strong>HTTP Status:</strong> ${debug.http_status || 'N/A'}</p>`;
-    html += `<p><strong>Response Keys:</strong> ${(debug.response_keys || []).join(', ') || 'N/A'}</p>`;
-    html += `<p><strong>Has 'value' key:</strong> ${debug.has_value ? 'Evet' : 'Hayır'}</p>`;
-    
-    if (debug.error) {
-        html += `<p style="color: #dc2626;"><strong>Error:</strong> <pre style="background: white; padding: 0.5rem; border-radius: 4px; overflow-x: auto;">${JSON.stringify(debug.error, null, 2)}</pre></p>`;
-    }
-    
-    if (debug.response_error) {
-        html += `<p style="color: #dc2626;"><strong>Response Error:</strong> <pre style="background: white; padding: 0.5rem; border-radius: 4px; overflow-x: auto;">${JSON.stringify(debug.response_error, null, 2)}</pre></p>`;
-    }
-    
-    if (debug.full_response) {
-        html += `<p style="color: #dc2626;"><strong>Full Response:</strong> <pre style="background: white; padding: 1rem; border-radius: 6px; overflow-x: auto; max-height: 400px; overflow-y: auto;">${JSON.stringify(debug.full_response, null, 2)}</pre></p>`;
-    }
-    
-    html += '</div>';
-    html += '</div>';
-    
-    container.innerHTML = html;
-    container.style.display = 'block';
-}
 
 // Sayfa yüklendiğinde verileri getir (filtre seçenekleri dropdown açıldığında yüklenecek)
 document.addEventListener('DOMContentLoaded', function() {
@@ -1659,12 +1597,6 @@ function loadItems() {
     fetch(url)
         .then(res => res.json())
         .then(data => {
-            // Debug bilgilerini kontrol et
-            if (data.debug) {
-                console.error('🔍 Debug Bilgileri:', data.debug);
-                showDebugInfo(data.debug);
-            }
-            
             hasMore = data.hasMore || false;
             itemsData = data.data || []; // YENİ: Items data'sını global scope'ta sakla
             
@@ -2074,10 +2006,48 @@ function updateUnregisteredInfoInSepet() {
     }
 }
 
+// Sayfa geçiş animasyonu - Normal talep oluştur
+function navigateToNormal() {
+    const mainContent = document.querySelector('.main-content');
+    
+    // Normal talep oluştur: sola kayarak çık
+    mainContent.classList.add('page-slide-out-left');
+    
+    // Animasyon bitince sayfayı yükle
+    setTimeout(() => {
+        window.location.href = 'DisTedarikSO.php';
+    }, 300);
+}
+
+// Sayfa geçiş animasyonu - Kayıt dışı gelen mal
+function navigateToUnregistered() {
+    const mainContent = document.querySelector('.main-content');
+    
+    // Kayıt dışı gelen mal: sağa kayarak çık
+    mainContent.classList.add('page-slide-out-right');
+    
+    // Animasyon bitince sayfayı yükle
+    setTimeout(() => {
+        window.location.href = 'DisTedarikSO.php?mode=unregistered';
+    }, 300);
+}
+
 // Kayıt dışı alanlar değiştiğinde sepet panelini güncelle
 document.addEventListener('DOMContentLoaded', function() {
     const urlParams = new URLSearchParams(window.location.search);
     const isUnregisteredMode = urlParams.get('mode') === 'unregistered';
+    const mainContent = document.querySelector('.main-content');
+    
+    // Sayfa yüklendiğinde animasyon ekle (kısa bir gecikme ile daha smooth)
+    setTimeout(() => {
+        if (isUnregisteredMode) {
+            // Kayıt dışı mod: sağdan kayarak gel
+            mainContent.style.animation = 'slideInFromRight 0.6s ease-out';
+        } else {
+            // Normal mod: soldan kayarak gel
+            mainContent.style.animation = 'slideInFromLeft 0.6s ease-out';
+        }
+    }, 50);
     
     if (isUnregisteredMode) {
         const vendorInput = document.getElementById('vendorInput');

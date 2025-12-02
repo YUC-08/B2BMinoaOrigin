@@ -187,11 +187,6 @@ $teslimatMiktarMap = []; // Alıcı şubenin teslim aldığı miktar (fiziksel -
 $outgoingStockTransferInfo = null;
 $incomingStockTransferInfo = null;
 
-// 9280 numaralı StockTransfer'i direkt sorgula (debug için ve sevk miktarı için)
-// NOT: U_ASB2B_QutMaster filtresi çalışmıyor gibi görünüyor, bu yüzden direkt DocEntry ile de deneyeceğiz
-$st9280Data = null;
-$st9280Lines = [];
-
 // Sevk miktarı: Hazırlanıyor (2), Sevk Edildi (3) ve Tamamlandı (4) durumlarında göster
 // İlk StockTransfer: gönderici depo -> sevkiyat depo (U_ASB2B_QutMaster = docEntry)
 // Sevk miktarı = İlk StockTransfer belgesindeki StockTransferLines'daki Quantity değerleri
@@ -863,77 +858,6 @@ body {
             
             <section class="card">
                 <div class="section-title">Transfer Detayı</div>
-                
-                <!-- DEBUG BİLGİLERİ -->
-                <div style="background: #f3f4f6; padding: 1rem; margin-bottom: 1rem; border-radius: 8px; font-family: monospace; font-size: 0.875rem; max-height: 500px; overflow-y: auto;">
-                    <strong style="color: #dc2626;">🔍 DEBUG BİLGİLERİ:</strong><br><br>
-                    
-                    <strong>1. REQUEST DATA:</strong><br>
-                    <strong>DocEntry:</strong> <?= htmlspecialchars($docEntry) ?><br>
-                    <strong>Status:</strong> <?= htmlspecialchars($status) ?><br>
-                    <strong>FromWarehouse:</strong> <?= htmlspecialchars($fromWarehouse) ?><br>
-                    <strong>ToWarehouse:</strong> <?= htmlspecialchars($toWarehouse) ?><br>
-                    <strong>RequestData Keys:</strong> <?= htmlspecialchars(implode(', ', array_keys($requestData ?? []))) ?><br><br>
-                    
-                    <strong>2. LINES (InventoryTransferRequest):</strong><br>
-                    <strong>Lines Count:</strong> <?= count($lines) ?><br>
-                    <strong>Lines Empty:</strong> <?= empty($lines) ? 'TRUE (BOŞ)' : 'FALSE (DOLU)' ?><br>
-                    <strong>Lines Type:</strong> <?= gettype($lines) ?><br>
-                    <?php if (!empty($lines)): ?>
-                        <strong>İlk Line:</strong><br>
-                        <pre style="background: white; padding: 0.5rem; margin-top: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem;"><?= htmlspecialchars(json_encode($lines[0] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
-                    <?php endif; ?><br>
-                    
-                    <strong>3. STOCK TRANSFER (Sevk):</strong><br>
-                    <strong>Sevk Query:</strong> <?= htmlspecialchars($sevkQuery ?? 'YOK') ?><br>
-                    <strong>Sevk Query Status:</strong> <?= htmlspecialchars($sevkData['status'] ?? 'NO STATUS') ?><br>
-                    <strong>OutgoingStockTransferInfo:</strong> <?= !empty($outgoingStockTransferInfo) ? 'VAR' : 'YOK' ?><br>
-                    <?php if (!empty($outgoingStockTransferInfo)): ?>
-                        <strong>StockTransfer DocEntry:</strong> <?= htmlspecialchars($outgoingStockTransferInfo['DocEntry'] ?? 'BULUNAMADI') ?><br>
-                        <strong>StockTransfer DocNum:</strong> <?= htmlspecialchars($outgoingStockTransferInfo['DocNum'] ?? 'BULUNAMADI') ?><br>
-                        <strong>StockTransfer FromWarehouse:</strong> <?= htmlspecialchars($outgoingStockTransferInfo['FromWarehouse'] ?? 'BULUNAMADI') ?><br>
-                        <strong>StockTransfer ToWarehouse:</strong> <?= htmlspecialchars($outgoingStockTransferInfo['ToWarehouse'] ?? 'BULUNAMADI') ?><br>
-                        <strong>StockTransfer U_ASB2B_QutMaster:</strong> <?= htmlspecialchars($outgoingStockTransferInfo['U_ASB2B_QutMaster'] ?? 'BULUNAMADI') ?><br>
-                    <?php endif; ?>
-                    <strong>Sevk Miktar Map:</strong><br>
-                    <pre style="background: white; padding: 0.5rem; margin-top: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem;"><?= htmlspecialchars(json_encode($sevkMiktarMap ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre><br>
-                    
-                    <strong>4. SEVK MİKTAR MAP:</strong><br>
-                    <pre style="background: white; padding: 0.5rem; margin-top: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem;"><?= htmlspecialchars(json_encode($sevkMiktarMap ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre><br>
-                    
-                    <strong>5. TESLİMAT MİKTAR MAP:</strong><br>
-                    <pre style="background: white; padding: 0.5rem; margin-top: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem;"><?= htmlspecialchars(json_encode($teslimatMiktarMap ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre><br>
-                    
-                    <strong>6. WAREHOUSE BİLGİLERİ:</strong><br>
-                    <strong>Sevkiyat Depo:</strong> <?= htmlspecialchars($sevkiyatDepo ?? 'BULUNAMADI') ?><br>
-                    <strong>Ana Depo:</strong> <?= htmlspecialchars($anaDepo ?? 'BULUNAMADI') ?><br><br>
-                    
-                    <strong>7. STOCK TRANSFER 9280 (Direkt Sorgu):</strong><br>
-                    <strong>9280 Query Status:</strong> <?= htmlspecialchars($st9280Response['status'] ?? 'NO STATUS') ?><br>
-                    <strong>9280 Data:</strong> <?= !empty($st9280Data) ? 'VAR' : 'YOK' ?><br>
-                    <?php if (!empty($st9280Data)): ?>
-                        <strong>9280 DocEntry:</strong> <?= htmlspecialchars($st9280Data['DocEntry'] ?? 'N/A') ?><br>
-                        <strong>9280 DocNum:</strong> <?= htmlspecialchars($st9280Data['DocNum'] ?? 'N/A') ?><br>
-                        <strong>9280 FromWarehouse:</strong> <?= htmlspecialchars($st9280Data['FromWarehouse'] ?? 'N/A') ?><br>
-                        <strong>9280 ToWarehouse:</strong> <?= htmlspecialchars($st9280Data['ToWarehouse'] ?? 'N/A') ?><br>
-                        <strong>9280 U_ASB2B_QutMaster:</strong> <?= htmlspecialchars($st9280Data['U_ASB2B_QutMaster'] ?? 'N/A') ?><br>
-                        <strong>9280 Lines Count:</strong> <?= count($st9280Lines) ?><br>
-                        <?php if (!empty($st9280Lines)): ?>
-                            <strong>9280 StockTransferLines:</strong><br>
-                            <?php foreach ($st9280Lines as $idx => $line): ?>
-                                <div style="margin-top: 0.5rem; padding: 0.5rem; background: white; border-radius: 4px;">
-                                    <strong>Line #<?= $idx + 1 ?>:</strong><br>
-                                    ItemCode: <?= htmlspecialchars($line['ItemCode'] ?? 'N/A') ?>, 
-                                    Quantity: <?= htmlspecialchars($line['Quantity'] ?? 'N/A') ?>, 
-                                    FromWarehouseCode: <?= htmlspecialchars($line['FromWarehouseCode'] ?? 'N/A') ?>, 
-                                    WarehouseCode: <?= htmlspecialchars($line['WarehouseCode'] ?? 'N/A') ?><br>
-                                    <pre style="background: #f9fafb; padding: 0.5rem; margin-top: 0.25rem; border-radius: 4px; overflow-x: auto; font-size: 0.7rem;"><?= htmlspecialchars(json_encode($line, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
-                                </div>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    <?php endif; ?>
-                </div>
-                
                 <table class="data-table">
                     <thead>
                         <tr>
@@ -1011,24 +935,9 @@ body {
                                 <tr>
                                     <td><?= htmlspecialchars($itemCode) ?></td>
                                     <td><?= htmlspecialchars($itemName) ?></td>
-                                    <td style="text-align: center;">
-                                        <?= $talepDisplay ?>
-                                        <div style="font-size: 0.7rem; color: #dc2626; margin-top: 2px;">
-                                            DEBUG: <?= $talepMiktar ?> (quantity: <?= $quantity ?>)
-                                        </div>
-                                    </td>
-                                    <td style="text-align: center;">
-                                        <?= $sevkDisplay ?>
-                                        <div style="font-size: 0.7rem; color: #dc2626; margin-top: 2px;">
-                                            DEBUG: <?= $sevkMiktar ?> (map: <?= $sevkMiktarMap[$itemCode] ?? 'YOK' ?>, remaining: <?= $remaining ?>, status: <?= $status ?>)
-                                        </div>
-                                    </td>
-                                    <td style="text-align: center;">
-                                        <?= $teslimatDisplay ?>
-                                        <div style="font-size: 0.7rem; color: #dc2626; margin-top: 2px;">
-                                            DEBUG: <?= $teslimatMiktar ?> (map: <?= $teslimatMiktarMap[$itemCode] ?? 'YOK' ?>)
-                                        </div>
-                                    </td>
+                                    <td style="text-align: center;"><?= $talepDisplay ?></td>
+                                    <td style="text-align: center;"><?= $sevkDisplay ?></td>
+                                    <td style="text-align: center;"><?= $teslimatDisplay ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>

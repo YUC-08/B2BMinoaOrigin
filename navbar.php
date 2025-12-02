@@ -38,6 +38,20 @@ if ($avatarText === '') {
     }
     $avatarText = $initials ?: '?';
 }
+
+// Kullanıcı tipine göre başlık belirleme (U_AS_OWNR'a göre)
+$sectionTitle = '';
+$sectionPage = '';
+// Session'dan U_AS_OWNR al (login.php'de kaydediliyor)
+$uAsOwnr = $_SESSION['U_AS_OWNR'] ?? '';
+if ($uAsOwnr === 'MS') {
+    $sectionTitle = 'Etkinlik';
+    $sectionPage = 'Muse.php';
+} elseif ($uAsOwnr === 'CF' || $uAsOwnr === 'YE') {
+    // Kafe ve Restorant için Üretim (CF veya YE sektör kodları)
+    $sectionTitle = 'Üretim';
+    $sectionPage = 'Uretim.php';
+}
 ?>
 
 <style>
@@ -191,6 +205,44 @@ if ($avatarText === '') {
 
     .sidebar.expanded .sidebar-text {
         display: inline;
+    }
+
+    /* Section Title - Normal sidebar-item gibi */
+    .sidebar-section-title {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 14px 20px;
+        color: rgba(255, 255, 255, 0.85);
+        text-decoration: none;
+        font-size: 14px;
+        font-weight: 500;
+        transition: all 0.3s ease;
+        border-radius: 12px;
+        margin: 4px 8px;
+        white-space: nowrap;
+        position: relative;
+        justify-content: flex-start;
+    }
+
+    .sidebar:not(.expanded) .sidebar-section-title {
+        justify-content: center;
+        padding: 14px 0;
+    }
+
+    .sidebar-section-title:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: white;
+    }
+
+    .sidebar-section-title.active {
+        background: linear-gradient(90deg, rgba(0, 82, 204, 0.3) 0%, transparent 100%);
+        color: white;
+        border-left: 3px solid #0052CC;
+    }
+
+    .sidebar-item.invisible {
+        display: none !important;
     }
 
     /* Updated footer with better collapsed state */
@@ -592,24 +644,39 @@ if ($avatarText === '') {
             <span class="sidebar-text">Transferler</span>
         </a>
 
-        <a href="Check-List.php" class="sidebar-item <?= ($currentPage == 'Check-List.php') ? 'active' : '' ?>">
-            <span class="sidebar-icon">✓</span>
-            <span class="sidebar-text">Check List</span>
+        <?php if (!empty($sectionTitle) && !empty($sectionPage)): ?>
+        <a href="<?= htmlspecialchars($sectionPage) ?>" class="sidebar-item sidebar-section-title <?= ($currentPage == $sectionPage || ($sectionPage == 'Uretim.php' && ($currentPage == 'UretimDetay.php' || $currentPage == 'UretimSO.php')) || ($sectionPage == 'Muse.php' && strpos($currentPage, 'Muse') !== false)) ? 'active' : '' ?>">
+            <span class="sidebar-icon"><?= $sectionTitle === 'Etkinlik' ? '🎭' : '🍳' ?></span>
+            <span class="sidebar-text"><?= htmlspecialchars($sectionTitle) ?></span>
         </a>
+        <?php endif; ?>
 
         <a href="Fire-Zayi.php" class="sidebar-item <?= ($currentPage == 'Fire-Zayi.php') ? 'active' : '' ?>">
             <span class="sidebar-icon">⚠️</span>
             <span class="sidebar-text">Fire & Zayi</span>
         </a>
 
-        <a href="Ticket.php" class="sidebar-item <?= ($currentPage == 'Ticket.php') ? 'active' : '' ?>">
+        <a href="Stok.php" class="sidebar-item <?= ($currentPage == 'Stok.php') ? 'active' : '' ?>">
+            <span class="sidebar-icon">📊</span>
+            <span class="sidebar-text">Stok Sayımı</span>
+        </a>
+
+        <!-- Check List - tüm kullanıcılar için invisible -->
+        <a href="Check-List.php" class="sidebar-item invisible">
+            <span class="sidebar-icon">✓</span>
+            <span class="sidebar-text">Check List</span>
+        </a>
+
+        <!-- Ticket - tüm kullanıcılar için invisible -->
+        <a href="Ticket.php" class="sidebar-item invisible">
             <span class="sidebar-icon">🎫</span>
             <span class="sidebar-text">Ticket</span>
         </a>
 
-        <a href="Stok.php" class="sidebar-item <?= ($currentPage == 'Stok.php') ? 'active' : '' ?>">
-            <span class="sidebar-icon">📊</span>
-            <span class="sidebar-text">Stok Sayımı</span>
+        <!-- Durum menü öğesi - her zaman invisible -->
+        <a href="#" class="sidebar-item invisible">
+            <span class="sidebar-icon">📋</span>
+            <span class="sidebar-text">Durum</span>
         </a>
     </div>
 

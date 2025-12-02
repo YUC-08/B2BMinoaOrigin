@@ -243,6 +243,76 @@ https://192.168.54.185:50000/b1s/v2/BusinessPartners?$select=CardCode,CardName&$
 
 ---
 
+## 13. Kullanıcılar - EmployeesInfo (Tüm Kullanıcılar - Basit)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/EmployeesInfo`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER
+```
+
+**Tam URL:**
+```
+https://192.168.54.185:50000/b1s/v2/EmployeesInfo?$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER
+```
+
+---
+
+## 14. Kullanıcılar - EmployeesInfo (KT veya MS sektöründeki Muse kullanıcıları)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/EmployeesInfo`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER
+$filter=(U_AS_OWNR eq 'KT' or U_AS_OWNR eq 'MS') and contains(U_ASB2B_USER, 'muse')
+$expand=Branch2($select=Name,Description,Code)
+$top=100
+```
+
+**Tam URL (encoded - expand düzeltildi):**
+```
+https://192.168.54.185:50000/b1s/v2/EmployeesInfo?$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER&$filter=(U_AS_OWNR%20eq%20%27KT%27%20or%20U_AS_OWNR%20eq%20%27MS%27)%20and%20contains(U_ASB2B_USER,%20%27muse%27)&$expand=Branch2($select=Name,Description,Code)&$top=100
+```
+
+**Response Örneği:**
+```json
+{
+  "value": [
+    {
+      "EmployeeID": 1,
+      "FirstName": "Muse",
+      "LastName": "Kullanıcı",
+      "U_AS_OWNR": "KT",
+      "U_ASB2B_USER": "muse",
+      "Branch2": {
+        "Name": "100",
+        "Description": "Taksim Pera",
+        "Code": "100"
+      }
+    }
+  ]
+}
+```
+
+**Not:** 
+- `U_AS_OWNR`: Sektör kodu (KT veya MS)
+- `EmployeeID, FirstName, LastName`: Kullanıcının kimliği
+- `U_ASB2B_USER`: B2B kullanıcı adı
+- `Branch2`: Şube bilgileri (expand ile gelir)
+- `$top=100` (tırnak işareti olmadan)
+
+---
+
 ## 10. Transferler - Warehouses (ToWarehouse - Sevkiyat Deposu)
 **Method:** GET  
 **URL:** `https://192.168.54.185:50000/b1s/v2/Warehouses`  

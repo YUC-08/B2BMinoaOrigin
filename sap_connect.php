@@ -241,6 +241,7 @@ class SAPConnect {
     public function get($endpoint) { return $this->sendRequest("GET", $endpoint); }
     public function post($endpoint, $payload) { return $this->sendRequest("POST", $endpoint, $payload); }
     public function patch($endpoint, $payload) { return $this->sendRequest("PATCH", $endpoint, $payload); }
+    public function delete($endpoint) { return $this->sendRequest("DELETE", $endpoint); }
 
    
 }
