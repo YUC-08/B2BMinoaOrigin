@@ -5,19 +5,50 @@ if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
     exit;
 }
 
-// Filtreler (GET parametrelerinden)
-$filterStatus = $_GET['status'] ?? '';
-$filterStartDate = $_GET['start_date'] ?? '';
-$filterEndDate = $_GET['end_date'] ?? '';
+include 'sap_connect.php';
+$sap = new SAPConnect();
 
-// Status mapping
+// Session'dan U_AS_OWNR bilgisini al
+$uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
+
+if (empty($uAsOwnr)) {
+    die("Session bilgileri eksik. Lütfen tekrar giriş yapın.");
+}
+
+// Status mapping - SAP B1SL'de InventoryCountings için DocumentStatus değerleri
 function getStatusText($status) {
     $statusMap = [
-        '1' => 'Beklemede',
-        '2' => 'Tamamlandı',
-        '3' => 'İptal Edildi'
+        'bost_Open' => 'Açık',
+        'bost_Close' => 'Kapalı',
+        'cdsOpen' => 'Açık',      // Counting Document Status Open
+        'cdsClosed' => 'Kapalı',  // Counting Document Status Closed
+        'cds_Open' => 'Açık',
+        'cds_Closed' => 'Kapalı',
+        'Open' => 'Açık',
+        'Closed' => 'Kapalı'
     ];
-    return $statusMap[$status] ?? 'Tüm Durumlar';
+    return $statusMap[$status] ?? ($status ?: 'Bilinmiyor');
+}
+
+function getStatusClass($status) {
+    $classMap = [
+        'bost_Open' => 'status-processing',
+        'bost_Close' => 'status-completed',
+        'cdsOpen' => 'status-processing',
+        'cdsClosed' => 'status-completed',
+        'cds_Open' => 'status-processing',
+        'cds_Closed' => 'status-completed',
+        'Open' => 'status-processing',
+        'Closed' => 'status-completed'
+    ];
+    // Açık olanlar için processing, kapalı olanlar için completed
+    if (stripos($status, 'open') !== false || stripos($status, 'açık') !== false) {
+        return 'status-processing';
+    }
+    if (stripos($status, 'close') !== false || stripos($status, 'kapalı') !== false) {
+        return 'status-completed';
+    }
+    return $classMap[$status] ?? 'status-unknown';
 }
 
 // Tarih formatlama
@@ -28,13 +59,30 @@ function formatDate($date) {
     }
     return date('d.m.Y', strtotime($date));
 }
+
+// InventoryCountings verilerini çek
+$inventoryCountingsSelect = "DocumentEntry,CountDate,Remarks,DocumentStatus";
+$inventoryCountingsFilter = "U_AS_OWNR eq '{$uAsOwnr}'";
+$inventoryCountingsOrderBy = "DocumentEntry desc";
+$inventoryCountingsQuery = "InventoryCountings?\$select=" . urlencode($inventoryCountingsSelect) . "&\$filter=" . urlencode($inventoryCountingsFilter) . "&\$orderby=" . urlencode($inventoryCountingsOrderBy);
+
+$inventoryCountingsData = $sap->get($inventoryCountingsQuery);
+
+$inventoryCountings = [];
+if (($inventoryCountingsData['status'] ?? 0) == 200) {
+    if (isset($inventoryCountingsData['response']['value'])) {
+        $inventoryCountings = $inventoryCountingsData['response']['value'];
+    } elseif (isset($inventoryCountingsData['value'])) {
+        $inventoryCountings = $inventoryCountingsData['value'];
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stok Sayımlarım - MINOA</title>
+    <title>Stok Sayım Listesi - MINOA</title>
     <link rel="stylesheet" href="styles.css">
     <style>
 * {
@@ -91,141 +139,6 @@ body {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
     margin-bottom: 24px;
     overflow: visible;
-}
-
-/* Filter Section */
-.filter-section {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 20px;
-    padding: 24px;
-    background: #f8fafc;
-    border-bottom: 1px solid #e5e7eb;
-}
-
-.filter-group {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.filter-group label {
-    font-weight: 600;
-    color: #1e3a8a;
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-
-/* Date Input */
-.filter-group input[type="date"] {
-    padding: 10px 14px;
-    border: 2px solid #e5e7eb;
-    border-radius: 8px;
-    font-size: 14px;
-    transition: all 0.2s ease;
-    background: white;
-}
-
-.filter-group input[type="date"]:hover {
-    border-color: #3b82f6;
-}
-
-.filter-group input[type="date"]:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-}
-
-/* Single Select Dropdown */
-.single-select-container {
-    position: relative;
-    width: 100%;
-}
-
-.single-select-input {
-    display: flex;
-    align-items: center;
-    padding: 10px 14px;
-    border: 2px solid #e5e7eb;
-    border-radius: 8px;
-    background: white;
-    cursor: pointer;
-    min-height: 42px;
-    transition: all 0.2s ease;
-}
-
-.single-select-input:hover {
-    border-color: #3b82f6;
-}
-
-.single-select-input.active {
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-}
-
-.single-select-input input {
-    border: none;
-    outline: none;
-    flex: 1;
-    background: transparent;
-    cursor: pointer;
-    font-size: 14px;
-    color: #2c3e50;
-}
-
-.dropdown-arrow {
-    transition: transform 0.2s;
-    color: #6b7280;
-    font-size: 12px;
-}
-
-.single-select-input.active .dropdown-arrow {
-    transform: rotate(180deg);
-}
-
-/* Increased z-index to 9999 to ensure dropdown appears above all elements */
-.single-select-dropdown {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: white;
-    border: 2px solid #3b82f6;
-    border-top: none;
-    border-radius: 0 0 8px 8px;
-    max-height: 240px;
-    overflow-y: auto;
-    z-index: 9999;
-    display: none;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    margin-top: -2px;
-}
-
-.single-select-dropdown.show {
-    display: block;
-}
-
-.single-select-option {
-    padding: 10px 14px;
-    cursor: pointer;
-    border-bottom: 1px solid #f3f4f6;
-    font-size: 14px;
-    transition: background 0.15s ease;
-}
-
-.single-select-option:hover {
-    background: #f8fafc;
-}
-
-.single-select-option.selected {
-    background: #3b82f6;
-    color: white;
-    font-weight: 500;
-}
-
-.single-select-option:last-child {
-    border-bottom: none;
 }
 
 /* Table Controls */
@@ -321,11 +234,6 @@ body {
     background: #f0f9ff;
 }
 
-.btn-secondary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
 .btn-icon {
     padding: 8px 16px;
     border: none;
@@ -334,6 +242,8 @@ body {
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
+    text-decoration: none;
+    display: inline-block;
 }
 
 .btn-view {
@@ -344,6 +254,17 @@ body {
 
 .btn-view:hover {
     background: #dbeafe;
+}
+
+.btn-update {
+    background: #3b82f6;
+    color: white;
+    border: 1px solid #2563eb;
+}
+
+.btn-update:hover {
+    background: #2563eb;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
 }
 
 /* Table Styles */
@@ -393,29 +314,14 @@ body {
     letter-spacing: 0.3px;
 }
 
-.status-pending {
-    background: #fef3c7;
-    color: #92400e;
-}
-
 .status-processing {
-    background: #dbeafe;
-    color: #1e40af;
-}
-
-.status-shipped {
-    background: #bfdbfe;
-    color: #1e3a8a;
-}
-
-.status-completed {
     background: #d1fae5;
     color: #065f46;
 }
 
-.status-cancelled {
-    background: #fee2e2;
-    color: #991b1b;
+.status-completed {
+    background: #f3f4f6;
+    color: #6b7280;
 }
 
 .status-unknown {
@@ -423,18 +329,21 @@ body {
     color: #6b7280;
 }
 
+.action-buttons {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
 @media (max-width: 768px) {
     .content-wrapper {
         padding: 16px 20px;
     }
     
-    .filter-section {
-        grid-template-columns: 1fr;
-    }
-    
     .table-controls {
         flex-direction: column;
         align-items: stretch;
+        gap: 16px;
     }
     
     .data-table {
@@ -445,6 +354,11 @@ body {
     .data-table td {
         padding: 12px 10px;
     }
+    
+    .action-buttons {
+        flex-direction: column;
+        gap: 4px;
+    }
 }
     </style>
 </head>
@@ -453,179 +367,99 @@ body {
 
     <main class="main-content">
         <header class="page-header">
-            <h2>Stok Sayımlarım</h2>
+            <h2>Stok Sayım Listesi</h2>
             <button class="btn btn-primary" onclick="window.location.href='StokSayimSO.php'">+ Yeni Sayım Oluştur</button>
         </header>
 
         <div class="content-wrapper">
             <section class="card">
-                <div class="filter-section">
-                    <div class="filter-group">
-                        <label>Talep Durumu</label>
-                        <div class="single-select-container">
-                            <div class="single-select-input" onclick="toggleDropdown('status')">
-                                <input type="text" id="filterStatus" value="<?= $filterStatus ? getStatusText($filterStatus) : 'Tümü' ?>" placeholder="Seçiniz..." readonly>
-                                <span class="dropdown-arrow">▼</span>
-                            </div>
-                            <div class="single-select-dropdown" id="statusDropdown">
-                                <div class="single-select-option <?= empty($filterStatus) ? 'selected' : '' ?>" data-value="" onclick="selectStatus('')">Tümü</div>
-                                <div class="single-select-option <?= $filterStatus === '1' ? 'selected' : '' ?>" data-value="1" onclick="selectStatus('1')">Beklemede</div>
-                                <div class="single-select-option <?= $filterStatus === '2' ? 'selected' : '' ?>" data-value="2" onclick="selectStatus('2')">Tamamlandı</div>
-                                <div class="single-select-option <?= $filterStatus === '3' ? 'selected' : '' ?>" data-value="3" onclick="selectStatus('3')">İptal Edildi</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="filter-group">
-                        <label>Başlangıç Tarihi</label>
-                        <input type="date" id="start-date" value="<?= htmlspecialchars($filterStartDate) ?>" onblur="applyFilters()">
-                    </div>
-                    
-                    <div class="filter-group">
-                        <label>Bitiş Tarihi</label>
-                        <input type="date" id="end-date" value="<?= htmlspecialchars($filterEndDate) ?>" onblur="applyFilters()">
-                    </div>
-                </div>
-            </section>
-
-            <section class="card">
                 <div class="table-controls">
                     <div class="show-entries">
                         Sayfada 
-                        <select class="entries-select" id="entriesPerPage" onchange="applyFilters()">
+                        <select class="entries-select" id="entriesPerPage">
                             <option value="25" selected>25</option>
                             <option value="50">50</option>
-                            <option value="75">75</option>
+                            <option value="100">100</option>
                         </select>
                         kayıt göster
                     </div>
                     <div class="search-box">
-                        <input type="text" class="search-input" id="tableSearch" placeholder="Ara..." onkeyup="if(event.key==='Enter') applyFilters()">
-                        <button class="btn btn-secondary" onclick="applyFilters()">🔍</button>
+                        <input type="text" class="search-input" id="tableSearch" placeholder="Ara..." onkeyup="if(event.key==='Enter') performSearch()">
+                        <button class="btn btn-secondary" onclick="performSearch()">🔍</button>
                     </div>
                 </div>
 
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Şube Kodu</th>
-                            <th>Sayım No</th>
-                            <th>Sayım Tarihi</th>
-                            <th>Giriş Tarihi</th>
-                            <th>Durum</th>
-                            <th>İşlemler</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td>100</td>
-                            <td>1</td>
-                            <td>01.12.2025</td>
-                            <td>01.12.2025</td>
-                            <td><span class="status-badge status-processing">Beklemede</span></td>
-                            <td>
-                                <button class="btn-icon btn-view">👁️ Detay</button>
-                                <button class="btn-icon btn-view">✏️ Düzenle</button>
-                            </td>
-                        </tr>
-                        <tr>
-                            <td>100</td>
-                            <td>2</td>
-                            <td>28.11.2025</td>
-                            <td>28.11.2025</td>
-                            <td><span class="status-badge status-completed">Tamamlandı</span></td>
-                            <td>
-                                <button class="btn-icon btn-view">👁️ Detay</button>
-                            </td>
-                        </tr>
-                        <tr>
-                            <td>100</td>
-                            <td>3</td>
-                            <td>15.11.2025</td>
-                            <td>16.11.2025</td>
-                            <td><span class="status-badge status-pending">Beklemede</span></td>
-                            <td>
-                                <button class="btn-icon btn-view">👁️ Detay</button>
-                                <button class="btn-icon btn-view">✏️ Düzenle</button>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
+                <div style="overflow-x: auto;">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Doküman No</th>
+                                <th>Sayım Tarihi</th>
+                                <th>Açıklama</th>
+                                <th>Durum</th>
+                                <th>İşlemler</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tableBody">
+                            <?php if (empty($inventoryCountings)): ?>
+                            <tr>
+                                <td colspan="5" style="text-align: center; padding: 40px; color: #6b7280;">
+                                    Henüz stok sayımı bulunmamaktadır.
+                                </td>
+                            </tr>
+                            <?php else: ?>
+                            <?php foreach ($inventoryCountings as $counting): ?>
+                            <tr>
+                                <td><?= htmlspecialchars($counting['DocumentEntry'] ?? '') ?></td>
+                                <td><?= formatDate($counting['CountDate'] ?? '') ?></td>
+                                <td><?= htmlspecialchars($counting['Remarks'] ?? '') ?></td>
+                                <td>
+                                    <?php 
+                                    $status = $counting['DocumentStatus'] ?? '';
+                                    $statusText = getStatusText($status);
+                                    $statusClass = getStatusClass($status);
+                                    ?>
+                                    <span class="status-badge <?= $statusClass ?>"><?= $statusText ?></span>
+                                </td>
+                                <td>
+                                    <div class="action-buttons">
+                                        <a href="StokSayimDetay.php?DocumentEntry=<?= $counting['DocumentEntry'] ?>" class="btn-icon btn-view">Detay</a>
+                                        <?php 
+                                        // Açık olanlar için Güncelle butonu göster
+                                        $isOpen = in_array($status, ['bost_Open', 'cdsOpen', 'cds_Open', 'Open']) || 
+                                                  (stripos($status, 'open') !== false);
+                                        if ($isOpen): 
+                                        ?>
+                                        <a href="StokSayimSO.php?DocumentEntry=<?= $counting['DocumentEntry'] ?>&continue=1" class="btn-icon btn-update">Güncelle</a>
+                                        <?php else: ?>
+                                        <span style="color: #9ca3af;">-</span>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
             </section>
         </div>
     </main>
 
     <script>
-function toggleDropdown(type) {
-    const dropdown = document.getElementById(type + 'Dropdown');
-    const input = dropdown.parentElement.querySelector('.single-select-input');
-    const isOpen = dropdown.classList.contains('show');
-    
-    document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
-    document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
-    
-    if (!isOpen) {
-        dropdown.classList.add('show');
-        input.classList.add('active');
-    }
-}
+        function performSearch() {
+            const searchTerm = document.getElementById('tableSearch').value.toLowerCase();
+            const rows = document.querySelectorAll('#tableBody tr');
+            
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(searchTerm) ? '' : 'none';
+            });
+        }
 
-function selectStatus(value) {
-    const params = new URLSearchParams(window.location.search);
-    if (value === '') {
-        params.delete('status');
-    } else {
-        params.set('status', value);
-    }
-    window.location.href = 'Stok.php?' + params.toString();
-}
-
-function applyFilters() {
-    const params = new URLSearchParams(window.location.search);
-    
-    const status = document.getElementById('filterStatus').getAttribute('data-value') || '';
-    if (status) {
-        params.set('status', status);
-    } else {
-        params.delete('status');
-    }
-    
-    const startDate = document.getElementById('start-date').value;
-    if (startDate) {
-        params.set('start_date', startDate);
-    } else {
-        params.delete('start_date');
-    }
-    
-    const endDate = document.getElementById('end-date').value;
-    if (endDate) {
-        params.set('end_date', endDate);
-    } else {
-        params.delete('end_date');
-    }
-    
-    const search = document.getElementById('tableSearch').value.trim();
-    if (search) {
-        params.set('search', search);
-    } else {
-        params.delete('search');
-    }
-    
-    const entries = document.getElementById('entriesPerPage').value;
-    if (entries) {
-        params.set('entries', entries);
-    }
-    
-    window.location.href = 'Stok.php?' + params.toString();
-}
-
-// Close dropdowns when clicking outside
-document.addEventListener('click', function(e) {
-    if (!e.target.closest('.single-select-container')) {
-        document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
-        document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
-    }
-});
+        document.getElementById('tableSearch').addEventListener('input', function(e) {
+            performSearch();
+        });
     </script>
 </body>
 </html>
