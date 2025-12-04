@@ -43,8 +43,7 @@ $sayimTarihi = date('Y-m-d');
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     background: #f5f7fa;
-    color: #2c3e50;
-    line-height: 1.6;
+    color: #111827;
 }
 
 .main-content {
@@ -74,6 +73,7 @@ body {
     color: #1e40af;
     font-size: 1.75rem;
     font-weight: 600;
+    margin: 0;
 }
 
 .content-wrapper {
@@ -85,62 +85,82 @@ body {
 .card {
     background: white;
     border-radius: 12px;
-    padding: 1.5rem;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
     margin-bottom: 24px;
+    overflow: visible;
 }
 
-.input-section {
+.card-header {
+    padding: 20px 24px 0 24px;
+}
+
+.card-header h3 {
+    color: #1e40af;
+    font-size: 1.3rem;
+    font-weight: 600;
+    margin-bottom: 0;
+}
+
+.card-body {
+    padding: 16px 24px 24px 24px;
+}
+
+.form-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 1.5rem;
-    padding: 1.5rem;
-    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-    border-radius: 12px;
+    gap: 16px;
 }
 
-.input-group {
+.form-group {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
 }
 
-.input-group label {
-    font-weight: 600;
-    color: #1e40af;
-    font-size: 0.9rem;
-}
-
-.input-group .readonly-field {
-    padding: 10px 14px;
-    background: #f3f4f6;
-    border: 2px solid #e5e7eb;
-    border-radius: 8px;
-    font-size: 14px;
-    color: #374151;
+.form-group label {
+    font-size: 13px;
+    color: #4b5563;
+    margin-bottom: 4px;
     font-weight: 500;
 }
 
-.input-group input[type="date"],
-.input-group input[type="text"] {
+.form-group input[type="date"],
+.form-group input[type="text"],
+.form-group input[type="number"] {
     padding: 10px 14px;
     border: 2px solid #e5e7eb;
     border-radius: 8px;
     font-size: 14px;
     transition: all 0.2s ease;
     background: white;
+    width: 100%;
+    min-height: 42px;
+    box-sizing: border-box;
 }
 
-.input-group input[type="date"]:hover,
-.input-group input[type="text"]:hover {
-    border-color: #3b82f6;
-}
-
-.input-group input[type="date"]:focus,
-.input-group input[type="text"]:focus {
+.form-group input[type="date"]:focus,
+.form-group input[type="text"]:focus,
+.form-group input[type="number"]:focus {
     outline: none;
     border-color: #3b82f6;
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.form-group input[readonly],
+.readonly-field {
+    background: #f3f4f6;
+    cursor: not-allowed;
+    color: #374151;
+    font-weight: 500;
+}
+
+.readonly-field {
+    padding: 10px 14px;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    font-size: 14px;
+    min-height: 42px;
+    display: flex;
+    align-items: center;
 }
 
 .multi-select-container {
@@ -158,7 +178,7 @@ body {
     background: white;
     cursor: pointer;
     min-height: 42px;
-    transition: all 0.2s;
+    transition: all 0.2s ease;
 }
 
 .multi-select-input:hover {
@@ -176,7 +196,7 @@ body {
     flex: 1;
     background: transparent;
     min-width: 120px;
-    font-size: 0.95rem;
+    font-size: 14px;
 }
 
 .multi-select-dropdown {
@@ -203,7 +223,7 @@ body {
     cursor: pointer;
     border-bottom: 1px solid #f3f4f6;
     transition: background 0.15s;
-    font-size: 0.9rem;
+    font-size: 14px;
 }
 
 .multi-select-option:hover {
@@ -216,7 +236,6 @@ body {
     font-weight: 500;
 }
 
-/* Table Controls */
 .table-controls {
     display: flex;
     justify-content: space-between;
@@ -236,10 +255,11 @@ body {
 .entries-select {
     padding: 8px 12px;
     border: 2px solid #e5e7eb;
-    border-radius: 6px;
+    border-radius: 8px;
     font-size: 14px;
     cursor: pointer;
     transition: all 0.2s ease;
+    background: white;
 }
 
 .entries-select:hover {
@@ -261,10 +281,10 @@ body {
 .search-input {
     padding: 8px 12px;
     border: 2px solid #e5e7eb;
-    border-radius: 6px;
+    border-radius: 8px;
     font-size: 14px;
     min-width: 220px;
-    transition: border-color 0.2s;
+    transition: all 0.2s ease;
 }
 
 .search-input:focus {
@@ -276,21 +296,22 @@ body {
 .data-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.9rem;
+    font-size: 14px;
 }
 
 .data-table thead {
-    background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%);
-    color: white;
+    background: #f8fafc;
 }
 
 .data-table th {
-    padding: 1rem;
+    padding: 12px 16px;
     text-align: left;
     font-weight: 600;
-    font-size: 0.85rem;
+    font-size: 13px;
+    color: #4b5563;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    border-bottom: 2px solid #e5e7eb;
 }
 
 .data-table tbody tr {
@@ -303,7 +324,7 @@ body {
 }
 
 .data-table td {
-    padding: 1rem;
+    padding: 12px 16px;
     color: #374151;
 }
 
@@ -314,16 +335,16 @@ body {
 }
 
 .btn {
-    padding: 0.625rem 1.25rem;
+    padding: 10px 20px;
     border: none;
     border-radius: 8px;
-    font-size: 0.95rem;
-    font-weight: 500;
+    font-size: 14px;
+    font-weight: 600;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all 0.2s ease;
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 8px;
     text-decoration: none;
 }
 
@@ -337,6 +358,12 @@ body {
     background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
     box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
     transform: translateY(-1px);
+}
+
+.btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
 }
 
 .btn-secondary {
@@ -366,15 +393,29 @@ body {
     text-align: center;
     padding: 3rem;
     color: #9ca3af;
-    font-size: 0.95rem;
+    font-size: 14px;
+}
+
+@media (max-width: 1200px) {
+    .form-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
 }
 
 @media (max-width: 768px) {
+    .page-header {
+        padding: 16px 1rem;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+        height: auto;
+    }
+
     .content-wrapper {
-        padding: 16px 20px;
+        padding: 16px;
     }
     
-    .input-section {
+    .form-grid {
         grid-template-columns: 1fr;
     }
     
@@ -397,50 +438,51 @@ body {
         <div class="content-wrapper">
             <!-- Üst Kart: Giriş Alanları -->
             <section class="card">
-                <div class="input-section">
-                    <div class="input-group">
-                        <label>Şube Kodu:</label>
-                        <div class="readonly-field"><?= htmlspecialchars($whsCode ?: '-') ?></div>
-                    </div>
-                    
-                    <div class="input-group">
-                        <label>Kullanıcı:</label>
-                        <div class="readonly-field"><?= htmlspecialchars($displayUser ?: '-') ?></div>
-                    </div>
-                    
-                    <div class="input-group">
-                        <label>Sayım Tarihi:</label>
-                        <input type="date" id="sayimTarihi" value="<?= htmlspecialchars($sayimTarihi) ?>" required>
-                    </div>
-                    
-                    <div class="input-group">
-                        <label>Kalem Tanımı:</label>
-                        <div class="multi-select-container">
-                            <div class="multi-select-input" onclick="toggleDropdown('itemName')">
-                                <div id="itemNameTags"></div>
-                                <input type="text" id="filterItemName" placeholder="Kalem Tanımı seçiniz" readonly>
+                <div class="card-body">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>Şube Kodu:</label>
+                            <div class="readonly-field"><?= htmlspecialchars($whsCode ?: '-') ?></div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Kullanıcı:</label>
+                            <div class="readonly-field"><?= htmlspecialchars($displayUser ?: '-') ?></div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Sayım Tarihi:</label>
+                            <input type="date" id="sayimTarihi" value="<?= htmlspecialchars($sayimTarihi) ?>" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Kalem Tanımı:</label>
+                            <div class="multi-select-container">
+                                <div class="multi-select-input" onclick="toggleDropdown('itemName')">
+                                    <div id="itemNameTags"></div>
+                                    <input type="text" id="filterItemName" placeholder="Kalem Tanımı seçiniz" readonly>
+                                </div>
+                                <div class="multi-select-dropdown" id="itemNameDropdown">
+                                    <div class="multi-select-option" data-value="" onclick="selectOption('itemName', '', 'Tümü')">Tümü</div>
+                                    <div id="itemNameOptions"></div>
+                                </div>
                             </div>
-                            <div class="multi-select-dropdown" id="itemNameDropdown">
-                                <div class="multi-select-option" data-value="" onclick="selectOption('itemName', '', 'Tümü')">Tümü</div>
-                                <div id="itemNameOptions"></div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Kalem Grubu:</label>
+                            <div class="multi-select-container">
+                                <div class="multi-select-input" onclick="toggleDropdown('itemGroup')">
+                                    <div id="itemGroupTags"></div>
+                                    <input type="text" id="filterItemGroup" placeholder="Kalem Grubu seçiniz" readonly>
+                                </div>
+                                <div class="multi-select-dropdown" id="itemGroupDropdown">
+                                    <div class="multi-select-option" data-value="" onclick="selectOption('itemGroup', '', 'Tümü')">Tümü</div>
+                                    <div id="itemGroupOptions"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
-                    
-                    <div class="input-group">
-                        <label>Kalem Grubu:</label>
-                        <div class="multi-select-container">
-                            <div class="multi-select-input" onclick="toggleDropdown('itemGroup')">
-                                <div id="itemGroupTags"></div>
-                                <input type="text" id="filterItemGroup" placeholder="Kalem Grubu seçiniz" readonly>
-                            </div>
-                            <div class="multi-select-dropdown" id="itemGroupDropdown">
-                                <div class="multi-select-option" data-value="" onclick="selectOption('itemGroup', '', 'Tümü')">Tümü</div>
-                                <div id="itemGroupOptions"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
             </section>
 
             <!-- Alt Kart: Tablo -->
@@ -615,4 +657,3 @@ document.addEventListener('click', function(e) {
     </script>
 </body>
 </html>
-

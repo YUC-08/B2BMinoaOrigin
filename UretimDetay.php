@@ -5,9 +5,9 @@ if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
     exit;
 }
 
-// Sadece YE ve CF kullanıcıları giriş yapabilir
+// Sadece RT ve CF kullanıcıları giriş yapabilir (YE göremez)
 $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
-if ($uAsOwnr !== 'YE' && $uAsOwnr !== 'CF') {
+if ($uAsOwnr !== 'RT' && $uAsOwnr !== 'CF') {
     header("Location: index.php");
     exit;
 }
@@ -1139,4 +1139,3 @@ tbody td {
     </script>
 </body>
 </html>
-

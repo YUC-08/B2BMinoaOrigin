@@ -142,66 +142,6 @@ if (!$errorMsg && $fromWarehouse && $toWarehouse) {
 
 $allRows = $data['response']['value'] ?? [];
 
-// StockTransfer bilgilerini çek (Teslimat Belge No için)
-// Tüm tamamlanmış/sevk edilmiş transferler için StockTransfer DocNum'larını bir kerede çek
-$stockTransferMap = []; // DocEntry => ['DocNum' => ..., 'DocEntry' => ...]
-if (!empty($allRows)) {
-    // Status 3 veya 4 olan kayıtların DocEntry'lerini topla
-    $docEntries = [];
-    foreach ($allRows as $row) {
-        $status = trim((string)($row['U_ASB2B_STATUS'] ?? '1'));
-        if ($status === '3' || $status === '4') {
-            $docEntries[] = (int)($row['DocEntry'] ?? 0);
-        }
-    }
-    
-    // Her DocEntry için StockTransfer sorgusu yap
-    if (!empty($docEntries)) {
-        foreach ($docEntries as $docEntryInt) {
-            if ($docEntryInt <= 0) continue;
-            
-            // Önce U_ASB2B_QutMaster ile dene (Transferler-Detay.php'deki gibi manuel %20 kullan)
-            $stockTransferQuery = "StockTransfers?\$filter=U_ASB2B_QutMaster%20eq%20{$docEntryInt}"
-                                . "&\$select=DocEntry,DocNum"
-                                . "&\$orderby=DocEntry%20desc"
-                                . "&\$top=1";
-            $stockTransferData = $sap->get($stockTransferQuery);
-            $stockTransfers = $stockTransferData['response']['value'] ?? [];
-            
-            // Bulunamazsa BaseEntry ile dene
-            if (empty($stockTransfers)) {
-                $stockTransferQuery2 = "StockTransfers?\$filter=BaseType%20eq%20125000001%20and%20BaseEntry%20eq%20{$docEntryInt}"
-                                     . "&\$select=DocEntry,DocNum"
-                                     . "&\$orderby=DocEntry%20desc"
-                                     . "&\$top=1";
-                $stockTransferData2 = $sap->get($stockTransferQuery2);
-                $stockTransfers = $stockTransferData2['response']['value'] ?? [];
-            }
-            
-            if (!empty($stockTransfers)) {
-                $stockTransferInfo = $stockTransfers[0];
-                $stDocNum = $stockTransferInfo['DocNum'] ?? null;
-                $stDocEntry = $stockTransferInfo['DocEntry'] ?? null;
-                
-                // Eğer DocNum gelmediyse, direkt StockTransfer sorgusu yap
-                if (empty($stDocNum) && !empty($stDocEntry)) {
-                    $stDirectQuery = "StockTransfers({$stDocEntry})?\$select=DocEntry,DocNum";
-                    $stDirectData = $sap->get($stDirectQuery);
-                    $stDirectInfo = $stDirectData['response'] ?? null;
-                    if ($stDirectInfo) {
-                        $stDocNum = $stDirectInfo['DocNum'] ?? null;
-                    }
-                }
-                
-                $stockTransferMap[$docEntryInt] = [
-                    'DocNum' => $stDocNum,
-                    'DocEntry' => $stDocEntry
-                ];
-            }
-        }
-    }
-}
-
 // Status mapping
 function getStatusText($status) {
     $statusMap = [
@@ -860,26 +800,13 @@ if (!empty($rows)) {
         $docDate = formatDate($row['DocDate'] ?? '');
         $dueDate = formatDate($row['DueDate'] ?? '');
         $numAtCard = $row['U_ASB2B_NumAtCard'] ?? '-';
-        $aliciSube = $row['U_ASWHSF'] ?? '-';
-        
-        // Teslimat Belge No: StockTransfer varsa onun DocNum'ını göster, yoksa numAtCard
-        $teslimatBelgeNo = $numAtCard;
-        $docEntryInt = (int)$docEntry;
-        if ($docEntryInt > 0 && isset($stockTransferMap[$docEntryInt])) {
-            $stInfo = $stockTransferMap[$docEntryInt];
-            // DocNum varsa onu göster, yoksa DocEntry göster, o da yoksa numAtCard
-            if (!empty($stInfo['DocNum'])) {
-                $teslimatBelgeNo = $stInfo['DocNum'];
-            } elseif (!empty($stInfo['DocEntry'])) {
-                $teslimatBelgeNo = $stInfo['DocEntry'];
-            }
-        }
+        $aliciSube = $row['U_ASWHSF'] ?? '-'; 
 
         echo "<tr>
                 <td>{$docEntry}</td>
                 <td>{$docDate}</td>
                 <td>{$dueDate}</td>
-                <td>{$teslimatBelgeNo}</td>
+                <td>{$numAtCard}</td>
                 <td>{$aliciSube}</td>
                 <td><span class='status-badge {$statusClass}'>{$statusText}</span></td>
                 <td>

@@ -5,9 +5,9 @@ if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
     exit;
 }
 
-// Sadece YE ve CF kullanıcıları giriş yapabilir
+// Sadece RT ve CF kullanıcıları giriş yapabilir (YE göremez)
 $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
-if ($uAsOwnr !== 'YE' && $uAsOwnr !== 'CF') {
+if ($uAsOwnr !== 'RT' && $uAsOwnr !== 'CF') {
     header("Location: index.php");
     exit;
 }
@@ -627,6 +627,17 @@ body {
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
+.form-select:disabled {
+    background-color: #f3f4f6;
+    color: #6b7280;
+    cursor: not-allowed;
+    opacity: 0.7;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: none;
+}
+
 /* Single Select Dropdown (Arama yapılabilir tek seçimli) - AnaDepo ile aynı */
 .single-select-container {
     position: relative;
@@ -1096,8 +1107,11 @@ tbody td select:focus {
             <form id="recipeForm" onsubmit="handleSubmit(event)">
                 <!-- Ürün / Reçete Bilgileri -->
                 <div class="card">
-                    <div class="card-header">
+                    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
                         <h3>Ürün / Reçete Bilgileri</h3>
+                        <button type="button" class="btn btn-primary" onclick="openAddProductModal()" style="font-size: 0.80rem; padding: 6px 14px; white-space: nowrap;">
+                            + Yeni kalem (hammadde) ekle
+                        </button>
                     </div>
                     <div class="card-body">
                         <div class="form-grid">
@@ -1168,7 +1182,7 @@ tbody td select:focus {
                                     <input type="text" id="materialSearch" class="search-input" placeholder="Malzeme kodu / adı yazın..." autocomplete="off" oninput="filterMaterials(this.value)" onkeydown="handleMaterialKeydown(event)" onfocus="showMaterialSuggestions()">
                                     <div id="materialAutocomplete" class="material-autocomplete"></div>
                                 </div>
-                                <select id="materialUnit" class="form-select" style="min-width: 150px;">
+                                <select id="materialUnit" class="form-select" style="min-width: 150px;" disabled>
                                     <option value="">Birim Seçiniz</option>
                                     <?php if (!empty($unitOfMeasurements)): ?>
                                         <?php foreach ($unitOfMeasurements as $uom): ?>
@@ -1180,6 +1194,7 @@ tbody td select:focus {
                                         <option value="">Veri yüklenemedi</option>
                                     <?php endif; ?>
                                 </select>
+                                <input type="hidden" id="materialUnitHidden" name="materialUnitHidden" value="">
                                 <button type="button" class="btn btn-primary" onclick="addMaterial()">Ekle</button>
                             </div>
                         </div>
@@ -1189,11 +1204,8 @@ tbody td select:focus {
                 <!-- Malzemeler Tablosu (Sepet) -->
                 <div class="card">
                     <div class="card-body">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <div style="margin-bottom: 8px;">
                             <h3 style="color: #1e40af; font-size: 1.25rem; font-weight: 600; margin: 0;">Malzemeler (Reçete İçeriği)</h3>
-                            <button type="button" class="btn btn-primary" onclick="openAddProductModal()" style="font-size: 0.875rem; padding: 8px 16px;">
-                                + Ürün Ekle
-                            </button>
                         </div>
                         <p style="color: #6b7280; font-size: 13px; margin-bottom: 20px;">Reçetede kullanılacak malzemeleri ekleyin. Her malzeme için miktar ve birim belirtin.</p>
                         <div class="table-container">
@@ -1399,8 +1411,10 @@ tbody td select:focus {
         function addMaterial() {
             const searchInput = document.getElementById('materialSearch');
             const materialUnitSelect = document.getElementById('materialUnit');
+            const materialUnitHidden = document.getElementById('materialUnitHidden');
             const materialName = searchInput.value.trim();
-            const selectedUnit = materialUnitSelect.value;
+            // Disabled select'ten değil, hidden input'tan değeri al
+            const selectedUnit = materialUnitHidden ? materialUnitHidden.value : materialUnitSelect.value;
 
             if (!materialName) {
                 alert('Lütfen malzeme adı giriniz.');
@@ -1436,9 +1450,10 @@ tbody td select:focus {
                     <input type="number" name="miktar[]" placeholder="0" min="0" step="0.01" value="0">
                 </td>
                 <td>
-                    <select name="birim[]" class="form-select">
+                    <select name="birim_display[]" class="form-select" disabled style="appearance: none; -webkit-appearance: none; -moz-appearance: none; background-image: none;">
                         ${unitOptions}
                     </select>
+                    <input type="hidden" name="birim[]" value="${selectedUnit}">
                 </td>
                 <td>
                     <button type="button" class="btn btn-danger" onclick="removeMaterial(this)">🗑️ Sil</button>
@@ -1448,6 +1463,9 @@ tbody td select:focus {
             tbody.appendChild(newRow);
             searchInput.value = '';
             materialUnitSelect.value = '';
+            if (materialUnitHidden) {
+                materialUnitHidden.value = '';
+            }
             searchInput.focus();
         }
 
@@ -1642,6 +1660,7 @@ tbody td select:focus {
             // Malzeme seçildiğinde birim bilgisini otomatik doldur
             if (materialCodeMap[material] && materialCodeMap[material].uom) {
                 const materialUnitSelect = document.getElementById('materialUnit');
+                const materialUnitHidden = document.getElementById('materialUnitHidden');
                 const uomCode = materialCodeMap[material].uom;
                 // UnitOfMeasurements listesinde eşleşen birimi bul
                 const matchingUnit = unitOfMeasurements.find(uom => 
@@ -1649,6 +1668,9 @@ tbody td select:focus {
                 );
                 if (matchingUnit) {
                     materialUnitSelect.value = matchingUnit.code;
+                    if (materialUnitHidden) {
+                        materialUnitHidden.value = matchingUnit.code;
+                    }
                 }
             }
         }
@@ -1913,6 +1935,7 @@ tbody td select:focus {
                     // Ürün adını malzeme arama alanına yaz ve ekle
                     const materialSearch = document.getElementById('materialSearch');
                     const materialUnitSelect = document.getElementById('materialUnit');
+                    const materialUnitHidden = document.getElementById('materialUnitHidden');
                     materialSearch.value = productName;
                     
                     // Birimi seç (ana birim)
@@ -1923,6 +1946,9 @@ tbody td select:focus {
                             const matchingUnit = Array.from(document.querySelectorAll('#materialUnit option')).find(opt => opt.value === unitCode);
                             if (matchingUnit) {
                                 materialUnitSelect.value = unitCode;
+                                if (materialUnitHidden) {
+                                    materialUnitHidden.value = unitCode;
+                                }
                             }
                         }
                     }

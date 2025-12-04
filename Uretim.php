@@ -5,9 +5,9 @@ if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
     exit;
 }
 
-// Sadece YE ve CF kullanıcıları giriş yapabilir
+// Sadece RT ve CF kullanıcıları giriş yapabilir (YE göremez)
 $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
-if ($uAsOwnr !== 'YE' && $uAsOwnr !== 'CF') {
+if ($uAsOwnr !== 'RT' && $uAsOwnr !== 'CF') {
     header("Location: index.php");
     exit;
 }
@@ -79,7 +79,7 @@ foreach ($items as $index => $item) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Üretim Reçeteleri - MINOA</title>
+    <title>Ürün Reçeteleri - MINOA</title>
     <link rel="stylesheet" href="styles.css">
     <style>
 * {
@@ -333,7 +333,7 @@ tbody td:first-child {
     
     <div class="main-content">
         <div class="page-header">
-            <h2>Üretim Reçeteleri</h2>
+            <h2>Ürün Reçeteleri</h2>
             <button class="btn btn-primary" onclick="window.location.href='UretimSO.php'">+ Yeni Reçete Ekle</button>
         </div>
 
@@ -409,4 +409,3 @@ tbody td:first-child {
     </script>
 </body>
 </html>
-

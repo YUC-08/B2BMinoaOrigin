@@ -151,13 +151,42 @@ if ($toWarehouse) {
     $incomingData = $sap->get($incomingQuery);
     $incomingTransfersRaw = $incomingData['response']['value'] ?? [];
     
+    // OPTİMİZASYON: Tüm warehouse kodlarını topla ve tek sorguda çek
+    $uniqueFromWhsCodes = [];
+    foreach ($incomingTransfersRaw as $transfer) {
+        $fromWhsCode = $transfer['FromWarehouse'] ?? '';
+        if (!empty($fromWhsCode) && !in_array($fromWhsCode, $uniqueFromWhsCodes)) {
+            $uniqueFromWhsCodes[] = $fromWhsCode;
+        }
+    }
+    
+    // Tüm warehouse'ları tek sorguda çek
+    $warehouseAnadepoMapIncoming = [];
+    if (!empty($uniqueFromWhsCodes)) {
+        // OData $filter ile OR kullanarak tüm warehouse'ları tek sorguda çek
+        $whsFilterParts = [];
+        foreach ($uniqueFromWhsCodes as $whsCode) {
+            $whsFilterParts[] = "WarehouseCode eq '{$whsCode}'";
+        }
+        $whsFilter = "(" . implode(" or ", $whsFilterParts) . ")";
+        $whsQuery = "Warehouses?\$select=WarehouseCode,U_ASB2B_FATH&\$filter=" . urlencode($whsFilter);
+        $whsData = $sap->get($whsQuery);
+        $whsList = $whsData['response']['value'] ?? [];
+        
+        // Map oluştur: WarehouseCode => isAnadepo
+        foreach ($whsList as $whs) {
+            $whsCode = $whs['WarehouseCode'] ?? '';
+            $isAnadepo = ($whs['U_ASB2B_FATH'] ?? '') === 'Y';
+            $warehouseAnadepoMapIncoming[$whsCode] = $isAnadepo;
+        }
+    }
+    
     // Ana depo warehouse'larını filtrele
     foreach ($incomingTransfersRaw as $transfer) {
         $fromWhsCode = $transfer['FromWarehouse'] ?? '';
         if (!empty($fromWhsCode)) {
-            $whsCheckQuery = "Warehouses('{$fromWhsCode}')?\$select=U_ASB2B_FATH";
-            $whsCheckData = $sap->get($whsCheckQuery);
-            $isAnadepo = ($whsCheckData['response']['U_ASB2B_FATH'] ?? '') === 'Y';
+            // Map'ten kontrol et (tek sorgu ile çekilmiş)
+            $isAnadepo = $warehouseAnadepoMapIncoming[$fromWhsCode] ?? false;
             if (!$isAnadepo) {
                 $incomingTransfers[] = $transfer;
             }
@@ -227,62 +256,67 @@ if ($fromWarehouse) {
             $debugInfo['error'] = $outgoingData['response']['error'];
         }
         
+        // OPTİMİZASYON: Tüm warehouse kodlarını topla ve tek sorguda çek
+        $uniqueToWhsCodes = [];
+        foreach ($outgoingTransfersRaw as $transfer) {
+            $toWhsCode = $transfer['ToWarehouse'] ?? '';
+            if (!empty($toWhsCode) && !in_array($toWhsCode, $uniqueToWhsCodes)) {
+                $uniqueToWhsCodes[] = $toWhsCode;
+            }
+        }
+        
+        // Tüm warehouse'ları tek sorguda çek
+        $warehouseAnadepoMap = [];
+        if (!empty($uniqueToWhsCodes)) {
+            // OData $filter ile OR kullanarak tüm warehouse'ları tek sorguda çek
+            $whsFilterParts = [];
+            foreach ($uniqueToWhsCodes as $whsCode) {
+                $whsFilterParts[] = "WarehouseCode eq '{$whsCode}'";
+            }
+            $whsFilter = "(" . implode(" or ", $whsFilterParts) . ")";
+            $whsQuery = "Warehouses?\$select=WarehouseCode,U_ASB2B_FATH&\$filter=" . urlencode($whsFilter);
+            $whsData = $sap->get($whsQuery);
+            $whsList = $whsData['response']['value'] ?? [];
+            
+            // Map oluştur: WarehouseCode => isAnadepo
+            foreach ($whsList as $whs) {
+                $whsCode = $whs['WarehouseCode'] ?? '';
+                $isAnadepo = ($whs['U_ASB2B_FATH'] ?? '') === 'Y';
+                $warehouseAnadepoMap[$whsCode] = $isAnadepo;
+            }
+        }
+        
         // Ana depo warehouse'larını filtrele ve her transfer için detayları çek
         foreach ($outgoingTransfersRaw as $transfer) {
             $toWhsCode = $transfer['ToWarehouse'] ?? '';
             if (!empty($toWhsCode)) {
-                $whsCheckQuery = "Warehouses('{$toWhsCode}')?\$select=U_ASB2B_FATH";
-                $whsCheckData = $sap->get($whsCheckQuery);
-                $isAnadepo = ($whsCheckData['response']['U_ASB2B_FATH'] ?? '') === 'Y';
+                // Map'ten kontrol et (tek sorgu ile çekilmiş)
+                $isAnadepo = $warehouseAnadepoMap[$toWhsCode] ?? false;
                 if (!$isAnadepo) {
                     $docEntry = $transfer['DocEntry'] ?? '';
-                    if (!empty($docEntry)) {
-                        // InventoryTransferRequests için lines'ı çek - her iki navigation property'yi de dene
-                        $lines = [];
+                    $status = $transfer['U_ASB2B_STATUS'] ?? '0';
+                    
+                    // OPTİMİZASYON: Lines'ları sadece sepet için gerekli olan transferler için çek
+                    // Sepet sadece onay bekleyen transferler (status 0 veya 1) için kullanılıyor
+                    $lines = [];
+                    if (!empty($docEntry) && ($status == '0' || $status == '1')) {
+                        // Sadece onay bekleyen transferler için lines çek (sepet için gerekli)
+                        // En basit yöntemle çek: InventoryTransferRequestLines endpoint
+                        $linesQuery = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
+                        $linesData = $sap->get($linesQuery);
                         
-                        // 1) InventoryTransferRequestLines ile dene ($expand)
-                        $docQuery = "InventoryTransferRequests({$docEntry})?\$expand=InventoryTransferRequestLines";
-                        $docData = $sap->get($docQuery);
-                        
-                        if (($docData['status'] ?? 0) == 200) {
-                            $requestData = $docData['response'] ?? null;
-                            if ($requestData && isset($requestData['InventoryTransferRequestLines']) && is_array($requestData['InventoryTransferRequestLines'])) {
-                                $lines = $requestData['InventoryTransferRequestLines'];
-                            }
-                        }
-                        
-                        // 2) Hâlâ boşsa, StockTransferLines ile tekrar dene ($expand)
-                        if (empty($lines)) {
-                            $docQuery2 = "InventoryTransferRequests({$docEntry})?\$expand=StockTransferLines";
-                            $docData2 = $sap->get($docQuery2);
-                            
-                            if (($docData2['status'] ?? 0) == 200) {
-                                $requestData2 = $docData2['response'] ?? null;
-                                if ($requestData2 && isset($requestData2['StockTransferLines']) && is_array($requestData2['StockTransferLines'])) {
-                                    $lines = $requestData2['StockTransferLines'];
+                        if (($linesData['status'] ?? 0) == 200) {
+                            $linesResponse = $linesData['response'] ?? null;
+                            if ($linesResponse) {
+                                if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
+                                    $lines = $linesResponse['value'];
+                                } elseif (is_array($linesResponse) && !isset($linesResponse['value'])) {
+                                    $lines = $linesResponse;
                                 }
                             }
                         }
                         
-                        // 3) Hâlâ boşsa, navigation endpointleri tek tek dene
-                        // a) InventoryTransferRequestLines endpoint
-                        if (empty($lines)) {
-                            $linesQuery = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
-                            $linesData = $sap->get($linesQuery);
-                            
-                            if (($linesData['status'] ?? 0) == 200) {
-                                $linesResponse = $linesData['response'] ?? null;
-                                if ($linesResponse) {
-                                    if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
-                                        $lines = $linesResponse['value'];
-                                    } elseif (is_array($linesResponse) && !isset($linesResponse['value'])) {
-                                        $lines = $linesResponse;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // b) Hâlâ boşsa, StockTransferLines endpoint
+                        // Eğer hala boşsa, StockTransferLines ile dene
                         if (empty($lines)) {
                             $linesQuery2 = "InventoryTransferRequests({$docEntry})/StockTransferLines";
                             $linesData2 = $sap->get($linesQuery2);
@@ -290,105 +324,17 @@ if ($fromWarehouse) {
                             if (($linesData2['status'] ?? 0) == 200) {
                                 $linesResponse2 = $linesData2['response'] ?? null;
                                 if ($linesResponse2) {
-                                    // Önce 'value' array'ini kontrol et
                                     if (isset($linesResponse2['value']) && is_array($linesResponse2['value'])) {
                                         $lines = $linesResponse2['value'];
-                                    } 
-                                    // Eğer direkt array ise
-                                    elseif (is_array($linesResponse2) && !isset($linesResponse2['value']) && !isset($linesResponse2['@odata.context'])) {
+                                    } elseif (is_array($linesResponse2) && !isset($linesResponse2['value'])) {
                                         $lines = $linesResponse2;
                                     }
-                                    // Eğer StockTransferLines object olarak geliyorsa (navigation property)
-                                    elseif (isset($linesResponse2['StockTransferLines'])) {
-                                        $stockTransferLines = $linesResponse2['StockTransferLines'];
-                                        // Eğer object ise, değerlerini array'e çevir
-                                        if (is_array($stockTransferLines) && !isset($stockTransferLines[0]) && !empty($stockTransferLines)) {
-                                            // Object formatında geliyorsa (key-value pairs), array'e çevir
-                                            $lines = array_values($stockTransferLines);
-                                        } elseif (is_array($stockTransferLines)) {
-                                            $lines = $stockTransferLines;
-                                        }
-                                    }
                                 }
                             }
                         }
-                        
-                        // Her line için stok miktarını çek ve normalize et
-                        if (!empty($lines) && is_array($lines)) {
-                            foreach ($lines as &$line) {
-                                // Line'ın array olduğundan emin ol
-                                if (!is_array($line)) {
-                                    continue;
-                                }
-                                
-                                $itemCode = $line['ItemCode'] ?? '';
-                                $quantity = floatval($line['Quantity'] ?? 0);
-                                $stockQty = 0;
-                                $baseQty = 1.0; // Varsayılan BaseQty
-                                $uomCode = $line['UoMCode'] ?? 'AD';
-                                
-                                if (!empty($itemCode)) {
-                                    // Item bilgilerini çek (BaseQty ve stok için)
-                                    $itemQuery = "Items('{$itemCode}')?\$select=BaseQty,UoMCode&\$expand=ItemWarehouseInfoCollection";
-                                    $itemData = $sap->get($itemQuery);
-                                    
-                                    if (($itemData['status'] ?? 0) == 200) {
-                                        $itemInfo = $itemData['response'] ?? null;
-                                        if ($itemInfo) {
-                                            // BaseQty'yi al
-                                            $baseQty = floatval($itemInfo['BaseQty'] ?? 1.0);
-                                            $uomCode = $itemInfo['UoMCode'] ?? $line['UoMCode'] ?? 'AD';
-                                            
-                                            // Stok miktarını çek - ItemWarehouseInfoCollection içinden
-                                            if (!empty($fromWarehouse)) {
-                                                $itemWarehouseInfo = $itemInfo['ItemWarehouseInfoCollection'] ?? [];
-                                                if (is_array($itemWarehouseInfo) && !empty($itemWarehouseInfo)) {
-                                                    // WarehouseCode'a göre filtrele
-                                                    foreach ($itemWarehouseInfo as $whInfo) {
-                                                        if (is_array($whInfo) && ($whInfo['WarehouseCode'] ?? '') === $fromWarehouse) {
-                                                            $stockQty = floatval($whInfo['InStock'] ?? $whInfo['Available'] ?? 0);
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                                
-                                                // Eğer expand ile bulunamazsa, direkt navigation property ile dene
-                                                if ($stockQty == 0) {
-                                                    $whInfoQuery2 = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$fromWarehouse}'";
-                                                    $whInfoData2 = $sap->get($whInfoQuery2);
-                                                    if (($whInfoData2['status'] ?? 0) == 200 && isset($whInfoData2['response']['value'][0])) {
-                                                        $whInfo = $whInfoData2['response']['value'][0];
-                                                        if (is_array($whInfo)) {
-                                                            $stockQty = floatval($whInfo['InStock'] ?? $whInfo['Available'] ?? 0);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                // Normalize et - AnaDepo mantığına uygun
-                                // Quantity SAP'de BaseQty × kullanıcı miktarı olarak saklanıyor
-                                // Kullanıcıya gösterirken: Quantity / BaseQty = kullanıcı miktarı
-                                $userRequestedQty = $baseQty > 0 ? ($quantity / $baseQty) : $quantity;
-                                
-                                $line['_StockQty'] = $stockQty;
-                                $line['_RequestedQty'] = $userRequestedQty; // Kullanıcı miktarı
-                                $line['_BaseQty'] = $baseQty;
-                                $line['UoMCode'] = $uomCode;
-                                // Varsayılan: talep kadar gönder (kullanıcı sepette değiştirebilir)
-                                $line['_SentQty'] = $userRequestedQty;
-                            }
-                            unset($line);
-                        }
-                        
-                        // Normalize edilmiş lines'ı transfer'e ata
-                        $transfer['InventoryTransferRequestLines'] = $lines;
-                    } else {
-                        $transfer['InventoryTransferRequestLines'] = [];
                     }
                     
+                    $transfer['InventoryTransferRequestLines'] = $lines;
                     $outgoingTransfers[] = $transfer;
                 }
             } else {
@@ -418,7 +364,7 @@ function buildSearchData(...$parts) {
     return mb_strtolower($text ?? '', 'UTF-8');
 }
 
-// Warehouse isimlerini çek (ana depo warehouse'larını hariç tut)
+// OPTİMİZASYON: Warehouse isimlerini batch olarak çek (ana depo warehouse'larını hariç tut)
 $warehouseNamesMap = [];
 $allWarehouseCodes = [];
 foreach ($incomingTransfers as $transfer) {
@@ -433,16 +379,25 @@ foreach ($outgoingTransfers as $transfer) {
 }
 $allWarehouseCodes = array_unique($allWarehouseCodes);
 if (!empty($allWarehouseCodes)) {
+    // Tüm warehouse'ları tek sorguda çek
+    $whsFilterParts = [];
     foreach ($allWarehouseCodes as $whsCode) {
-        // Warehouse bilgisini çek ve ana depo olup olmadığını kontrol et
-        $whsQuery = "Warehouses('{$whsCode}')?\$select=WarehouseCode,WarehouseName,U_ASB2B_FATH";
-        $whsData = $sap->get($whsQuery);
-        if (($whsData['status'] ?? 0) == 200 && isset($whsData['response']['WarehouseName'])) {
-            // Ana depo değilse ekle (U_ASB2B_FATH ne 'Y')
-            $isAnadepo = ($whsData['response']['U_ASB2B_FATH'] ?? '') === 'Y';
-            if (!$isAnadepo) {
-                $warehouseNamesMap[$whsCode] = $whsData['response']['WarehouseName'];
-            }
+        $whsFilterParts[] = "WarehouseCode eq '{$whsCode}'";
+    }
+    $whsFilter = "(" . implode(" or ", $whsFilterParts) . ")";
+    $whsQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_FATH&\$filter=" . urlencode($whsFilter);
+    $whsData = $sap->get($whsQuery);
+    $whsList = $whsData['response']['value'] ?? [];
+    
+    // Map oluştur: WarehouseCode => WarehouseName (ana depo değilse)
+    foreach ($whsList as $whs) {
+        $whsCode = $whs['WarehouseCode'] ?? '';
+        $whsName = $whs['WarehouseName'] ?? '';
+        $isAnadepo = ($whs['U_ASB2B_FATH'] ?? '') === 'Y';
+        
+        // Ana depo değilse ekle
+        if (!$isAnadepo && !empty($whsName)) {
+            $warehouseNamesMap[$whsCode] = $whsName;
         }
     }
 }
@@ -467,6 +422,7 @@ body {
     background: #f5f7fa;
     color: #2c3e50;
     line-height: 1.6;
+    overflow-x: hidden;
 }
 
 /* Main content - adjusted for sidebar */
@@ -475,6 +431,61 @@ body {
     background: whitesmoke;
     padding: 0;
     min-height: 100vh;
+    position: relative;
+    overflow-x: hidden;
+    animation: slideInFromRight 0.4s ease-out;
+}
+
+.main-content.page-slide-out-left {
+    animation: slideOutToLeft 0.3s ease-in;
+}
+
+.main-content.page-slide-out-right {
+    animation: slideOutToRight 0.3s ease-in;
+}
+
+@keyframes slideInFromLeft {
+    from {
+        transform: translateX(-100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideInFromRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOutToLeft {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(-100%);
+        opacity: 0;
+    }
+}
+
+@keyframes slideOutToRight {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(100%);
+        opacity: 0;
+    }
 }
 
 .sidebar.expanded ~ .main-content {
@@ -879,7 +890,7 @@ input[type="checkbox"]:focus {
 
     <main class="main-content">
         <header class="page-header">
-                <h2>Transferler</h2>
+                <h2><?= $viewType === 'incoming' ? 'Gelen Transferler' : 'Giden Transferler' ?></h2>
 
             <div style="display: flex; gap: 12px; align-items: center;">
                 <?php if ($viewType === 'incoming'): ?>
@@ -939,11 +950,11 @@ input[type="checkbox"]:focus {
 
                             <label>Bitiş Tarihi</label>
 
-
+                                
                         <input type="date" class="filter-input" id="end-date" value="<?= htmlspecialchars($filterEndDate) ?>" onchange="applyFilters()">
-                        </div>
+                            </div>
 
-                    </div>
+                        </div>
 
 
                 <?php if ($viewType === 'incoming'): ?>
@@ -957,7 +968,7 @@ input[type="checkbox"]:focus {
                             <option value="75">75</option>
                         </select>
                         kayıt göster
-                            </div>
+                    </div>
 
                     <div class="search-box">
                         <input type="text" class="search-input" id="tableSearch" placeholder="Ara..." onkeyup="if(event.key==='Enter') performSearch()">
@@ -1622,6 +1633,16 @@ input[type="checkbox"]:focus {
                 }
             }
         }
+        
+        // Sayfa yüklendiğinde kayma animasyonunu tetikle
+        document.addEventListener('DOMContentLoaded', function() {
+            const mainContent = document.querySelector('.main-content');
+            if (mainContent) {
+                // Sayfa yüklendiğinde sağdan giriş animasyonu
+                mainContent.style.animation = 'slideInFromRight 0.4s ease-out';
+            }
+        });
     </script>
 </body>
 </html>
+               

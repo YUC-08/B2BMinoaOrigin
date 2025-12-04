@@ -10,7 +10,6 @@ $firstName  = $_SESSION['FirstName']  ?? '';
 $lastName   = $_SESSION['LastName']   ?? '';
 $userName   = $_SESSION['UserName']   ?? '';
 $ownerCode  = $_SESSION['U_AS_OWNR']  ?? '';
-$whsCode    = $_SESSION['WhsCode']    ?? '';
 // Branch2 bilgisini kontrol et: Önce Description (açıklayıcı isim), yoksa Name, yoksa boş
 $branchDesc = '';
 if (isset($_SESSION['Branch2']) && is_array($_SESSION['Branch2'])) {
@@ -37,20 +36,6 @@ if ($avatarText === '') {
         $initials = mb_strtoupper(mb_substr($userName, 0, 2, 'UTF-8'), 'UTF-8');
     }
     $avatarText = $initials ?: '?';
-}
-
-// Kullanıcı tipine göre başlık belirleme (U_AS_OWNR'a göre)
-$sectionTitle = '';
-$sectionPage = '';
-// Session'dan U_AS_OWNR al (login.php'de kaydediliyor)
-$uAsOwnr = $_SESSION['U_AS_OWNR'] ?? '';
-if ($uAsOwnr === 'MS') {
-    $sectionTitle = 'Etkinlik';
-    $sectionPage = 'Muse.php';
-} elseif ($uAsOwnr === 'CF' || $uAsOwnr === 'YE') {
-    // Kafe ve Restorant için Üretim (CF veya YE sektör kodları)
-    $sectionTitle = 'Üretim';
-    $sectionPage = 'Uretim.php';
 }
 ?>
 
@@ -140,6 +125,9 @@ if ($uAsOwnr === 'MS') {
         padding: 24px 0;
         overflow-y: auto;
         overflow-x: hidden;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
     }
 
     .sidebar-nav::-webkit-scrollbar {
@@ -171,12 +159,15 @@ if ($uAsOwnr === 'MS') {
         white-space: nowrap;
         position: relative;
         justify-content: flex-start;
+        min-height: 48px;
+        box-sizing: border-box;
     }
 
     /* Center icons when collapsed */
     .sidebar:not(.expanded) .sidebar-item {
         justify-content: center;
         padding: 14px 0;
+        margin: 4px 8px;
     }
 
 
@@ -205,44 +196,6 @@ if ($uAsOwnr === 'MS') {
 
     .sidebar.expanded .sidebar-text {
         display: inline;
-    }
-
-    /* Section Title - Normal sidebar-item gibi */
-    .sidebar-section-title {
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        padding: 14px 20px;
-        color: rgba(255, 255, 255, 0.85);
-        text-decoration: none;
-        font-size: 14px;
-        font-weight: 500;
-        transition: all 0.3s ease;
-        border-radius: 12px;
-        margin: 4px 8px;
-        white-space: nowrap;
-        position: relative;
-        justify-content: flex-start;
-    }
-
-    .sidebar:not(.expanded) .sidebar-section-title {
-        justify-content: center;
-        padding: 14px 0;
-    }
-
-    .sidebar-section-title:hover {
-        background: rgba(255, 255, 255, 0.1);
-        color: white;
-    }
-
-    .sidebar-section-title.active {
-        background: linear-gradient(90deg, rgba(0, 82, 204, 0.3) 0%, transparent 100%);
-        color: white;
-        border-left: 3px solid #0052CC;
-    }
-
-    .sidebar-item.invisible {
-        display: none !important;
     }
 
     /* Updated footer with better collapsed state */
@@ -644,10 +597,17 @@ if ($uAsOwnr === 'MS') {
             <span class="sidebar-text">Transferler</span>
         </a>
 
-        <?php if (!empty($sectionTitle) && !empty($sectionPage)): ?>
-        <a href="<?= htmlspecialchars($sectionPage) ?>" class="sidebar-item sidebar-section-title <?= ($currentPage == $sectionPage || ($sectionPage == 'Uretim.php' && ($currentPage == 'UretimDetay.php' || $currentPage == 'UretimSO.php')) || ($sectionPage == 'Muse.php' && strpos($currentPage, 'Muse') !== false)) ? 'active' : '' ?>">
-            <span class="sidebar-icon"><?= $sectionTitle === 'Etkinlik' ? '🎭' : '🍳' ?></span>
-            <span class="sidebar-text"><?= htmlspecialchars($sectionTitle) ?></span>
+        <?php if ($ownerCode === 'CF' || $ownerCode === 'RT'): ?>
+        <a href="Uretim.php" class="sidebar-item <?= ($currentPage == 'Uretim.php' || $currentPage == 'UretimSO.php' || $currentPage == 'UretimDetay.php') ? 'active' : '' ?>">
+            <span class="sidebar-icon">📋</span>
+            <span class="sidebar-text">Üretim Reçeteleri</span>
+        </a>
+        <?php endif; ?>
+
+        <?php if ($ownerCode === 'CF' || $ownerCode === 'RT'): ?>
+        <a href="UretimIsEmirleri.php" class="sidebar-item <?= ($currentPage == 'UretimIsEmirleri.php' || $currentPage == 'UretimIsEmriSO.php' || $currentPage == 'UretimIsEmriDetay.php') ? 'active' : '' ?>">
+            <span class="sidebar-icon">⚙️</span>
+            <span class="sidebar-text">Üretim İş Emirleri</span>
         </a>
         <?php endif; ?>
 
@@ -659,24 +619,6 @@ if ($uAsOwnr === 'MS') {
         <a href="Stok.php" class="sidebar-item <?= ($currentPage == 'Stok.php') ? 'active' : '' ?>">
             <span class="sidebar-icon">📊</span>
             <span class="sidebar-text">Stok Sayımı</span>
-        </a>
-
-        <!-- Check List - tüm kullanıcılar için invisible -->
-        <a href="Check-List.php" class="sidebar-item invisible">
-            <span class="sidebar-icon">✓</span>
-            <span class="sidebar-text">Check List</span>
-        </a>
-
-        <!-- Ticket - tüm kullanıcılar için invisible -->
-        <a href="Ticket.php" class="sidebar-item invisible">
-            <span class="sidebar-icon">🎫</span>
-            <span class="sidebar-text">Ticket</span>
-        </a>
-
-        <!-- Durum menü öğesi - her zaman invisible -->
-        <a href="#" class="sidebar-item invisible">
-            <span class="sidebar-icon">📋</span>
-            <span class="sidebar-text">Durum</span>
         </a>
     </div>
 
@@ -700,16 +642,6 @@ if ($uAsOwnr === 'MS') {
                 <div class="sidebar-user-name">
                     <?= htmlspecialchars($displayName, ENT_QUOTES, 'UTF-8') ?>
                 </div>
-                <?php if ($userName): ?>
-                    <div class="sidebar-user-owner" style="font-size: 10px; opacity: 0.7; margin-top: 2px;">
-                        @<?= htmlspecialchars($userName, ENT_QUOTES, 'UTF-8') ?>
-                    </div>
-                <?php endif; ?>
-                <?php if ($whsCode): ?>
-                    <div class="sidebar-user-owner" style="font-size: 10px; opacity: 0.8; margin-top: 2px;">
-                        <?= htmlspecialchars($whsCode, ENT_QUOTES, 'UTF-8') ?>
-                    </div>
-                <?php endif; ?>
                 <?php if ($ownerCode): ?>
                     <div class="sidebar-user-owner">
                         Giriş: <?= htmlspecialchars($ownerCode, ENT_QUOTES, 'UTF-8') ?><?php if (!empty($branchDesc)): ?> - <?= htmlspecialchars($branchDesc, ENT_QUOTES, 'UTF-8') ?><?php endif; ?>

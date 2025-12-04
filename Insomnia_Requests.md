@@ -396,3 +396,315 @@ Content-Type: application/json
 - `ToWarehouse`: Alıcı şube sevkiyat deposu (U_ASB2B_MAIN='2', örn: "150-KT-1")
 - `U_ASB2B_BRAN`: Şube kodu (sadece sayı, örn: "100", "150", "200")
 - `StockTransferLines`: Her satır için `FromWarehouseCode` ve `WarehouseCode` belirtilmeli 
+
+---
+
+## 13. Kullanıcılar - EmployeesInfo (Tüm Kullanıcılar - Basit)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/EmployeesInfo`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER
+```
+
+**Tam URL:**
+```
+https://192.168.54.185:50000/b1s/v2/EmployeesInfo?$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER
+```
+
+---
+
+## 14. Kullanıcılar - EmployeesInfo (KT veya MS sektöründeki Muse kullanıcıları)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/EmployeesInfo`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER
+$filter=(U_AS_OWNR eq 'KT' or U_AS_OWNR eq 'MS') and contains(U_ASB2B_USER, 'muse')
+$expand=Branch2($select=Name,Description,Code)
+$top=100
+```
+
+**Tam URL (encoded - expand düzeltildi):**
+```
+https://192.168.54.185:50000/b1s/v2/EmployeesInfo?$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER&$filter=(U_AS_OWNR%20eq%20%27KT%27%20or%20U_AS_OWNR%20eq%20%27MS%27)%20and%20contains(U_ASB2B_USER,%20%27muse%27)&$expand=Branch2($select=Name,Description,Code)&$top=100
+```
+
+**Response Örneği:**
+```json
+{
+  "value": [
+    {
+      "EmployeeID": 1,
+      "FirstName": "Muse",
+      "LastName": "Kullanıcı",
+      "U_AS_OWNR": "KT",
+      "U_ASB2B_USER": "muse",
+      "Branch2": {
+        "Name": "100",
+        "Description": "Taksim Pera",
+        "Code": "100"
+      }
+    }
+  ]
+}
+```
+
+**Not:** 
+- `U_AS_OWNR`: Sektör kodu (KT veya MS)
+- `EmployeeID, FirstName, LastName`: Kullanıcının kimliği
+- `U_ASB2B_USER`: B2B kullanıcı adı
+- `Branch2`: Şube bilgileri (expand ile gelir)
+- `$top=100` (tırnak işareti olmadan)
+
+---
+
+## 10. Transferler - Warehouses (ToWarehouse - Sevkiyat Deposu)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/Warehouses`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN
+$filter=U_AS_OWNR eq 'KT' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '150'
+```
+
+**Tam URL (encoded):**
+```
+https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&$filter=U_AS_OWNR%20eq%20%27KT%27%20and%20U_ASB2B_MAIN%20eq%20%272%27%20and%20U_ASB2B_BRAN%20eq%20%27150%27
+```
+
+**Örnek Şube Kodları:**
+- Taksim Pera: `U_ASB2B_BRAN eq '100'`
+- Kadıköy: `U_ASB2B_BRAN eq '200'`
+- Beşiktaş: `U_ASB2B_BRAN eq '150'`
+
+---
+
+## 11. Transferler - Warehouses (FromWarehouse - Ana Depo)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/Warehouses`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN
+$filter=U_AS_OWNR eq 'KT' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '150'
+```
+
+**Tam URL (encoded):**
+```
+https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&$filter=U_AS_OWNR%20eq%20%27KT%27%20and%20U_ASB2B_MAIN%20eq%20%271%27%20and%20U_ASB2B_BRAN%20eq%20%27150%27
+```
+
+---
+
+## 12. Transferler - InventoryTransferRequests - POST (Yeni Transfer Talebi)
+**Method:** POST  
+**URL:** `https://192.168.54.185:50000/b1s/v2/InventoryTransferRequests`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Body:**
+```json
+{
+  "DocDate": "2025-01-30",
+  "FromWarehouse": "150-KT-0",
+  "ToWarehouse": "150-KT-1",
+  "Comments": "Transfer nakil talebi",
+  "U_ASB2B_BRAN": "150",
+  "U_AS_OWNR": "KT",
+  "U_ASB2B_STATUS": "1",
+  "U_ASB2B_TYPE": "TRANSFER",
+  "U_ASB2B_User": "ekin",
+  "StockTransferLines": [
+    {
+      "ItemCode": "90228",
+      "Quantity": 10,
+      "FromWarehouseCode": "150-KT-0",
+      "WarehouseCode": "150-KT-1"
+    }
+  ]
+}
+```
+
+**ÖNEMLİ:** 
+- `FromWarehouse`: Gönderen şube ana deposu (U_ASB2B_MAIN='1', örn: "150-KT-0")
+- `ToWarehouse`: Alıcı şube sevkiyat deposu (U_ASB2B_MAIN='2', örn: "150-KT-1")
+- `U_ASB2B_BRAN`: Şube kodu (sadece sayı, örn: "100", "150", "200")
+- `StockTransferLines`: Her satır için `FromWarehouseCode` ve `WarehouseCode` belirtilmeli 
+
+---
+
+## 13. Kullanıcılar - EmployeesInfo (Tüm Kullanıcılar - Basit)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/EmployeesInfo`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER
+```
+
+**Tam URL:**
+```
+https://192.168.54.185:50000/b1s/v2/EmployeesInfo?$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER
+```
+
+---
+
+## 14. Kullanıcılar - EmployeesInfo (KT veya MS sektöründeki Muse kullanıcıları)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/EmployeesInfo`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER
+$filter=(U_AS_OWNR eq 'KT' or U_AS_OWNR eq 'MS') and contains(U_ASB2B_USER, 'muse')
+$expand=Branch2($select=Name,Description,Code)
+$top=100
+```
+
+**Tam URL (encoded - expand düzeltildi):**
+```
+https://192.168.54.185:50000/b1s/v2/EmployeesInfo?$select=EmployeeID,FirstName,LastName,U_AS_OWNR,U_ASB2B_USER&$filter=(U_AS_OWNR%20eq%20%27KT%27%20or%20U_AS_OWNR%20eq%20%27MS%27)%20and%20contains(U_ASB2B_USER,%20%27muse%27)&$expand=Branch2($select=Name,Description,Code)&$top=100
+```
+
+**Response Örneği:**
+```json
+{
+  "value": [
+    {
+      "EmployeeID": 1,
+      "FirstName": "Muse",
+      "LastName": "Kullanıcı",
+      "U_AS_OWNR": "KT",
+      "U_ASB2B_USER": "muse",
+      "Branch2": {
+        "Name": "100",
+        "Description": "Taksim Pera",
+        "Code": "100"
+      }
+    }
+  ]
+}
+```
+
+**Not:** 
+- `U_AS_OWNR`: Sektör kodu (KT veya MS)
+- `EmployeeID, FirstName, LastName`: Kullanıcının kimliği
+- `U_ASB2B_USER`: B2B kullanıcı adı
+- `Branch2`: Şube bilgileri (expand ile gelir)
+- `$top=100` (tırnak işareti olmadan)
+
+---
+
+## 10. Transferler - Warehouses (ToWarehouse - Sevkiyat Deposu)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/Warehouses`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN
+$filter=U_AS_OWNR eq 'KT' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '150'
+```
+
+**Tam URL (encoded):**
+```
+https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&$filter=U_AS_OWNR%20eq%20%27KT%27%20and%20U_ASB2B_MAIN%20eq%20%272%27%20and%20U_ASB2B_BRAN%20eq%20%27150%27
+```
+
+**Örnek Şube Kodları:**
+- Taksim Pera: `U_ASB2B_BRAN eq '100'`
+- Kadıköy: `U_ASB2B_BRAN eq '200'`
+- Beşiktaş: `U_ASB2B_BRAN eq '150'`
+
+---
+
+## 11. Transferler - Warehouses (FromWarehouse - Ana Depo)
+**Method:** GET  
+**URL:** `https://192.168.54.185:50000/b1s/v2/Warehouses`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Query Parameters:**
+```
+$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN
+$filter=U_AS_OWNR eq 'KT' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '150'
+```
+
+**Tam URL (encoded):**
+```
+https://192.168.54.185:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&$filter=U_AS_OWNR%20eq%20%27KT%27%20and%20U_ASB2B_MAIN%20eq%20%271%27%20and%20U_ASB2B_BRAN%20eq%20%27150%27
+```
+
+---
+
+## 12. Transferler - InventoryTransferRequests - POST (Yeni Transfer Talebi)
+**Method:** POST  
+**URL:** `https://192.168.54.185:50000/b1s/v2/InventoryTransferRequests`  
+**Headers:**
+```
+Cookie: B1SESSION=<SESSION_ID_BURAYA>
+Content-Type: application/json
+```
+**Body:**
+```json
+{
+  "DocDate": "2025-01-30",
+  "FromWarehouse": "150-KT-0",
+  "ToWarehouse": "150-KT-1",
+  "Comments": "Transfer nakil talebi",
+  "U_ASB2B_BRAN": "150",
+  "U_AS_OWNR": "KT",
+  "U_ASB2B_STATUS": "1",
+  "U_ASB2B_TYPE": "TRANSFER",
+  "U_ASB2B_User": "ekin",
+  "StockTransferLines": [
+    {
+      "ItemCode": "90228",
+      "Quantity": 10,
+      "FromWarehouseCode": "150-KT-0",
+      "WarehouseCode": "150-KT-1"
+    }
+  ]
+}
+```
+
+**ÖNEMLİ:** 
+- `FromWarehouse`: Gönderen şube ana deposu (U_ASB2B_MAIN='1', örn: "150-KT-0")
+- `ToWarehouse`: Alıcı şube sevkiyat deposu (U_ASB2B_MAIN='2', örn: "150-KT-1")
+- `U_ASB2B_BRAN`: Şube kodu (sadece sayı, örn: "100", "150", "200")
+- `StockTransferLines`: Her satır için `FromWarehouseCode` ve `WarehouseCode` belirtilmeli 
