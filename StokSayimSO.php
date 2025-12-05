@@ -39,13 +39,8 @@ if ($isUpdateMode) {
         if (isset($existingCounting['InventoryCountingLines']) && is_array($existingCounting['InventoryCountingLines'])) {
             $existingLines = $existingCounting['InventoryCountingLines'];
             
-            // LineNumber'ı LineNum'a map et (SAP B1SL'de LineNumber kullanılıyor)
-            foreach ($existingLines as &$line) {
-                if (isset($line['LineNumber']) && !isset($line['LineNum'])) {
-                    $line['LineNum'] = $line['LineNumber'];
-                }
-            }
-            unset($line); // Reference'ı temizle
+            // LineNumber'ı koru (SAP B1SL'de LineNumber kullanılıyor, LineNum değil)
+            // LineNum eklemeye gerek yok, direkt LineNumber kullanacağız
             
             // İlk satırdan WarehouseCode'u al
             if (!empty($existingLines) && isset($existingLines[0]['WarehouseCode'])) {
@@ -373,6 +368,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     // Warehouse bilgisi sadece satırlarda (InventoryCountingLines) olur
     $payload = [
         'CountDate' => $countDate ?: date('Y-m-d'),
+        'U_AS_OWNR' => $uAsOwnr, // Ana listeye düşmesi için U_AS_OWNR set edilmeli
         'InventoryCountingLines' => []
     ];
     
@@ -418,6 +414,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if (($result['status'] ?? 0) == 200 || ($result['status'] ?? 0) == 201) {
         $response = $result['response'] ?? $result;
         $newDocumentEntry = $response['DocumentEntry'] ?? null;
+        
+        // POST'ta U_AS_OWNR bazen kabul edilmiyor, bu yüzden PATCH ile set ediyoruz
+        if ($newDocumentEntry && !empty($uAsOwnr)) {
+            $patchPayload = [
+                'U_AS_OWNR' => $uAsOwnr
+            ];
+            $patchResult = $sap->patch("InventoryCountings({$newDocumentEntry})", $patchPayload);
+            
+            // PATCH başarısız olsa bile sayım oluşturuldu, sadece U_AS_OWNR set edilemedi
+            if (($patchResult['status'] ?? 0) != 200 && ($patchResult['status'] ?? 0) != 204) {
+                error_log("U_AS_OWNR set edilemedi (DocumentEntry: {$newDocumentEntry}): " . json_encode($patchResult));
+            }
+        }
+        
         echo json_encode([
             'success' => true, 
             'message' => 'Sayım başarıyla oluşturuldu', 
@@ -425,11 +435,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             'debug' => [
                 'payload' => $payload,
                 'response' => $response,
-                'status' => $result['status'] ?? 'NO STATUS'
+                'status' => $result['status'] ?? 'NO STATUS',
+                'u_as_ownr_patch' => isset($patchResult) ? [
+                    'status' => $patchResult['status'] ?? 'NO STATUS',
+                    'response' => $patchResult['response'] ?? $patchResult
+                ] : 'PATCH yapılmadı'
             ]
         ]);
     } else {
         $error = $result['response']['error']['message']['value'] ?? $result['response']['error']['message'] ?? 'Bilinmeyen hata';
+        $errorCode = $result['response']['error']['code'] ?? '';
+        
+        // Daha açıklayıcı hata mesajları
+        if (strpos($error, 'already been added to another open document') !== false) {
+            $error = "Bu ürün aynı depoda başka bir açık sayım belgesinde bulunuyor. Önce o sayım belgesini kapatın veya o belgeden bu ürünü kaldırın. Hata: " . $error;
+        }
+        
         echo json_encode([
             'success' => false, 
             'message' => 'Sayım oluşturulamadı: ' . $error,
@@ -437,6 +458,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 'payload' => $payload,
                 'response' => $result['response'] ?? null,
                 'status' => $result['status'] ?? 'NO STATUS',
+                'errorCode' => $errorCode,
                 'error' => $result['response']['error'] ?? null
             ]
         ]);
@@ -484,9 +506,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     foreach ($lines as $line) {
         $lineData = [];
         
-        // Mevcut satırlar için LineNum gönder (LineNumber'ı LineNum'a map et)
-        if (isset($line['LineNum']) && $line['LineNum'] !== null && $line['LineNum'] !== '') {
-            $lineData['LineNum'] = intval($line['LineNum']);
+        // Mevcut satırlar için LineNumber gönder (SAP B1SL'de LineNumber kullanılıyor, LineNum değil)
+        $lineNumber = $line['LineNumber'] ?? $line['LineNum'] ?? null;
+        if ($lineNumber !== null && $lineNumber !== '') {
+            $lineData['LineNumber'] = intval($lineNumber);
             // Mevcut satırlar için sadece CountedQuantity güncellenir
             $lineData['CountedQuantity'] = floatval($line['CountedQuantity'] ?? 0);
         } else {
@@ -521,7 +544,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         echo json_encode(['success' => true, 'message' => 'Sayım başarıyla güncellendi', 'DocumentEntry' => $documentEntry]);
     } else {
         $error = $result['response']['error']['message']['value'] ?? $result['response']['error']['message'] ?? 'Bilinmeyen hata';
-        echo json_encode(['success' => false, 'message' => 'Sayım güncellenemedi: ' . $error]);
+        $errorCode = $result['response']['error']['code'] ?? '';
+        
+        // Daha açıklayıcı hata mesajları
+        if (strpos($error, 'already been added to another open document') !== false) {
+            $error = "Bu ürün aynı depoda başka bir açık sayım belgesinde bulunuyor. Önce o sayım belgesini kapatın veya o belgeden bu ürünü kaldırın. Hata: " . $error;
+        }
+        
+        echo json_encode([
+            'success' => false, 
+            'message' => 'Sayım güncellenemedi: ' . $error,
+            'debug' => [
+                'errorCode' => $errorCode,
+                'fullError' => $result['response']['error'] ?? null,
+                'payload' => $payload
+            ]
+        ]);
     }
     exit;
 }
@@ -999,7 +1037,7 @@ const isUpdateMode = <?= $isUpdateMode ? 'true' : 'false' ?>;
 const documentEntry = <?= $documentEntry ?: 'null' ?>;
 let cart = <?= json_encode($isUpdateMode ? array_map(function($line) {
     return [
-        'LineNum' => $line['LineNum'] ?? null,
+        'LineNumber' => $line['LineNumber'] ?? null,
         'ItemCode' => $line['ItemCode'] ?? '',
         'ItemName' => $line['ItemDescription'] ?? '',
         'WarehouseCode' => $line['WarehouseCode'] ?? '',
@@ -1163,14 +1201,14 @@ function updateCartTable() {
     
     cart.forEach((item, index) => {
         const row = document.createElement('tr');
-        if (isUpdateMode && item.LineNum !== null && item.LineNum !== undefined) {
-            row.setAttribute('data-line-num', item.LineNum);
+        if (isUpdateMode && item.LineNumber !== null && item.LineNumber !== undefined) {
+            row.setAttribute('data-line-number', item.LineNumber);
         }
         row.setAttribute('data-item-code', item.ItemCode);
         
         let html = '';
         if (isUpdateMode) {
-            html += `<td>${item.LineNum !== null && item.LineNum !== undefined ? item.LineNum : '-'}</td>`;
+            html += `<td>${item.LineNumber !== null && item.LineNumber !== undefined ? item.LineNumber : '-'}</td>`;
         }
         html += `
             <td>${item.ItemCode}</td>
@@ -1242,9 +1280,11 @@ function saveCounting() {
             CountedQuantity: item.CountedQuantity
         };
         
-        if (isUpdateMode && item.LineNum !== null && item.LineNum !== undefined) {
-            line.LineNum = item.LineNum;
-        } else if (!isUpdateMode || item.LineNum === null || item.LineNum === undefined) {
+        // Mevcut satırlar için LineNumber gönder (SAP B1SL'de LineNumber kullanılıyor)
+        if (isUpdateMode && item.LineNumber !== null && item.LineNumber !== undefined) {
+            line.LineNumber = item.LineNumber;
+        } else if (!isUpdateMode || item.LineNumber === null || item.LineNumber === undefined) {
+            // Yeni satırlar için UoM bilgisi gönder
             if (item.UoMEntry) {
                 line.UoMEntry = item.UoMEntry;
             } else if (item.UoMCode) {

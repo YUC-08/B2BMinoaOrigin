@@ -61,20 +61,69 @@ function formatDate($date) {
 }
 
 // InventoryCountings verilerini çek
-$inventoryCountingsSelect = "DocumentEntry,CountDate,Remarks,DocumentStatus";
+$inventoryCountingsSelect = "DocumentEntry,CountDate,Remarks,DocumentStatus,U_AS_OWNR";
 $inventoryCountingsFilter = "U_AS_OWNR eq '{$uAsOwnr}'";
 $inventoryCountingsOrderBy = "DocumentEntry desc";
 $inventoryCountingsQuery = "InventoryCountings?\$select=" . urlencode($inventoryCountingsSelect) . "&\$filter=" . urlencode($inventoryCountingsFilter) . "&\$orderby=" . urlencode($inventoryCountingsOrderBy);
 
 $inventoryCountingsData = $sap->get($inventoryCountingsQuery);
 
+// DEBUG: Filtre olmadan son 5 sayımı çek (yeni oluşturulanları görmek için)
+$allCountingsQuery = "InventoryCountings?\$select=DocumentEntry,CountDate,Remarks,DocumentStatus,U_AS_OWNR&\$orderby=DocumentEntry desc&\$top=5";
+$allCountingsData = $sap->get($allCountingsQuery);
+$allCountings = [];
+if (($allCountingsData['status'] ?? 0) == 200) {
+    if (isset($allCountingsData['response']['value'])) {
+        $allCountings = $allCountingsData['response']['value'];
+    } elseif (isset($allCountingsData['value'])) {
+        $allCountings = $allCountingsData['value'];
+    }
+}
+
 $inventoryCountings = [];
+$debugInfo = [
+    'uAsOwnr' => $uAsOwnr,
+    'query' => $inventoryCountingsQuery,
+    'status' => $inventoryCountingsData['status'] ?? 'NO STATUS',
+    'response_structure' => 'unknown',
+    'count' => 0,
+    'raw_response' => null,
+    'all_countings_check' => [
+        'query' => $allCountingsQuery,
+        'status' => $allCountingsData['status'] ?? 'NO STATUS',
+        'count' => count($allCountings),
+        'records' => $allCountings,
+        'u_as_ownr_values' => array_map(function($c) {
+            return [
+                'DocumentEntry' => $c['DocumentEntry'] ?? 'N/A',
+                'U_AS_OWNR' => $c['U_AS_OWNR'] ?? 'NULL veya YOK'
+            ];
+        }, $allCountings)
+    ]
+];
+
 if (($inventoryCountingsData['status'] ?? 0) == 200) {
     if (isset($inventoryCountingsData['response']['value'])) {
         $inventoryCountings = $inventoryCountingsData['response']['value'];
+        $debugInfo['response_structure'] = 'response.value';
     } elseif (isset($inventoryCountingsData['value'])) {
         $inventoryCountings = $inventoryCountingsData['value'];
+        $debugInfo['response_structure'] = 'value';
+    } elseif (isset($inventoryCountingsData['response']) && is_array($inventoryCountingsData['response'])) {
+        $inventoryCountings = $inventoryCountingsData['response'];
+        $debugInfo['response_structure'] = 'response (direct array)';
     }
+    
+    $debugInfo['count'] = count($inventoryCountings);
+    $debugInfo['raw_response'] = $inventoryCountingsData['response'] ?? $inventoryCountingsData;
+    
+    // İlk 2 kaydın özetini göster
+    if (!empty($inventoryCountings)) {
+        $debugInfo['sample_records'] = array_slice($inventoryCountings, 0, 2);
+    }
+} else {
+    $debugInfo['error'] = $inventoryCountingsData['response']['error'] ?? $inventoryCountingsData['error'] ?? 'Bilinmeyen hata';
+    $debugInfo['raw_response'] = $inventoryCountingsData;
 }
 ?>
 <!DOCTYPE html>
@@ -441,6 +490,16 @@ body {
                             <?php endif; ?>
                         </tbody>
                     </table>
+                </div>
+            </section>
+            
+            <!-- Debug Panel -->
+            <section class="card" style="margin-top: 24px;">
+                <div style="padding: 20px; background: #f8f9fa; border-radius: 8px;">
+                    <h3 style="margin-bottom: 16px; color: #1e40af;">🔍 Debug Bilgileri</h3>
+                    <div style="background: white; padding: 16px; border-radius: 6px; border: 1px solid #e5e7eb;">
+                        <pre style="margin: 0; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word;"><?= htmlspecialchars(json_encode($debugInfo, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) ?></pre>
+                    </div>
                 </div>
             </section>
         </div>
