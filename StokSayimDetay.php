@@ -107,300 +107,189 @@ function formatDate($date) {
     return date('d.m.Y', strtotime($date));
 }
 
-// PATCH: Sayım satırlarını güncelle
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update') {
-    header('Content-Type: application/json');
+// --- YARDIMCI FONKSİYON: BİRİM ÇARPANINI BUL ---
+// Bu fonksiyon, "KT" gibi bir birim kodunun kaç "AD" ettiğini bulur.
+function getBaseQty($sap, $itemCode, $uomCode) {
+    if (empty($itemCode) || empty($uomCode)) return 1;
     
-    if ($isClosed) {
-        echo json_encode(['success' => false, 'message' => 'Kapalı sayım güncellenemez']);
-        exit;
-    }
+    // Ürünün grup bilgisini çek
+    $itemData = $sap->get("Items('$itemCode')?\$select=UoMGroupEntry,InventoryUOM");
+    $uomGroupEntry = $itemData['response']['UoMGroupEntry'] ?? -1;
     
-    $lines = isset($_POST['lines']) ? json_decode($_POST['lines'], true) : [];
+    // Manuel grup ise veya birim stok birimiyle aynıysa çarpan 1'dir
+    if ($uomGroupEntry == -1) return 1;
     
-    if (empty($lines)) {
-        echo json_encode(['success' => false, 'message' => 'En az bir kalem gereklidir']);
-        exit;
-    }
+    // Grup tanımlarını çek
+    $groupData = $sap->get("UoMGroups($uomGroupEntry)?\$select=UoMGroupDefinitionCollection");
+    $defs = $groupData['response']['UoMGroupDefinitionCollection'] ?? [];
     
-    $payload = [
-        'InventoryCountingLines' => []
-    ];
-    
-    foreach ($lines as $line) {
-        // PATCH için LineNumber kullan (LineNum geçersiz!)
-        $lineNumber = $line['LineNumber'] ?? $line['LineNum'] ?? null;
-        if ($lineNumber === null) {
-            continue;
+    foreach ($defs as $def) {
+        // SAP bazen büyük/küçük harf duyarlı olabilir, strcasecmp ile kontrol
+        if (strcasecmp($def['UoMCode'], $uomCode) === 0) {
+            return floatval($def['BaseQuantity']); // Örn: 1 KT = 24 AD ise 24 döner
         }
-        
-        $lineData = [
-            'LineNumber' => intval($lineNumber), // PATCH için LineNumber kullan (LineNum geçersiz!)
-            'CountedQuantity' => floatval($line['CountedQuantity'] ?? 0),
-            'Counted' => 'tYES' // SAP'nin satırı sayılmış olarak işaretlemesi için gerekli
-        ];
-        
-        $payload['InventoryCountingLines'][] = $lineData;
     }
-    
-    $result = $sap->patch("InventoryCountings({$documentEntry})", $payload);
-    
-    if (($result['status'] ?? 0) == 200 || ($result['status'] ?? 0) == 204) {
-        echo json_encode(['success' => true, 'message' => 'Sayım güncellendi']);
-    } else {
-        $error = $result['response']['error']['message']['value'] ?? $result['response']['error']['message'] ?? 'Bilinmeyen hata';
-        echo json_encode(['success' => false, 'message' => 'Sayım güncellenemedi: ' . $error]);
-    }
-    exit;
+    return 1; // Bulunamazsa 1 kabul et
 }
 
-// POST: Sayımı onayla (InventoryPostings oluştur)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'confirm') {
+// --- GÜNCELLEME VE ONAYLAMA İŞLEMLERİ ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     header('Content-Type: application/json');
     
     if ($isClosed) {
-        echo json_encode(['success' => false, 'message' => 'Sayım zaten kapalı']);
+        echo json_encode(['success' => false, 'message' => 'Kapalı belge üzerinde işlem yapılamaz.']);
         exit;
     }
     
-    $lines = isset($_POST['lines']) ? json_decode($_POST['lines'], true) : [];
+    $inputLines = isset($_POST['lines']) ? json_decode($_POST['lines'], true) : [];
+    $action = $_POST['action']; // 'update' veya 'confirm'
     
-    if (empty($lines)) {
-        echo json_encode(['success' => false, 'message' => 'En az bir kalem gereklidir']);
+    if (empty($inputLines)) {
+        echo json_encode(['success' => false, 'message' => 'Veri gelmedi.']);
         exit;
     }
     
-    // InventoryCounting'deki gerçek satırları çek
-    // UoMEntry bilgisini alabilmek için satır detaylarını garanti altına alıyoruz
-    $countingQuery = "InventoryCountings({$documentEntry})";
-    $countingData = $sap->get($countingQuery);
-    $countingLines = [];
+    $payloadLines = [];
     
-    if (($countingData['status'] ?? 0) == 200) {
-        $counting = $countingData['response'] ?? $countingData;
-        if (isset($counting['InventoryCountingLines']) && is_array($counting['InventoryCountingLines'])) {
-            $countingLines = $counting['InventoryCountingLines'];
-        }
-    }
-    
-    // Eğer Header'da satır yoksa, ayrıca satır endpoint'ine git
-    if (empty($countingLines)) {
-        $linesData = $sap->get("InventoryCountings({$documentEntry})/InventoryCountingLines");
-        $countingLines = $linesData['value'] ?? $linesData['response']['value'] ?? [];
-    }
-
-    if (empty($countingLines)) {
-        echo json_encode(['success' => false, 'message' => 'Sayım belgesinde satır bulunamadı']);
-        exit;
-    }
-    
-    // Frontend verilerini map'le
-    $userInputMap = [];
-    foreach ($lines as $line) {
-        $itemCode = $line['ItemCode'] ?? '';
-        $countedQty = floatval($line['CountedQuantity'] ?? 0);
-        if ($itemCode) {
-            $userInputMap[$itemCode] = $countedQty;
-        }
-    }
-    
-    // ADIM 1: Sayım Satırlarını Güncelle (Counted = tYES)
-    $updatePayload = [
-        'InventoryCountingLines' => []
-    ];
-    
-    foreach ($countingLines as $countingLine) {
-        $itemCode = $countingLine['ItemCode'] ?? '';
-        $lineNumber = $countingLine['LineNumber'] ?? null;
+    foreach ($inputLines as $input) {
+        $lineNum = $input['LineNumber'] ?? $input['LineNum'] ?? null;
+        $itemCode = $input['ItemCode'] ?? '';
+        $userQty = floatval($input['CountedQuantity'] ?? 0); // Kullanıcının girdiği (Örn: 1)
         
-        if (empty($itemCode) || $lineNumber === null) continue;
-        
-        $countedQuantity = isset($userInputMap[$itemCode]) ? $userInputMap[$itemCode] : floatval($countingLine['CountedQuantity'] ?? 0);
-        
-        $updatePayload['InventoryCountingLines'][] = [
-            'LineNumber' => intval($lineNumber),
-            'CountedQuantity' => $countedQuantity,
-            'Counted' => 'tYES'
-        ];
-    }
-    
-    $sap->patch("InventoryCountings({$documentEntry})", $updatePayload);
-    
-    // --- HAZIRLIK: Fiyatları Hazırla ---
-    
-    // 1. Tarihi Header'dan al
-    $headerCountDate = $counting['CountDate'] ?? date('Y-m-d');
-    if (strpos($headerCountDate, 'T') !== false) {
-        $headerCountDate = substr($headerCountDate, 0, 10);
-    }
-
-    // 2. Ürün maliyetlerini çek (Fiyat Hatası Çözümü)
-    $itemInfoMap = [];
-    foreach ($countingLines as $cl) {
-        $icode = $cl['ItemCode'] ?? '';
-        if ($icode && !isset($itemInfoMap[$icode])) {
-            $itmData = $sap->get("Items('$icode')?\$select=ItemCost,AvgPrice");
-            $val = $itmData['response'] ?? $itmData;
-            
-            $cost = 0;
-            if (isset($val['ItemCost'])) $cost = $val['ItemCost'];
-            elseif (isset($val['AvgPrice'])) $cost = $val['AvgPrice'];
-            
-            $itemInfoMap[$icode] = ($cost > 0) ? $cost : 1; // Maliyet yoksa 1
-        }
-    }
-
-    // ADIM 2: InventoryPostingLines Oluştur
-    $postingLines = [];
-    
-    foreach ($countingLines as $countingLine) {
-        $itemCode = $countingLine['ItemCode'] ?? '';
-        $warehouseCode = $countingLine['WarehouseCode'] ?? '';
-        $lineNumber = $countingLine['LineNumber'] ?? null;
-        
-        if (empty($itemCode) || $lineNumber === null) continue;
-        
-        // Sistem miktarı (sayım tarihindeki depodaki miktar)
-        $systemQty = floatval(
-            $countingLine['InWarehouseQuantity'] ??
-            $countingLine['SystemQuantity'] ??
-            0
-        );
-        
-        // Kullanıcının girdiği sayım miktarı
-        $countedQuantity = isset($userInputMap[$itemCode])
-            ? $userInputMap[$itemCode]
-            : floatval($countingLine['CountedQuantity'] ?? 0);
-        
-        // 🔴 SAP B1 davranışını taklit et:
-        // Sapma 0 ise bu satır için stok kaydı oluşturma
-        if (abs($countedQuantity - $systemQty) < 0.000001) {
-            continue;
-        }
-        
-        // Item'ın güncel UoM bilgisini çek
-        $isManualUoM = false; // Manuel mi kontrolü için flag
-        $uomEntry = null;
-        $uomCode = null;
-        
-        if (!empty($itemCode)) {
-            $itemUoMResp = $sap->get("Items('{$itemCode}')?\$select=InventoryUOM,UoMGroupEntry,SalesUnit,PurchasingUnit");
-            $itemUoMData = $itemUoMResp['response'] ?? $itemUoMResp;
-            
-            $uomCode = $itemUoMData['InventoryUOM'] ?? null;
-            $uomGroupEntry = $itemUoMData['UoMGroupEntry'] ?? -1;
-            
-            // SAP'de -1 genelde "Manuel" gruptur.
-            if ($uomGroupEntry == -1) {
-                $isManualUoM = true;
-            } else {
-                // Eğer Manuel değilse, Gruptan doğru Entry'i bulmaya çalış
-                $uomGroupResp = $sap->get("UoMGroups({$uomGroupEntry})?\$select=UoMGroupDefinitionCollection");
-                $uomGroupData = $uomGroupResp['response'] ?? $uomGroupResp;
-                
-                if (isset($uomGroupData['UoMGroupDefinitionCollection']) && is_array($uomGroupData['UoMGroupDefinitionCollection'])) {
-                    // 1. ÖNCELİK: Sayım satırındaki birim kodu (Kt, Cf vb.) ile eşleşen var mı?
-                    // Kullanıcı arayüzde 'Koli' seçtiyse veya SAP'den 'Koli' geldiyse onu bulmaya çalış.
-                    $targetUoMCode = $countingLine['UoMCode'] ?? $uomCode; 
-                    foreach ($uomGroupData['UoMGroupDefinitionCollection'] as $uomDef) {
-                        if (($uomDef['UoMCode'] ?? '') === ($targetUoMCode ?? '')) {
-                            $uomEntry = $uomDef['UoMEntry'] ?? null;
-                            break;
-                        }
-                    }
-                    
-                    // 2. ÖNCELİK: Bulamadıysa Stok Birimi (InventoryUOM) ile eşleşeni al
-                    if (empty($uomEntry)) {
-                        foreach ($uomGroupData['UoMGroupDefinitionCollection'] as $uomDef) {
-                            if (($uomDef['UoMCode'] ?? '') === ($uomCode ?? '')) {
-                                $uomEntry = $uomDef['UoMEntry'] ?? null;
-                                break;
-                            }
-                        }
-                    }
-                }
+        // Mevcut satırdaki birim kodunu (UoMCode) bulmamız lazım (Örn: KT)
+        // Bunu yapmak için $lines dizisinde arama yapıyoruz
+        $currentLine = null;
+        foreach ($lines as $l) {
+            if (($l['LineNumber'] ?? $l['LineNum'] ?? null) == $lineNum) {
+                $currentLine = $l;
+                break;
             }
         }
         
-        // --- A. KİLİT KALDIRMA (Locked Hatası Çözümü) ---
-        $unlockPayload = [
-            'ItemWarehouseInfoCollection' => [
-                [ 'WarehouseCode' => $warehouseCode, 'Locked' => 'tNO' ]
-            ]
-        ];
-        try { $sap->patch("Items('$itemCode')", $unlockPayload); } catch (Exception $e) {}
+        if (!$currentLine) continue;
         
+        // --- MATEMATİKSEL DÜZELTME ---
+        // Kullanıcının girdiği miktarı (1 Kutu), SAP'nin anladığı dile (10 Adet) çeviriyoruz.
+        $targetUoM = $currentLine['UoMCode'] ?? null;
         
-        // --- B. SATIR VERİLERİNİ HAZIRLA ---
-        // $countedQuantity ve $systemQty yukarıda hesaplandı, tekrar hesaplamaya gerek yok
-        $baseLine = intval($lineNumber);
-        $price = $itemInfoMap[$itemCode] ?? 1;
-        
-        $postingLine = [
-            'ItemCode' => $itemCode,
-            'WarehouseCode' => $warehouseCode,
-            'CountedQuantity' => $countedQuantity,
-            'BaseEntry' => $documentEntry,
-            'BaseLine' => $baseLine,
-            'BaseType' => 1470000065,
-            'Price' => $price,
-            'CountDate' => $headerCountDate
-        ];
-        
-        // --- C. BİRİM (UoM) KONTROLÜ (DÜZELTİLMİŞ HALİ) ---
-        
-        // EĞER ÜRÜN MANUEL GRUPTAYSA: Kesinlikle UoMCode veya UoMEntry GÖNDERME!
-        if ($isManualUoM) {
-            // Manuel gruplar için SAP sadece miktar bekler, birim kodu istemez.
-            // Bu blok boş kalacak, postingLine'a UoM eklemeyeceğiz.
-        } 
-        // EĞER GRUP ÜRÜNÜYSE VE UoMEntry BULUNDUYSA: Mutlaka UoMEntry GÖNDER.
-        elseif (!empty($uomEntry)) {
-            $postingLine['UoMEntry'] = intval($uomEntry);
+        // Eğer birim "Manuel" değilse çarpma işlemi yap
+        $multiplier = 1;
+        if ($targetUoM && $targetUoM !== 'Manual') {
+            $multiplier = getBaseQty($sap, $itemCode, $targetUoM);
         }
-        // Entry bulunamadı ve manuel de değilse: HİÇBİR UoM BİLGİSİ GÖNDERME
-        // Çünkü yanlış UoMCode göndermek "UoM group has been changed" hatasına neden olur
-        // else {
-        //     // UoMEntry bulunamadı, hiçbir şey gönderme
-        // }
         
-        // DEBUG: UoM bilgisini logla
-        error_log("=== UoM DEBUG (ItemCode: {$itemCode}) ===");
-        error_log("isManualUoM: " . ($isManualUoM ? 'YES' : 'NO') . ", uomGroupEntry: " . ($uomGroupEntry ?? 'NULL'));
-        error_log("Resolved UoM: uomEntry=" . ($uomEntry ?? 'NULL') . ", uomCode=" . ($uomCode ?? 'NULL'));
-        error_log("PostingLine UoM: " . json_encode(['UoMEntry' => $postingLine['UoMEntry'] ?? null, 'UoMCode' => $postingLine['UoMCode'] ?? null]));
+        // SAP'ye gidecek NET miktar (Adet bazında)
+        $finalQty = $userQty * $multiplier;
         
-        $postingLines[] = $postingLine;
+        // Payload Hazırlığı
+        $lineData = [
+            'LineNumber' => intval($lineNum),
+            'CountedQuantity' => $finalQty, // Çevrilmiş miktar (10)
+            'Counted' => 'tYES'
+        ];
+        
+        $payloadLines[] = $lineData;
     }
     
-    if (empty($postingLines)) {
-        echo json_encode(['success' => false, 'message' => 'Fark bulunamadı.']);
+    // 1. ADIM: Sayım Belgesini Güncelle (InventoryCounting - PATCH)
+    // Bu adım her iki durumda da (Güncelle ve Onayla) yapılır.
+    $patchPayload = ['InventoryCountingLines' => $payloadLines];
+    $patchRes = $sap->patch("InventoryCountings({$documentEntry})", $patchPayload);
+    
+    if (($patchRes['status'] ?? 0) != 200 && ($patchRes['status'] ?? 0) != 204) {
+        $err = $patchRes['response']['error']['message']['value'] ?? $patchRes['response']['error']['message'] ?? 'Güncelleme hatası';
+        echo json_encode(['success' => false, 'message' => "Hata: $err"]);
         exit;
     }
     
-    // InventoryPostings oluştur
-    $postingPayload = [
-        'Remarks' => 'Sayım farkı bağlı belge',
-        'InventoryPostingLines' => $postingLines
-    ];
-    
-    $postingResult = $sap->post('InventoryPostings', $postingPayload);
-    
-    if (($postingResult['status'] ?? 0) == 200 || ($postingResult['status'] ?? 0) == 201) {
-        // Sayımı kapat
-        $sap->patch("InventoryCountings({$documentEntry})", ['DocumentStatus' => 'bost_Close']);
+    // 2. ADIM: Eğer işlem 'confirm' ise Stok Kaydı Oluştur (InventoryPostings - POST)
+    if ($action === 'confirm') {
+        // Sayım farkı olan satırları bulmak için belgeyi TEKRAR çekiyoruz (Güncel haliyle)
+        $updatedCounting = $sap->get("InventoryCountings({$documentEntry})");
+        $updatedLines = $updatedCounting['response']['InventoryCountingLines'] ?? [];
         
-        echo json_encode(['success' => true, 'message' => 'Sayım onaylandı ve fark belgesi oluşturuldu']);
-    } else {
-        $error = $postingResult['response']['error']['message']['value'] ?? 'Bilinmeyen hata';
-        echo json_encode([
-            'success' => false, 
-            'message' => 'Sayım onaylanamadı: ' . $error,
-            'debug' => ['payload' => $postingPayload, 'error' => $postingResult['response']['error'] ?? null]
-        ]);
+        // Eğer hala boşsa, direkt collection path'i dene
+        if (empty($updatedLines)) {
+            $linesData = $sap->get("InventoryCountings({$documentEntry})/InventoryCountingLines");
+            $linesResponse = $linesData['response'] ?? $linesData;
+            if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
+                $updatedLines = $linesResponse['value'];
+            } elseif (is_array($linesResponse)) {
+                $updatedLines = $linesResponse;
+            }
+        }
+        
+        $postingLines = [];
+        
+        foreach ($updatedLines as $uLine) {
+            // Sistemdeki miktar (InWarehouseQuantity) ile Sayılan (CountedQuantity) farkı var mı?
+            $sysQty = floatval($uLine['InWarehouseQuantity'] ?? $uLine['SystemQuantity'] ?? 0);
+            $countQty = floatval($uLine['CountedQuantity'] ?? 0);
+            
+            // Fark 0 ise stok kaydına ekleme
+            if (abs($sysQty - $countQty) < 0.001) continue;
+            
+            // Fiyatı al (Maliyet)
+            $itemCode = $uLine['ItemCode'] ?? '';
+            if (empty($itemCode)) continue;
+            
+            $itmPriceData = $sap->get("Items('$itemCode')?\$select=ItemCost,AvgPrice");
+            $price = $itmPriceData['response']['ItemCost'] ?? $itmPriceData['response']['AvgPrice'] ?? 1; // Maliyet yoksa 1 yaz
+            if($price <= 0) $price = 1;
+            
+            // Stok Kaydı Satırı
+            // DİKKAT: Stok kaydı (Inventory Posting) her zaman ANA BİRİM (Adet) üzerinden çalışır.
+            // UoMCode veya UoMEntry göndermiyoruz, çünkü zaten yukarıda miktarı Adet'e çevirdik.
+            $postingLines[] = [
+                'BaseType' => 1470000065, // InventoryCounting Type ID
+                'BaseEntry' => intval($documentEntry),
+                'BaseLine' => intval($uLine['LineNumber'] ?? $uLine['LineNum'] ?? 0),
+                'ItemCode' => $itemCode,
+                'WarehouseCode' => $uLine['WarehouseCode'] ?? '',
+                'CountedQuantity' => $countQty, // Zaten adet cinsinden
+                'Price' => $price
+            ];
+            
+            // Depo kilidini kaldır (Locked hatası için önlem)
+            try { 
+                $sap->patch("Items('$itemCode')", [
+                    'ItemWarehouseInfoCollection' => [[ 'WarehouseCode' => $uLine['WarehouseCode'] ?? '', 'Locked' => 'tNO' ]]
+                ]); 
+            } catch (Exception $e) {}
+        }
+        
+        if (empty($postingLines)) {
+            // Fark yoksa sadece belgeyi kapat
+            $sap->patch("InventoryCountings({$documentEntry})", ['DocumentStatus' => 'bost_Close']);
+            echo json_encode(['success' => true, 'message' => 'Fark bulunamadı, belge kapatıldı.']);
+            exit;
+        }
+        
+        // Stok Kaydını (Inventory Posting) Oluştur
+        $postPayload = [
+            'Remarks' => "Sayım Belgesi #$documentEntry Referanslı Kayıt",
+            'InventoryPostingLines' => $postingLines
+        ];
+        
+        $postRes = $sap->post('InventoryPostings', $postPayload);
+        
+        if (($postRes['status'] ?? 0) == 200 || ($postRes['status'] ?? 0) == 201) {
+            // Sayımı kapat
+            $sap->patch("InventoryCountings({$documentEntry})", ['DocumentStatus' => 'bost_Close']);
+            echo json_encode(['success' => true, 'message' => 'Stok kaydı başarıyla oluşturuldu ve sayım kapatıldı.']);
+        } else {
+            $err = $postRes['response']['error']['message']['value'] ?? $postRes['response']['error']['message'] ?? 'Stok kaydı oluşturulamadı';
+            echo json_encode(['success' => false, 'message' => "Hata: $err", 'debug' => $postRes]);
+        }
+        exit;
     }
+    
+    // Sadece güncelleme ise
+    echo json_encode(['success' => true, 'message' => 'Miktarlar güncellendi.']);
     exit;
 }
+
+// Eski confirm kodu kaldırıldı - yukarıdaki birleşik işlem kullanılıyor
 ?>
 <!DOCTYPE html>
 <html lang="tr">
@@ -849,81 +738,49 @@ function showAlert(message, type) {
 }
 
 function updateCounting() {
-    const lines = [];
-    const inputs = document.querySelectorAll('#linesTableBody input[type="number"]');
-    
-    inputs.forEach(input => {
-        const lineNum = input.getAttribute('data-line-num');
-        const countedQty = parseFloat(input.value) || 0;
-        
-        if (lineNum) {
-            lines.push({
-                LineNum: parseInt(lineNum),
-                CountedQuantity: countedQty
-            });
-        }
-    });
-    
-    if (lines.length === 0) {
-        alert('Güncellenecek satır bulunamadı');
-        return;
-    }
-    
-    const formData = new FormData();
-    formData.append('action', 'update');
-    formData.append('lines', JSON.stringify(lines));
-    
-    fetch('', {
-        method: 'POST',
-        body: formData
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (data.success) {
-            showAlert('Sayım güncellendi', 'success');
-        } else {
-            showAlert('Hata: ' + data.message, 'error');
-        }
-    })
-    .catch(err => {
-        console.error('Error:', err);
-        showAlert('Bir hata oluştu', 'error');
-    });
+    sendData('update');
 }
 
 function confirmCounting() {
-    if (!confirm('Sayımı onaylamak istediğinizden emin misiniz? Fark belgesi oluşturulacak ve sayım kapatılacak.')) {
-        return;
+    if (confirm('Sayımı onaylayıp stok kaydı oluşturmak istiyor musunuz? Bu işlem geri alınamaz.')) {
+        sendData('confirm');
     }
-    
+}
+
+function sendData(actionType) {
     const lines = [];
+    // Sadece input olan satırları tara
     const inputs = document.querySelectorAll('#linesTableBody input[type="number"]');
     
     inputs.forEach(input => {
         const lineNum = input.getAttribute('data-line-num');
         const itemCode = input.getAttribute('data-item-code');
-        const warehouseCode = input.getAttribute('data-warehouse-code');
-        const systemQty = parseFloat(input.getAttribute('data-system-quantity')) || 0;
-        const countedQty = parseFloat(input.value) || 0;
-        
-        if (lineNum && itemCode && warehouseCode) {
+        const val = input.value;
+        // Boş değilse listeye ekle
+        if (lineNum && val !== "") {
             lines.push({
-                LineNum: parseInt(lineNum),
+                LineNumber: parseInt(lineNum),
                 ItemCode: itemCode,
-                WarehouseCode: warehouseCode,
-                CountedQuantity: countedQty,
-                SystemQuantity: systemQty
+                CountedQuantity: parseFloat(val)
             });
         }
     });
     
     if (lines.length === 0) {
-        alert('Onaylanacak satır bulunamadı');
+        alert('Lütfen en az bir miktar giriniz.');
         return;
     }
     
+    // Loading göster
+    const btn = actionType === 'confirm' ? document.querySelector('.btn-success') : document.querySelector('.btn-primary');
+    const originalText = btn ? btn.innerText : '';
+    if (btn) {
+        btn.innerText = 'İşleniyor...';
+        btn.disabled = true;
+    }
+    
     const formData = new FormData();
-    formData.append('action', 'confirm');
+    formData.append('action', actionType);
     formData.append('lines', JSON.stringify(lines));
     
     fetch('', {
@@ -932,36 +789,28 @@ function confirmCounting() {
     })
     .then(res => res.json())
     .then(data => {
-        // Debug panelini göster
-        const debugPanel = document.getElementById('debugPanel');
-        const debugContent = document.getElementById('debugContent');
-        if (debugPanel && debugContent) {
-            debugPanel.style.display = 'block';
-            debugContent.textContent = JSON.stringify(data, null, 2);
-            debugPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-        
         if (data.success) {
-            // Fiyatı olmayan itemler varsa özel mesaj göster
-            if (data.itemsWithoutPrice && data.itemsWithoutPrice.length > 0) {
-                let priceWarning = '⚠️ Fiyatı bulunamayan ürünler için 1 TL gönderildi:\n\n';
-                data.itemsWithoutPrice.forEach(item => {
-                    priceWarning += '• ' + item.ItemName + ' (' + item.ItemCode + ')\n';
-                });
-                alert(priceWarning);
+            alert(data.message);
+            if (actionType === 'confirm') {
+                window.location.href = 'Stok.php'; // Onaylandıysa listeye dön
+            } else {
+                location.reload(); // Güncellendiyse sayfayı yenile
             }
-            
-            showAlert(data.message, 'success');
-            setTimeout(() => {
-                window.location.href = 'Stok.php';
-            }, 2000);
         } else {
-            showAlert('Hata: ' + data.message, 'error');
+            alert(data.message);
+            if (btn) {
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
         }
     })
     .catch(err => {
-        console.error('Error:', err);
-        showAlert('Bir hata oluştu', 'error');
+        console.error(err);
+        alert('Bir bağlantı hatası oluştu.');
+        if (btn) {
+            btn.innerText = originalText;
+            btn.disabled = false;
+        }
     });
 }
     </script>

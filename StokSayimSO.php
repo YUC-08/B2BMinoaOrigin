@@ -8,6 +8,7 @@ if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
 include 'sap_connect.php';
 $sap = new SAPConnect();
 
+
 // Session'dan bilgileri al
 $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
 // Branch bilgisini doğru şekilde al (Branch2["Code"] veya WhsCode)
@@ -456,123 +457,110 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             'message' => 'Sayım oluşturulamadı: ' . $error,
             'debug' => [
                 'payload' => $payload,
-                'response' => $result['response'] ?? null,
-                'status' => $result['status'] ?? 'NO STATUS',
-                'errorCode' => $errorCode,
-                'error' => $result['response']['error'] ?? null
+                'responseStatus' => $result['status'] ?? 'NO STATUS',
+                'responseError' => $result['response']['error'] ?? null,
+                'errorCode' => $errorCode
             ]
         ]);
     }
     exit;
 }
 
-// PATCH: Sayım güncelle
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update') {
+// PATCH: Sayımı güncelle
+if ($_SERVER['REQUEST_METHOD'] === 'PATCH' && isset($_POST['action']) && $_POST['action'] === 'update') {
     header('Content-Type: application/json');
     
-    if (!$isUpdateMode) {
-        echo json_encode(['success' => false, 'message' => 'DocumentEntry gerekli']);
-        exit;
-    }
-    
+    $warehouseCode = trim($_POST['warehouseCode'] ?? '');
+    $countDate = trim($_POST['countDate'] ?? '');
+    $remarks = trim($_POST['remarks'] ?? '');
     $lines = isset($_POST['lines']) ? json_decode($_POST['lines'], true) : [];
     
-    if (empty($lines)) {
-        echo json_encode(['success' => false, 'message' => 'En az bir kalem gereklidir']);
+    if (empty($warehouseCode) || empty($lines)) {
+        echo json_encode(['success' => false, 'message' => 'Depo ve en az bir kalem gereklidir']);
         exit;
     }
     
-    // Mevcut satırları çek (güncelleme için)
-    $countingQuery = "InventoryCountings({$documentEntry})";
-    $countingData = $sap->get($countingQuery);
-    $existingLinesMap = [];
-    
-    if (($countingData['status'] ?? 0) == 200) {
-        $existingCounting = $countingData['response'] ?? $countingData;
-        if (isset($existingCounting['InventoryCountingLines']) && is_array($existingCounting['InventoryCountingLines'])) {
-            foreach ($existingCounting['InventoryCountingLines'] as $existingLine) {
-                $lineNum = $existingLine['LineNumber'] ?? $existingLine['LineNum'] ?? null;
-                if ($lineNum !== null) {
-                    $existingLinesMap[$lineNum] = $existingLine;
-                }
-            }
-        }
-    }
-    
-    $payload = [
-        'InventoryCountingLines' => []
-    ];
+    // SAP B1SL Update Path'i: InventoryCountingLines'ı güncelle
+    $successCount = 0;
+    $failureCount = 0;
+    $errors = [];
     
     foreach ($lines as $line) {
-        $lineData = [];
-        
-        // Mevcut satırlar için LineNumber gönder (SAP B1SL'de LineNumber kullanılıyor, LineNum değil)
-        $lineNumber = $line['LineNumber'] ?? $line['LineNum'] ?? null;
-        if ($lineNumber !== null && $lineNumber !== '') {
-            $lineData['LineNumber'] = intval($lineNumber);
-            // Mevcut satırlar için sadece CountedQuantity güncellenir
-            $lineData['CountedQuantity'] = floatval($line['CountedQuantity'] ?? 0);
-        } else {
-            // Yeni satırlar için ItemCode ve WarehouseCode gönder
-            $lineData['ItemCode'] = $line['ItemCode'] ?? '';
-            $lineData['WarehouseCode'] = $line['WarehouseCode'] ?? '';
-            // UoMEntry varsa gönder, yoksa UoMCode gönder
-            if (isset($line['UoMEntry']) && $line['UoMEntry'] !== null && $line['UoMEntry'] !== '') {
-                $lineData['UoMEntry'] = intval($line['UoMEntry']);
-            } elseif (isset($line['UoMCode']) && $line['UoMCode'] !== null && $line['UoMCode'] !== '') {
-                $lineData['UoMCode'] = $line['UoMCode'];
+        $lineNumber = $line['LineNumber'] ?? null;
+        if ($lineNumber === null) {
+            // Yeni satır: POST ile ekle
+            $addPayload = [
+                'ItemCode' => $line['ItemCode'] ?? '',
+                'WarehouseCode' => $warehouseCode,
+                'CountedQuantity' => floatval($line['CountedQuantity'] ?? 0)
+            ];
+            
+            $hasUoMEntry = isset($line['UoMEntry']) && $line['UoMEntry'] !== '' && $line['UoMEntry'] !== null;
+            $hasUoMCode = isset($line['UoMCode']) && $line['UoMCode'] !== '' && $line['UoMCode'] !== null;
+            
+            if ($hasUoMEntry) {
+                $addPayload['UoMEntry'] = intval($line['UoMEntry']);
             } else {
-                echo json_encode([
-                    'success' => false,
-                    'message' => "Sayım güncellenemedi: Ürün '{$line['ItemCode']}' için birim bilgisi (UoMEntry veya UoMCode) bulunamadı.",
-                    'debug' => [
-                        'line' => $line,
-                        'allLines' => $lines
-                    ]
-                ]);
-                exit;
+                $addPayload['UoMCode'] = $line['UoMCode'];
             }
-            $lineData['CountedQuantity'] = floatval($line['CountedQuantity'] ?? 0);
+            
+            $addResult = $sap->post("InventoryCountings({$documentEntry})/InventoryCountingLines", $addPayload);
+            
+            if (($addResult['status'] ?? 0) == 200 || ($addResult['status'] ?? 0) == 201) {
+                $successCount++;
+            } else {
+                $failureCount++;
+                $errors[] = "Satır eklenirken hata (ItemCode: {$line['ItemCode']}): " . ($addResult['response']['error']['message']['value'] ?? 'Bilinmeyen hata');
+            }
+        } else {
+            // Mevcut satırı güncelle
+            $updatePayload = [
+                'CountedQuantity' => floatval($line['CountedQuantity'] ?? 0)
+            ];
+            
+            $patchResult = $sap->patch("InventoryCountings({$documentEntry})/InventoryCountingLines({$lineNumber})", $updatePayload);
+            
+            if (($patchResult['status'] ?? 0) == 200 || ($patchResult['status'] ?? 0) == 204) {
+                $successCount++;
+            } else {
+                $failureCount++;
+                $errors[] = "Satır güncellenirken hata (LineNumber: {$lineNumber}): " . ($patchResult['response']['error']['message']['value'] ?? 'Bilinmeyen hata');
+            }
         }
-        
-        $payload['InventoryCountingLines'][] = $lineData;
     }
     
-    $result = $sap->patch("InventoryCountings({$documentEntry})", $payload);
-    
-    if (($result['status'] ?? 0) == 200 || ($result['status'] ?? 0) == 204) {
-        echo json_encode(['success' => true, 'message' => 'Sayım başarıyla güncellendi', 'DocumentEntry' => $documentEntry]);
+    if ($failureCount === 0) {
+        echo json_encode([
+            'success' => true, 
+            'message' => "Sayım başarıyla güncellendi ({$successCount} satır)",
+            'debug' => [
+                'successCount' => $successCount
+            ]
+        ]);
     } else {
-        $error = $result['response']['error']['message']['value'] ?? $result['response']['error']['message'] ?? 'Bilinmeyen hata';
-        $errorCode = $result['response']['error']['code'] ?? '';
-        
-        // Daha açıklayıcı hata mesajları
-        if (strpos($error, 'already been added to another open document') !== false) {
-            $error = "Bu ürün aynı depoda başka bir açık sayım belgesinde bulunuyor. Önce o sayım belgesini kapatın veya o belgeden bu ürünü kaldırın. Hata: " . $error;
-        }
-        
         echo json_encode([
             'success' => false, 
-            'message' => 'Sayım güncellenemedi: ' . $error,
+            'message' => "Sayım kısmen güncellendi ({$successCount} başarılı, {$failureCount} başarısız)",
+            'errors' => $errors,
             'debug' => [
-                'errorCode' => $errorCode,
-                'fullError' => $result['response']['error'] ?? null,
-                'payload' => $payload
+                'successCount' => $successCount,
+                'failureCount' => $failureCount
             ]
         ]);
     }
     exit;
 }
 
-// Tarih formatlama
-function formatDate($date) {
-    if (empty($date)) return '';
-    if (strpos($date, 'T') !== false) {
-        return date('Y-m-d', strtotime(substr($date, 0, 10)));
-    }
-    return date('Y-m-d', strtotime($date));
+// Helper function: Date format
+function formatDate($dateString) {
+    if (empty($dateString)) return '';
+    $date = new DateTime($dateString);
+    return $date->format('Y-m-d');
 }
 ?>
+
+<!-- HTML Template (Bu bölüm StokSayimDetay.php'nin sonunda yer alır) -->
+
 <!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -581,287 +569,438 @@ function formatDate($date) {
     <title><?= $isUpdateMode ? 'Sayım Güncelle' : 'Yeni Stok Sayımı' ?> - MINOA</title>
     <link rel="stylesheet" href="styles.css">
     <style>
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-}
+        /* Modern ve clean tasarım: renkler, spacing, ve arayüz iyileştirmeleri */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    background: #f5f7fa;
-    color: #111827;
-}
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #e9ecef 100%);
+            color: #1f2937;
+        }
 
-.main-content {
-    width: 100%;
-    background: whitesmoke;
-    padding: 0;
-    min-height: 100vh;
-}
+        .main-content {
+            width: 100%;
+            min-height: 100vh;
+            padding: 0;
+        }
 
-.page-header {
-    background: white;
-    padding: 20px 2rem;
-    border-radius: 0 0 0 20px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin: 0;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    height: 80px;
-    box-sizing: border-box;
-}
+        .page-header {
+            background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%);
+            color: white;
+            padding: 24px 2rem;
+            box-shadow: 0 4px 20px rgba(30, 64, 175, 0.15);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            height: auto;
+            min-height: 80px;
+        }
 
-.page-header h2 {
-    color: #1e40af;
-    font-size: 1.75rem;
-    font-weight: 600;
-    margin: 0;
-}
+        .page-header h2 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin: 0;
+            letter-spacing: -0.5px;
+        }
 
-.content-wrapper {
-    padding: 24px 32px;
-    max-width: 1400px;
-    margin: 0 auto;
-}
+        .header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
 
-.card {
-    background: white;
-    border-radius: 12px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-    margin-bottom: 24px;
-    overflow: visible;
-}
+        .content-wrapper {
+            padding: 32px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
 
-.card-header {
-    padding: 20px 24px 0 24px;
-}
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+            margin-bottom: 24px;
+            overflow: hidden;
+            transition: box-shadow 0.3s ease;
+        }
 
-.card-header h3 {
-    color: #1e40af;
-    font-size: 1.3rem;
-    font-weight: 600;
-    margin-bottom: 0;
-}
+        .card:hover {
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+        }
 
-.card-body {
-    padding: 16px 24px 24px 24px;
-}
+        .card-header {
+            padding: 20px 24px;
+            border-bottom: 2px solid #f3f4f6;
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+        }
 
-.form-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 16px;
-}
+        .card-header h3 {
+            color: #1e40af;
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
 
-.form-group {
-    display: flex;
-    flex-direction: column;
-}
+        .card-body {
+            padding: 24px;
+        }
 
-.form-group label {
-    font-size: 13px;
-    color: #4b5563;
-    margin-bottom: 4px;
-    font-weight: 500;
-}
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+        }
 
-.form-group input[type="date"],
-.form-group input[type="text"],
-.form-group input[type="number"],
-.form-group select {
-    padding: 10px 14px;
-    border: 2px solid #e5e7eb;
-    border-radius: 8px;
-    font-size: 14px;
-    transition: all 0.2s ease;
-    background: white;
-    width: 100%;
-    min-height: 42px;
-    box-sizing: border-box;
-}
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
 
-.form-group input[type="date"]:focus,
-.form-group input[type="text"]:focus,
-.form-group input[type="number"]:focus,
-.form-group select:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-}
+        .form-group label {
+            font-size: 13px;
+            color: #475569;
+            margin-bottom: 8px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
 
-.form-group input[readonly],
-.form-group select[readonly] {
-    background: #f3f4f6;
-    cursor: not-allowed;
-    color: #374151;
-}
+        .form-group input[type="date"],
+        .form-group input[type="text"],
+        .form-group input[type="number"],
+        .form-group select {
+            padding: 12px 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.25s ease;
+            background: white;
+            width: 100%;
+            min-height: 44px;
+        }
 
-.table-controls {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 20px 24px;
-    border-bottom: 1px solid #e5e7eb;
-}
+        .form-group input[type="date"]:focus,
+        .form-group input[type="text"]:focus,
+        .form-group input[type="number"]:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+            background: #fafbfc;
+        }
 
-.search-box {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
+        .form-group input[readonly],
+        .form-group select[readonly] {
+            background: #f9fafb;
+            cursor: not-allowed;
+            color: #6b7280;
+            border-color: #e5e7eb;
+        }
 
-.search-input {
-    padding: 8px 12px;
-    border: 2px solid #e5e7eb;
-    border-radius: 6px;
-    font-size: 14px;
-    min-width: 220px;
-    transition: border-color 0.2s;
-}
+        .table-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 0;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
 
-.search-input:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-}
+        .search-box {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
 
-.data-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 14px;
-}
+        .search-input {
+            padding: 10px 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 14px;
+            min-width: 260px;
+            transition: all 0.25s ease;
+        }
 
-.data-table thead {
-    background: #f8fafc;
-}
+        .search-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+            background: #fafbfc;
+        }
 
-.data-table th {
-    padding: 12px 16px;
-    text-align: left;
-    font-weight: 600;
-    font-size: 13px;
-    color: #4b5563;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-bottom: 2px solid #e5e7eb;
-}
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
 
-.data-table tbody tr {
-    border-bottom: 1px solid #e5e7eb;
-    transition: background 0.15s;
-}
+        .data-table thead {
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+        }
 
-.data-table tbody tr:hover {
-    background: #f9fafb;
-}
+        .data-table th {
+            padding: 14px 16px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 12px;
+            color: #475569;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid #e5e7eb;
+        }
 
-.data-table td {
-    padding: 12px 16px;
-    color: #374151;
-}
+        .data-table td {
+            padding: 14px 16px;
+            border-bottom: 1px solid #f3f4f6;
+            vertical-align: middle;
+        }
 
-.btn {
-    padding: 8px 16px;
-    border: none;
-    border-radius: 6px;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    text-decoration: none;
-}
+        .data-table tbody tr {
+            transition: background-color 0.2s ease;
+        }
 
-.btn-primary {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-    color: white;
-    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
-}
+        .data-table tbody tr:hover {
+            background-color: #f9fafb;
+        }
 
-.btn-primary:hover {
-    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
-    transform: translateY(-1px);
-}
+        .quantity-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
 
-.btn-secondary {
-    background: white;
-    color: #3b82f6;
-    border: 2px solid #3b82f6;
-}
+        .qty-btn {
+            width: 32px;
+            height: 32px;
+            border: 2px solid #e5e7eb;
+            background: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            color: #1e40af;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
 
-.btn-secondary:hover {
-    background: #f0f9ff;
-}
+        .qty-btn:hover {
+            background: #1e40af;
+            color: white;
+            border-color: #1e40af;
+            transform: scale(1.05);
+        }
 
-.btn-danger {
-    background: #ef4444;
-    color: white;
-}
+        .qty-input {
+            width: 70px;
+            padding: 8px 12px;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            text-align: center;
+            transition: all 0.2s ease;
+        }
 
-.btn-danger:hover {
-    background: #dc2626;
-}
+        .qty-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+            background: #fafbfc;
+        }
 
-.btn-small {
-    padding: 6px 12px;
-    font-size: 12px;
-}
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+            white-space: nowrap;
+        }
 
-.input-small {
-    padding: 6px 10px;
-    border: 1px solid #e5e7eb;
-    border-radius: 4px;
-    font-size: 13px;
-    width: 80px;
-}
+        .btn-primary {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            color: white;
+            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+        }
 
-.cart-table {
-    margin-top: 24px;
-}
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+            box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4);
+            transform: translateY(-2px);
+        }
 
-.cart-table th {
-    background: #f8fafc;
-}
+        .btn-primary:active {
+            transform: translateY(0);
+        }
 
-.empty-message {
-    text-align: center;
-    padding: 3rem;
-    color: #9ca3af;
-    font-size: 14px;
-}
+        .btn-secondary {
+            background: white;
+            color: #3b82f6;
+            border: 2px solid #3b82f6;
+            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.1);
+        }
 
-.action-buttons {
-    display: flex;
-    gap: 12px;
-    margin-top: 24px;
-    justify-content: flex-end;
-}
+        .btn-secondary:hover {
+            background: #f0f9ff;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+            transform: translateY(-2px);
+        }
 
-@media (max-width: 768px) {
-    .page-header {
-        padding: 16px 1rem;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 12px;
-        height: auto;
-    }
+        .btn-success {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+        }
 
-    .content-wrapper {
-        padding: 16px;
-    }
-    
-    .form-grid {
-        grid-template-columns: 1fr;
-    }
-}
+        .btn-success:hover {
+            background: linear-gradient(135deg, #059669 0%, #047857 100%);
+            box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            color: white;
+            box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+        }
+
+        .btn-danger:hover {
+            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+            box-shadow: 0 4px 16px rgba(239, 68, 68, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+
+        .input-small {
+            padding: 8px 12px;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            font-size: 13px;
+            width: 90px;
+            font-weight: 500;
+        }
+
+        .input-small:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .cart-table {
+            margin-top: 0;
+        }
+
+        .empty-message {
+            text-align: center;
+            padding: 3rem;
+            color: #9ca3af;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 32px;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .conversion-cell {
+            text-align: center;
+            font-weight: 600;
+            color: #3b82f6;
+            font-size: 13px;
+        }
+
+        @media (max-width: 768px) {
+            .page-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 16px;
+                padding: 16px 1.5rem;
+            }
+
+            .page-header h2 {
+                font-size: 1.5rem;
+            }
+
+            .header-actions {
+                width: 100%;
+                flex-direction: column;
+            }
+
+            .header-actions .btn {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .content-wrapper {
+                padding: 16px;
+            }
+
+            .form-grid {
+                grid-template-columns: 1fr;
+                gap: 16px;
+            }
+
+            .search-input {
+                min-width: 100%;
+            }
+
+            .table-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .search-box {
+                flex-direction: column;
+            }
+
+            .search-box .btn {
+                width: 100%;
+            }
+
+            .data-table {
+                font-size: 12px;
+            }
+
+            .data-table th,
+            .data-table td {
+                padding: 10px 12px;
+            }
+
+            .action-buttons {
+                flex-direction: column;
+            }
+
+            .action-buttons .btn {
+                width: 100%;
+                justify-content: center;
+            }
+        }
     </style>
 </head>
 <body>
@@ -869,56 +1008,18 @@ body {
 
     <main class="main-content">
         <header class="page-header">
-            <h2><?= $isUpdateMode ? "Sayım Güncelle – DocEntry: {$documentEntry}" : "Yeni Stok Sayımı" ?></h2>
-            <div style="display: flex; gap: 12px;">
+            <h2><?= $isUpdateMode ? "Sayım Güncelle – Doc#" . htmlspecialchars($documentEntry) : "Yeni Stok Sayımı" ?></h2>
+            <div class="header-actions">
                 <button class="btn btn-secondary" onclick="window.location.href='Stok.php'">İptal / Geri Dön</button>
                 <button class="btn btn-primary" onclick="saveCounting()"><?= $isUpdateMode ? 'Sayımı Güncelle' : 'Kaydet' ?></button>
             </div>
         </header>
 
         <div class="content-wrapper">
-            <!-- Debug Panel -->
-            <section class="card" id="debugPanel" style="background: #fef3c7; border: 2px solid #f59e0b; margin-bottom: 24px;">
-                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                    <h3 style="color: #92400e; margin: 0;">🔍 Debug Bilgileri</h3>
-                    <button class="btn btn-secondary btn-small" onclick="clearDebug()">Temizle</button>
-                </div>
-                <div class="card-body">
-                    <pre id="debugContent" style="background: white; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 12px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; margin: 0;"><?php 
-if ($isUpdateMode) {
-    echo "=== GÜNCELLE MODU DEBUG ===\n";
-    echo "DocumentEntry: {$documentEntry}\n";
-    echo "Counting Query: InventoryCountings({$documentEntry})\n";
-    echo "Lines Query: InventoryCountings({$documentEntry})/InventoryCountingLines\n";
-    echo "Counting Response Status: " . (isset($countingData) ? ($countingData['status'] ?? 'NO STATUS') : 'NOT FETCHED') . "\n";
-    echo "Lines Response Status: " . (isset($linesData) ? ($linesData['status'] ?? 'NO STATUS') : 'NOT FETCHED') . "\n";
-    echo "\n=== EXISTING COUNTING (Header) ===\n";
-    echo json_encode($existingCounting, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . "\n";
-    echo "\n=== EXISTING LINES ===\n";
-    echo "Count: " . count($existingLines) . "\n";
-    if (!empty($existingLines)) {
-        echo "First Line Sample:\n";
-        echo json_encode($existingLines[0] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . "\n";
-    }
-    echo "\nAll Lines:\n";
-    echo json_encode($existingLines, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . "\n";
-    echo "\n=== EXISTING WAREHOUSE ===\n";
-    echo $existingWarehouse . "\n";
-    if (isset($linesData)) {
-        echo "\n=== LINES RAW RESPONSE ===\n";
-        echo json_encode($linesData, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . "\n";
-    }
-} else {
-    echo "Yeni Sayım Modu\n";
-}
-?></pre>
-                </div>
-            </section>
-
-            <!-- Üst Bilgiler -->
+            <!-- Form Kartı -->
             <section class="card">
                 <div class="card-header">
-                    <h3>Üst Bilgiler</h3>
+                    <h3>📋 Sayım Bilgileri</h3>
                 </div>
                 <div class="card-body">
                     <div class="form-grid">
@@ -940,23 +1041,23 @@ if ($isUpdateMode) {
                         </div>
                         
                         <div class="form-group">
-                            <label>Açıklama</label>
-                            <input type="text" id="remarks" value="<?= $isUpdateMode ? htmlspecialchars($existingCounting['Remarks'] ?? '') : '' ?>" placeholder="Açıklama (opsiyonel)">
+                            <label>Açıklama (Opsiyonel)</label>
+                            <input type="text" id="remarks" value="<?= $isUpdateMode ? htmlspecialchars($existingCounting['Remarks'] ?? '') : '' ?>" placeholder="Sayım hakkında not ekleyin...">
                         </div>
                     </div>
                 </div>
             </section>
 
-            <!-- Ürün Listesi -->
+            <!-- Ürün Listesi Kartı -->
             <section class="card" id="itemsCard" style="display: none;">
                 <div class="card-header">
-                    <h3>Ürün Listesi</h3>
+                    <h3>🔍 Ürün Listesi</h3>
                 </div>
                 <div class="card-body">
                     <div class="table-controls">
                         <div class="search-box">
-                            <input type="text" class="search-input" id="itemSearch" placeholder="Ara..." onkeyup="if(event.key==='Enter') loadItems()">
-                            <button class="btn btn-secondary" onclick="loadItems()">🔍</button>
+                            <input type="text" class="search-input" id="itemSearch" placeholder="Ürün kodu veya adına göre ara..." onkeyup="if(event.key==='Enter') loadItems()">
+                            <button class="btn btn-secondary btn-small" onclick="loadItems()">Ara</button>
                         </div>
                     </div>
 
@@ -967,13 +1068,14 @@ if ($isUpdateMode) {
                                     <th>Ürün Kodu</th>
                                     <th>Ürün Adı</th>
                                     <th>Depo</th>
-                                    <th>Birim(ler)</th>
+                                    <th>Birim</th>
                                     <th>Sepete Ekle</th>
+                                    <th>Dönüşüm</th>
                                 </tr>
                             </thead>
                             <tbody id="itemsTableBody">
                                 <tr>
-                                    <td colspan="5" class="empty-message">Depo seçiniz</td>
+                                    <td colspan="6" class="empty-message">Depo seçiniz</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -981,10 +1083,10 @@ if ($isUpdateMode) {
                 </div>
             </section>
 
-            <!-- Sepet -->
+            <!-- Sepet Kartı -->
             <section class="card">
                 <div class="card-header">
-                    <h3>Sepet</h3>
+                    <h3>🛒 Sayım Sepeti</h3>
                 </div>
                 <div class="card-body">
                     <div style="overflow-x: auto;">
@@ -992,36 +1094,48 @@ if ($isUpdateMode) {
                             <thead>
                                 <tr>
                                     <?php if ($isUpdateMode): ?>
-                                    <th>LineNum</th>
+                                    <th>Satır No</th>
                                     <?php endif; ?>
                                     <th>Ürün Kodu</th>
                                     <th>Ürün Adı</th>
                                     <th>Depo</th>
                                     <th>Birim</th>
                                     <th>Sayılan Miktar</th>
-                                    <th>İşlem</th>
+                                    <th>Dönüşüm</th>
+                                    <th style="text-align: center;">İşlem</th>
                                 </tr>
                             </thead>
                             <tbody id="cartTableBody">
                                 <?php if ($isUpdateMode && !empty($existingLines)): ?>
                                 <?php foreach ($existingLines as $line): ?>
                                 <tr data-line-num="<?= $line['LineNum'] ?? '' ?>" data-item-code="<?= htmlspecialchars($line['ItemCode'] ?? '') ?>">
-                                    <td><?= $line['LineNum'] ?? '' ?></td>
-                                    <td><?= htmlspecialchars($line['ItemCode'] ?? '') ?></td>
+                                    <td><?= $line['LineNum'] ?? '-' ?></td>
+                                    <td><strong><?= htmlspecialchars($line['ItemCode'] ?? '') ?></strong></td>
                                     <td><?= htmlspecialchars($line['ItemDescription'] ?? '') ?></td>
                                     <td><?= htmlspecialchars($line['WarehouseCode'] ?? '') ?></td>
                                     <td><?= htmlspecialchars($line['UoMCode'] ?? '') ?></td>
                                     <td>
-                                        <input type="number" class="input-small" value="<?= htmlspecialchars($line['CountedQuantity'] ?? 0) ?>" step="0.01" min="0" onchange="updateCartQuantity(this)">
+                                        <div class="quantity-controls">
+                                            <button type="button" class="qty-btn" onclick="changeExistingCartQuantity(this.parentElement.querySelector('.qty-input'), -1)">−</button>
+                                            <input type="number" 
+                                                   class="qty-input" 
+                                                   value="<?= htmlspecialchars($line['CountedQuantity'] ?? 0) ?>" 
+                                                   step="0.01" 
+                                                   min="0" 
+                                                   onchange="updateCartQuantity(this)" 
+                                                   oninput="updateCartConversionForExisting(this)">
+                                            <button type="button" class="qty-btn" onclick="changeExistingCartQuantity(this.parentElement.querySelector('.qty-input'), 1)">+</button>
+                                        </div>
                                     </td>
-                                    <td>
+                                    <td class="conversion-cell">-</td>
+                                    <td style="text-align: center;">
                                         <button class="btn btn-danger btn-small" onclick="removeFromCart(this)">Sil</button>
                                     </td>
                                 </tr>
                                 <?php endforeach; ?>
                                 <?php else: ?>
                                 <tr>
-                                    <td colspan="<?= $isUpdateMode ? '7' : '6' ?>" class="empty-message">Sepet boş</td>
+                                    <td colspan="<?= $isUpdateMode ? '8' : '7' ?>" class="empty-message">Sepet boş - Ürün seçiniz</td>
                                 </tr>
                                 <?php endif; ?>
                             </tbody>
@@ -1029,330 +1143,384 @@ if ($isUpdateMode) {
                     </div>
                 </div>
             </section>
+
+            <!-- Action Buttons -->
+            <div class="action-buttons">
+                <button class="btn btn-secondary" onclick="window.location.href='Stok.php'">İptal</button>
+                <button class="btn btn-primary" onclick="saveCounting()"><?= $isUpdateMode ? 'Sayımı Güncelle' : 'Kaydet' ?></button>
+            </div>
         </div>
     </main>
 
     <script>
-const isUpdateMode = <?= $isUpdateMode ? 'true' : 'false' ?>;
-const documentEntry = <?= $documentEntry ?: 'null' ?>;
-let cart = <?= json_encode($isUpdateMode ? array_map(function($line) {
-    return [
-        'LineNumber' => $line['LineNumber'] ?? null,
-        'ItemCode' => $line['ItemCode'] ?? '',
-        'ItemName' => $line['ItemDescription'] ?? '',
-        'WarehouseCode' => $line['WarehouseCode'] ?? '',
-        'UoMCode' => $line['UoMCode'] ?? '',
-        'UoMEntry' => $line['UoMEntry'] ?? null,
-        'CountedQuantity' => $line['CountedQuantity'] ?? 0
-    ];
-}, $existingLines) : []) ?>;
+        const isUpdateMode = <?= $isUpdateMode ? 'true' : 'false' ?>;
+        const documentEntry = <?= $documentEntry ?: 'null' ?>;
+        let cart = [];
 
-function loadItems() {
-    const warehouseCode = document.getElementById('warehouseCode').value;
-    if (!warehouseCode) {
-        document.getElementById('itemsCard').style.display = 'none';
-        return;
-    }
-    
-    document.getElementById('itemsCard').style.display = 'block';
-    const search = document.getElementById('itemSearch').value;
-    const tbody = document.getElementById('itemsTableBody');
-    tbody.innerHTML = '<tr><td colspan="5" class="empty-message">Yükleniyor...</td></tr>';
-    
-    const params = new URLSearchParams({
-        ajax: 'items',
-        warehouseCode: warehouseCode,
-        search: search,
-        top: 25,
-        skip: 0
-    });
-    
-    fetch('?' + params.toString())
-        .then(res => res.json())
-        .then(data => {
-            console.log('Items Response:', data);
-            updateDebug('Items Response', data);
-            tbody.innerHTML = '';
-            
-            if (data.error) {
-                tbody.innerHTML = '<tr><td colspan="5" class="empty-message" style="color: #ef4444;">Hata: ' + data.error + '</td></tr>';
+        function formatQuantity(qty) {
+            const num = parseFloat(qty);
+            if (isNaN(num)) return '0';
+            if (num % 1 === 0) {
+                return num.toString();
+            }
+            return num.toString().replace('.', ',');
+        }
+
+        function loadItems() {
+            const warehouseCode = document.getElementById('warehouseCode').value;
+            if (!warehouseCode) {
+                document.getElementById('itemsCard').style.display = 'none';
                 return;
             }
             
-            if (data.data && data.data.length > 0) {
-                data.data.forEach(item => {
-                    const row = document.createElement('tr');
-                    const uomList = item.UoMList || [];
-                    const hasMultipleUoM = uomList.length > 1;
+            document.getElementById('itemsCard').style.display = 'block';
+            const search = document.getElementById('itemSearch').value;
+            const tbody = document.getElementById('itemsTableBody');
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-message">Yükleniyor...</td></tr>';
+            
+            const params = new URLSearchParams({
+                ajax: 'items',
+                warehouseCode: warehouseCode,
+                search: search,
+                top: 25,
+                skip: 0
+            });
+            
+            fetch('?' + params.toString())
+                .then(res => res.json())
+                .then(data => {
+                    tbody.innerHTML = '';
                     
-                    // WarehouseCode'u doğru al (view'den gelen WhsCode)
-                    const warehouseCode = item.WhsCode || item.WarehouseCode || '';
-                    
-                    // View'den gelen UomCode (teknik kod, örn: "AD") - SAP'nin istediği kod
-                    const technicalUomCode = item.UomCode || '';
-                    // InventoryUOM (kullanıcı görünen, örn: "Adet") - sadece label
-                    const displayUom = item.InventoryUOM || '';
-                    
-                    let uomSelect = '';
-                    if (hasMultipleUoM) {
-                        uomSelect = '<select class="input-small" data-item-code="' + (item.ItemCode || '') + '">';
-                        uomList.forEach(uom => {
-                            uomSelect += '<option value="' + uom.UoMEntry + '" data-uom-code="' + (uom.UoMCode || '') + '">' + (uom.UoMCode || '') + '</option>';
-                        });
-                        uomSelect += '</select>';
-                    } else {
-                        // Tek birim varsa: data-uom-code="AD" (teknik kod), gösterilen: "Adet" (label)
-                        uomSelect = '<span data-uom-code="' + technicalUomCode + '">' + displayUom + '</span>';
+                    if (data.error) {
+                        tbody.innerHTML = '<tr><td colspan="6" class="empty-message" style="color: #ef4444;">Hata: ' + data.error + '</td></tr>';
+                        return;
                     }
                     
-                    row.innerHTML = `
-                        <td>${item.ItemCode || ''}</td>
-                        <td>${item.ItemName || ''}</td>
-                        <td>${warehouseCode}</td>
-                        <td>${uomSelect}</td>
-                        <td>
-                            <input type="number" class="input-small" value="1" step="0.01" min="0" data-item-code="${item.ItemCode || ''}">
-                            <button class="btn btn-primary btn-small" onclick="addToCart(this)">Sepete Ekle</button>
-                        </td>
-                    `;
-                    // Item data'sını row'a ekle (UoMEntry için)
-                    row.setAttribute('data-item-code', item.ItemCode || '');
-                    row.setAttribute('data-item-data', JSON.stringify(item));
-                    tbody.appendChild(row);
+                    if (data.data && data.data.length > 0) {
+                        data.data.forEach(item => {
+                            const row = document.createElement('tr');
+                            const uomList = item.UoMList || [];
+                            const hasMultipleUoM = uomList.length > 1;
+                            
+                            const warehouseCode = item.WhsCode || item.WarehouseCode || '';
+                            const technicalUomCode = item.UomCode || '';
+                            const displayUom = item.InventoryUOM || '';
+                            
+                            let defaultBaseQty = 1;
+                            if (uomList.length > 0) {
+                                const defaultUom = uomList.find(u => u.UoMCode === technicalUomCode) || uomList[0];
+                                defaultBaseQty = parseFloat(defaultUom.BaseQty || 1.0);
+                            }
+                            
+                            let uomSelect = '';
+                            if (hasMultipleUoM) {
+                                uomSelect = '<select class="input-small" data-item-code="' + (item.ItemCode || '') + '" onchange="updateConversion(this)">';
+                                uomList.forEach(uom => {
+                                    const baseQty = parseFloat(uom.BaseQty || 1.0);
+                                    const selected = (uom.UoMCode === technicalUomCode) ? ' selected' : '';
+                                    uomSelect += '<option value="' + uom.UoMEntry + '" data-uom-code="' + (uom.UoMCode || '') + '" data-base-qty="' + baseQty + '"' + selected + '>' + (uom.UoMCode || '') + '</option>';
+                                });
+                                uomSelect += '</select>';
+                            } else {
+                                uomSelect = '<span data-uom-code="' + technicalUomCode + '" data-base-qty="' + defaultBaseQty + '">' + (technicalUomCode || displayUom) + '</span>';
+                            }
+                            
+                            let conversionText = '-';
+                            if (defaultBaseQty && defaultBaseQty !== 1 && defaultBaseQty > 0) {
+                                conversionText = `1x${formatQuantity(defaultBaseQty)} = ${formatQuantity(defaultBaseQty)} AD`;
+                            }
+                            
+                            row.innerHTML = `
+                                <td><strong>${item.ItemCode || ''}</strong></td>
+                                <td>${item.ItemName || ''}</td>
+                                <td>${warehouseCode}</td>
+                                <td>${uomSelect}</td>
+                                <td>
+                                    <div class="quantity-controls">
+                                        <button type="button" class="qty-btn" onclick="changeItemQuantity('${item.ItemCode || ''}', -1)">−</button>
+                                        <input type="number" 
+                                               id="qty_${item.ItemCode || ''}"
+                                               class="qty-input" 
+                                               value="0" 
+                                               step="0.01" 
+                                               min="0" 
+                                               data-item-code="${item.ItemCode || ''}" 
+                                               onchange="updateItemQuantity('${item.ItemCode || ''}', this.value)"
+                                               oninput="updateItemQuantity('${item.ItemCode || ''}', this.value)">
+                                        <button type="button" class="qty-btn" onclick="changeItemQuantity('${item.ItemCode || ''}', 1)">+</button>
+                                    </div>
+                                    <button class="btn btn-success btn-small" style="margin-top: 8px; width: 100%;" onclick="addToCart(this)">Ekle</button>
+                                </td>
+                                <td class="conversion-cell">${conversionText}</td>
+                            `;
+                            row.setAttribute('data-item-code', item.ItemCode || '');
+                            row.setAttribute('data-item-data', JSON.stringify(item));
+                            tbody.appendChild(row);
+                        });
+                    } else {
+                        tbody.innerHTML = '<tr><td colspan="6" class="empty-message">Ürün bulunamadı</td></tr>';
+                    }
+                })
+                .catch(err => {
+                    tbody.innerHTML = '<tr><td colspan="6" class="empty-message" style="color: #ef4444;">Bir hata oluştu: ' + err.message + '</td></tr>';
                 });
+        }
+
+        function updateConversion(select) {
+            const row = select.closest('tr');
+            const selectedOption = select.options[select.selectedIndex];
+            const baseQty = parseFloat(selectedOption.getAttribute('data-base-qty') || 1);
+            const conversionCell = row.querySelector('.conversion-cell');
+            
+            let conversionText = '-';
+            if (baseQty && baseQty !== 1 && baseQty > 0) {
+                conversionText = `1x${formatQuantity(baseQty)} = ${formatQuantity(baseQty)} AD`;
+            }
+            conversionCell.textContent = conversionText;
+        }
+
+        function changeItemQuantity(itemCode, delta) {
+            const input = document.getElementById('qty_' + itemCode);
+            if (input) {
+                input.value = Math.max(0, parseFloat(input.value) + delta);
+            }
+        }
+
+        function updateItemQuantity(itemCode, value) {
+            const input = document.getElementById('qty_' + itemCode);
+            if (input) {
+                input.value = Math.max(0, parseFloat(value));
+            }
+        }
+
+        function addToCart(btn) {
+            const row = btn.closest('tr');
+            const itemCode = row.getAttribute('data-item-code');
+            const itemName = row.cells[1].textContent.trim();
+            const warehouseCode = row.cells[2].textContent.trim();
+            const quantityInput = row.querySelector('input[type="number"]');
+            const quantity = parseFloat(quantityInput.value) || 0;
+            
+            if (quantity <= 0) {
+                alert('Lütfen geçerli bir miktar girin');
+                return;
+            }
+            
+            let uomCode = '';
+            let uomEntry = null;
+            const uomCell = row.cells[3];
+            const uomSelect = uomCell.querySelector('select');
+            if (uomSelect) {
+                const selectedOption = uomSelect.options[uomSelect.selectedIndex];
+                uomCode = selectedOption.getAttribute('data-uom-code') || '';
+                uomEntry = parseInt(selectedOption.value);
             } else {
-                tbody.innerHTML = '<tr><td colspan="5" class="empty-message">Ürün bulunamadı</td></tr>';
+                const uomSpan = uomCell.querySelector('span[data-uom-code]');
+                if (uomSpan) {
+                    uomCode = uomSpan.getAttribute('data-uom-code') || '';
+                }
             }
-        })
-        .catch(err => {
-            console.error('Error:', err);
-            tbody.innerHTML = '<tr><td colspan="5" class="empty-message" style="color: #ef4444;">Bir hata oluştu: ' + err.message + '</td></tr>';
-        });
-}
-
-function addToCart(btn) {
-    const row = btn.closest('tr');
-    const itemCode = row.getAttribute('data-item-code');
-    const itemName = row.cells[1].textContent.trim();
-    const warehouseCode = row.cells[2].textContent.trim();
-    const quantityInput = row.querySelector('input[type="number"]');
-    const quantity = parseFloat(quantityInput.value) || 0;
-    
-    let uomCode = '';
-    let uomEntry = null;
-    const uomCell = row.cells[3];
-    const uomSelect = uomCell.querySelector('select');
-    if (uomSelect) {
-        const selectedOption = uomSelect.options[uomSelect.selectedIndex];
-        uomCode = selectedOption.getAttribute('data-uom-code') || '';
-        uomEntry = parseInt(selectedOption.value);
-    } else {
-        // Tek birim varsa, span'dan data-uom-code'u al (teknik kod)
-        const uomSpan = uomCell.querySelector('span[data-uom-code]');
-        if (uomSpan) {
-            uomCode = uomSpan.getAttribute('data-uom-code') || ''; // Teknik kod (örn: "AD")
-            // UoMEntry opsiyonel - varsa al
-            const uomEntryAttr = uomSpan.getAttribute('data-uom-entry');
-            if (uomEntryAttr && uomEntryAttr !== '') {
-                uomEntry = parseInt(uomEntryAttr);
+            
+            if (!uomCode) {
+                alert('Birim bilgisi bulunamadı');
+                return;
             }
-        } else {
-            uomCode = uomCell.textContent.trim();
+            
+            let baseQty = 1;
+            if (uomSelect) {
+                const selectedOption = uomSelect.options[uomSelect.selectedIndex];
+                baseQty = parseFloat(selectedOption.getAttribute('data-base-qty') || 1);
+            } else {
+                const uomSpan = uomCell.querySelector('span[data-base-qty]');
+                if (uomSpan) {
+                    baseQty = parseFloat(uomSpan.getAttribute('data-base-qty') || 1);
+                }
+            }
+            
+            cart.push({
+                ItemCode: itemCode,
+                ItemName: itemName,
+                WarehouseCode: warehouseCode,
+                UoMCode: uomCode,
+                UoMEntry: uomEntry,
+                CountedQuantity: quantity,
+                BaseQty: baseQty
+            });
+            
+            updateCartTable();
+            quantityInput.value = '0';
         }
-    }
-    
-    // UoMCode yoksa hata ver
-    if (!uomCode) {
-        alert('Birim bilgisi (UoMCode) bulunamadı. Lütfen sayfayı yenileyin veya farklı bir ürün seçin.');
-        console.error('UoMCode bulunamadı:', { itemCode, row });
-        return;
-    }
-    
-    // WarehouseCode boşsa hata ver
-    if (!warehouseCode) {
-        alert('Depo bilgisi bulunamadı. Lütfen sayfayı yenileyin.');
-        console.error('WarehouseCode bulunamadı:', { itemCode, row });
-        return;
-    }
-    
-    // Sepete ekle
-    const cartItem = {
-        ItemCode: itemCode,
-        ItemName: itemName,
-        WarehouseCode: warehouseCode,
-        UoMCode: uomCode,
-        UoMEntry: uomEntry,
-        CountedQuantity: quantity
-    };
-    
-    updateDebug('Sepete Eklendi', cartItem);
-    cart.push(cartItem);
-    updateCartTable();
-}
 
-function updateCartTable() {
-    const tbody = document.getElementById('cartTableBody');
-    tbody.innerHTML = '';
-    
-    if (cart.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="${isUpdateMode ? '7' : '6'}" class="empty-message">Sepet boş</td></tr>`;
-        return;
-    }
-    
-    cart.forEach((item, index) => {
-        const row = document.createElement('tr');
-        if (isUpdateMode && item.LineNumber !== null && item.LineNumber !== undefined) {
-            row.setAttribute('data-line-number', item.LineNumber);
+        function updateCartTable() {
+            const tbody = document.getElementById('cartTableBody');
+            tbody.innerHTML = '';
+            
+            if (cart.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="${isUpdateMode ? '8' : '7'}" class="empty-message">Sepet boş - Ürün seçiniz</td></tr>`;
+                return;
+            }
+            
+            cart.forEach((item, index) => {
+                const row = document.createElement('tr');
+                if (isUpdateMode && item.LineNumber !== null && item.LineNumber !== undefined) {
+                    row.setAttribute('data-line-number', item.LineNumber);
+                }
+                row.setAttribute('data-item-code', item.ItemCode);
+                
+                const qty = parseFloat(item.CountedQuantity) || 0;
+                const baseQty = parseFloat(item.BaseQty || 1.0);
+                
+                let conversionText = '-';
+                if (baseQty !== 1 && baseQty > 0) {
+                    const adKarşılığı = qty * baseQty;
+                    conversionText = `${formatQuantity(qty)}x${formatQuantity(baseQty)} = ${formatQuantity(adKarşılığı)} AD`;
+                }
+                
+                let html = '';
+                if (isUpdateMode) {
+                    html += `<td>${item.LineNumber !== null && item.LineNumber !== undefined ? item.LineNumber : '-'}</td>`;
+                }
+                html += `
+                    <td><strong>${item.ItemCode}</strong></td>
+                    <td>${item.ItemName}</td>
+                    <td>${item.WarehouseCode}</td>
+                    <td>${item.UoMCode}</td>
+                    <td>
+                        <div class="quantity-controls">
+                            <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, -1)">−</button>
+                            <input type="number" 
+                                   class="qty-input" 
+                                   value="${qty}" 
+                                   step="0.01" 
+                                   min="0" 
+                                   onchange="updateCartQuantity(this, ${index})" 
+                                   oninput="updateCartConversion(this, ${index})">
+                            <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 1)">+</button>
+                        </div>
+                    </td>
+                    <td class="conversion-cell">${conversionText}</td>
+                    <td style="text-align: center;">
+                        <button class="btn btn-danger btn-small" onclick="removeFromCart(${index})">Sil</button>
+                    </td>
+                `;
+                row.innerHTML = html;
+                tbody.appendChild(row);
+            });
         }
-        row.setAttribute('data-item-code', item.ItemCode);
-        
-        let html = '';
+
+        function changeCartQuantity(index, delta) {
+            if (index >= 0 && index < cart.length) {
+                cart[index].CountedQuantity = Math.max(0, parseFloat(cart[index].CountedQuantity) + delta);
+                updateCartTable();
+            }
+        }
+
+        function updateCartQuantity(input, index) {
+            if (index >= 0 && index < cart.length) {
+                cart[index].CountedQuantity = parseFloat(input.value) || 0;
+            }
+        }
+
+        function updateCartConversion(input, index) {
+            // Just re-render for visual update
+            updateCartTable();
+        }
+
+        function removeFromCart(index) {
+            if (index >= 0 && index < cart.length) {
+                cart.splice(index, 1);
+                updateCartTable();
+            }
+        }
+
+        function saveCounting() {
+            const warehouseCode = document.getElementById('warehouseCode').value;
+            const countDate = document.getElementById('countDate').value;
+            const remarks = document.getElementById('remarks').value;
+            
+            if (!warehouseCode) {
+                alert('Depo seçilmelidir');
+                return;
+            }
+            
+            if (cart.length === 0) {
+                alert('Sepete en az bir ürün eklenmelidir');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('action', isUpdateMode ? 'update' : 'create');
+            formData.append('warehouseCode', warehouseCode);
+            formData.append('countDate', countDate);
+            formData.append('remarks', remarks);
+            
+            const lines = cart.map(item => {
+                const line = {
+                    ItemCode: item.ItemCode,
+                    WarehouseCode: item.WarehouseCode,
+                    CountedQuantity: item.CountedQuantity
+                };
+                
+                if (isUpdateMode && item.LineNumber !== null && item.LineNumber !== undefined) {
+                    line.LineNumber = item.LineNumber;
+                } else if (!isUpdateMode || item.LineNumber === null || item.LineNumber === undefined) {
+                    if (item.UoMEntry) {
+                        line.UoMEntry = item.UoMEntry;
+                    } else if (item.UoMCode) {
+                        line.UoMCode = item.UoMCode;
+                    }
+                }
+                
+                return line;
+            });
+            
+            formData.append('lines', JSON.stringify(lines));
+            
+            fetch(window.location.href, {
+                method: 'POST',
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    if (!isUpdateMode && data.DocumentEntry) {
+                        window.location.href = 'Stok.php';
+                    } else {
+                        window.location.href = 'Stok.php';
+                    }
+                } else {
+                    alert('Hata: ' + data.message);
+                    if (data.errors) {
+                        console.error('Errors:', data.errors);
+                    }
+                }
+            })
+            .catch(err => alert('Bir hata oluştu: ' + err.message));
+        }
+
+        // Initialize cart for update mode
         if (isUpdateMode) {
-            html += `<td>${item.LineNumber !== null && item.LineNumber !== undefined ? item.LineNumber : '-'}</td>`;
+            const cartRows = document.querySelectorAll('#cartTableBody tr[data-item-code]');
+            cartRows.forEach(row => {
+                if (row.cells.length > 1 && !row.querySelector('.empty-message')) {
+                    const itemCode = row.getAttribute('data-item-code');
+                    const itemName = row.cells[isUpdateMode ? 2 : 1].textContent.trim();
+                    const warehouse = row.cells[isUpdateMode ? 3 : 2].textContent.trim();
+                    const uom = row.cells[isUpdateMode ? 4 : 3].textContent.trim();
+                    const quantity = parseFloat(row.querySelector('.qty-input').value || 0);
+                    
+                    cart.push({
+                        ItemCode: itemCode,
+                        ItemName: itemName,
+                        WarehouseCode: warehouse,
+                        UoMCode: uom,
+                        CountedQuantity: quantity,
+                        BaseQty: 1
+                    });
+                }
+            });
         }
-        html += `
-            <td>${item.ItemCode}</td>
-            <td>${item.ItemName}</td>
-            <td>${item.WarehouseCode}</td>
-            <td>${item.UoMCode}</td>
-            <td>
-                <input type="number" class="input-small" value="${item.CountedQuantity}" step="0.01" min="0" onchange="updateCartQuantity(this, ${index})">
-            </td>
-            <td>
-                <button class="btn btn-danger btn-small" onclick="removeFromCart(this, ${index})">Sil</button>
-            </td>
-        `;
-        row.innerHTML = html;
-        tbody.appendChild(row);
-    });
-}
-
-function updateCartQuantity(input, index) {
-    if (index !== undefined) {
-        cart[index].CountedQuantity = parseFloat(input.value) || 0;
-    } else {
-        const row = input.closest('tr');
-        const itemCode = row.getAttribute('data-item-code');
-        const item = cart.find(c => c.ItemCode === itemCode);
-        if (item) {
-            item.CountedQuantity = parseFloat(input.value) || 0;
-        }
-    }
-}
-
-function removeFromCart(btn, index) {
-    if (index !== undefined) {
-        cart.splice(index, 1);
-    } else {
-        const row = btn.closest('tr');
-        const itemCode = row.getAttribute('data-item-code');
-        cart = cart.filter(c => c.ItemCode !== itemCode);
-    }
-    updateCartTable();
-}
-
-function saveCounting() {
-    const warehouseCode = document.getElementById('warehouseCode').value;
-    const countDate = document.getElementById('countDate').value;
-    const remarks = document.getElementById('remarks').value;
-    
-    if (!warehouseCode) {
-        alert('Depo seçilmelidir');
-        return;
-    }
-    
-    if (cart.length === 0) {
-        alert('Sepete en az bir ürün eklenmelidir');
-        return;
-    }
-    
-    const formData = new FormData();
-    formData.append('action', isUpdateMode ? 'update' : 'create');
-    formData.append('warehouseCode', warehouseCode);
-    formData.append('countDate', countDate);
-    formData.append('remarks', remarks);
-    
-    // Cart'ı formatla
-    const lines = cart.map(item => {
-        const line = {
-            ItemCode: item.ItemCode,
-            WarehouseCode: item.WarehouseCode,
-            CountedQuantity: item.CountedQuantity
-        };
-        
-        // Mevcut satırlar için LineNumber gönder (SAP B1SL'de LineNumber kullanılıyor)
-        if (isUpdateMode && item.LineNumber !== null && item.LineNumber !== undefined) {
-            line.LineNumber = item.LineNumber;
-        } else if (!isUpdateMode || item.LineNumber === null || item.LineNumber === undefined) {
-            // Yeni satırlar için UoM bilgisi gönder
-            if (item.UoMEntry) {
-                line.UoMEntry = item.UoMEntry;
-            } else if (item.UoMCode) {
-                line.UoMCode = item.UoMCode;
-            }
-        }
-        
-        return line;
-    });
-    
-    formData.append('lines', JSON.stringify(lines));
-    
-    // Debug: Gönderilen verileri göster
-    const debugData = {
-        action: isUpdateMode ? 'update' : 'create',
-        warehouseCode: warehouseCode,
-        countDate: countDate,
-        remarks: remarks,
-        lines: lines,
-        cart: cart
-    };
-    updateDebug('Gönderilen Veriler', debugData);
-    
-    fetch('', {
-        method: 'POST',
-        body: formData
-    })
-    .then(res => res.json())
-    .then(data => {
-        // Debug: Response'u göster
-        updateDebug('Response', data);
-        
-        if (data.success) {
-            const docEntry = data.DocumentEntry || documentEntry;
-            window.location.href = 'StokSayimDetay.php?DocumentEntry=' + docEntry;
-        } else {
-            alert('Hata: ' + data.message);
-        }
-    })
-    .catch(err => {
-        console.error('Error:', err);
-        updateDebug('Fetch Error', {error: err.message, stack: err.stack});
-        alert('Bir hata oluştu');
-    });
-}
-
-function updateDebug(title, data) {
-    const debugContent = document.getElementById('debugContent');
-    if (debugContent) {
-        const timestamp = new Date().toLocaleTimeString('tr-TR');
-        const debugText = `[${timestamp}] ${title}:\n${JSON.stringify(data, null, 2)}\n\n${debugContent.textContent}`;
-        debugContent.textContent = debugText;
-    }
-}
-
-function clearDebug() {
-    const debugContent = document.getElementById('debugContent');
-    if (debugContent) {
-        debugContent.textContent = 'Debug bilgileri burada görünecek...';
-    }
-}
-
-// Güncelle modunda depo seçilmişse ürünleri yükle
-<?php if ($isUpdateMode && !empty($existingWarehouse)): ?>
-document.addEventListener('DOMContentLoaded', function() {
-    loadItems();
-});
-<?php endif; ?>
     </script>
 </body>
 </html>
