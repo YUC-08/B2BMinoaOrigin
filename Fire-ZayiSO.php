@@ -526,8 +526,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             color: #dc2626;
         }
 
-        .form-input,
-        .form-select {
+        .form-input {
             padding: 12px 16px;
             border: 2px solid #e5e7eb;
             border-radius: 8px;
@@ -535,49 +534,175 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             transition: all 0.2s ease;
             background: white;
             color: #111827;
+            width: 100%;
+            min-height: 44px;
+            box-sizing: border-box;
         }
 
-        .form-input:focus,
-        .form-select:focus {
+        .form-input:focus {
             outline: none;
             border-color: #3b82f6;
             box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
         }
 
-        .form-input:disabled,
-        .form-select:disabled {
+        .form-input:disabled {
             background: #f3f4f6;
             cursor: not-allowed;
             color: #6b7280;
         }
 
-        .radio-group {
+        /* Modern Single Select Dropdown (AnaDepoSO gibi) */
+        .single-select-container {
+            position: relative;
+            width: 100%;
+        }
+
+        .single-select-input {
             display: flex;
-            gap: 24px;
             align-items: center;
-            padding: 12px 0;
-        }
-
-        .radio-option {
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            padding: 12px 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            background: white;
             cursor: pointer;
+            min-height: 44px;
+            transition: all 0.2s ease;
         }
 
-        .radio-option input[type="radio"] {
-            width: 18px;
-            height: 18px;
+        .single-select-input:hover {
+            border-color: #3b82f6;
+        }
+
+        .single-select-input.active {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .single-select-input.disabled {
+            background: #f3f4f6;
+            cursor: not-allowed;
+            color: #6b7280;
+        }
+
+        .single-select-input input {
+            border: none;
+            outline: none;
+            flex: 1;
+            background: transparent;
             cursor: pointer;
-            accent-color: #3b82f6;
-        }
-
-        .radio-option label {
             font-size: 14px;
-            font-weight: 500;
-            color: #374151;
+            color: #111827;
+            pointer-events: none;
+        }
+
+        .single-select-input.disabled input {
+            color: #6b7280;
+        }
+
+        .dropdown-arrow {
+            transition: transform 0.2s;
+            color: #6b7280;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+
+        .single-select-input.active .dropdown-arrow {
+            transform: rotate(180deg);
+        }
+
+        .single-select-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 2px solid #3b82f6;
+            border-top: none;
+            border-radius: 0 0 8px 8px;
+            max-height: 240px;
+            overflow-y: auto;
+            z-index: 9999;
+            display: none;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            margin-top: -2px;
+        }
+
+        .single-select-dropdown.show {
+            display: block;
+        }
+
+        .single-select-option {
+            padding: 12px 16px;
             cursor: pointer;
-            margin: 0;
+            border-bottom: 1px solid #f3f4f6;
+            font-size: 14px;
+            transition: background 0.15s ease;
+        }
+
+        .single-select-option:hover {
+            background: #f8fafc;
+        }
+
+        .single-select-option.selected {
+            background: #3b82f6;
+            color: white;
+            font-weight: 500;
+        }
+
+        .single-select-option:last-child {
+            border-bottom: none;
+        }
+
+        /* Modern Toggle Switch for Fire/Zayi */
+        .toggle-group {
+            display: flex;
+            gap: 0;
+            background: #f3f4f6;
+            border-radius: 8px;
+            padding: 4px;
+            width: 100%;
+        }
+
+        .toggle-option {
+            flex: 1;
+            position: relative;
+        }
+
+        .toggle-option input[type="radio"] {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-option label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: #6b7280;
+            text-align: center;
+            min-height: 44px;
+            box-sizing: border-box;
+        }
+
+        .toggle-option input[type="radio"]:checked + label {
+            background: white;
+            color: #1e40af;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .toggle-option input[type="radio"]:checked + label.fire {
+            color: #dc2626;
+        }
+
+        .toggle-option input[type="radio"]:checked + label.zayi {
+            color: #d97706;
         }
 
         .btn {
@@ -847,27 +972,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             <!-- Çıkış Depo -->
                             <div class="form-group">
                                 <label class="form-label required" for="fromWarehouse">Çıkış Depo</label>
-                                <select class="form-select" id="fromWarehouse" name="fromWarehouse" required>
-                                    <option value="">Depo seçiniz</option>
-                                    <?php foreach ($fromWarehouses as $whs): ?>
-                                    <option value="<?= htmlspecialchars($whs['WarehouseCode']) ?>">
-                                        <?= htmlspecialchars($whs['WarehouseCode']) ?> - <?= htmlspecialchars($whs['WarehouseName'] ?? '') ?>
-                                    </option>
-                                    <?php endforeach; ?>
-                                </select>
+                                <div class="single-select-container">
+                                    <div class="single-select-input" id="fromWarehouseInput" onclick="toggleDropdown('fromWarehouse')">
+                                        <input type="text" id="fromWarehouseInputText" value="Depo seçiniz" readonly>
+                                        <span class="dropdown-arrow">▼</span>
+                                    </div>
+                                    <div class="single-select-dropdown" id="fromWarehouseDropdown">
+                                        <div class="single-select-option" data-value="" onclick="selectWarehouse('fromWarehouse', '', 'Depo seçiniz')">Depo seçiniz</div>
+                                        <?php foreach ($fromWarehouses as $whs): ?>
+                                        <div class="single-select-option" data-value="<?= htmlspecialchars($whs['WarehouseCode']) ?>" onclick="selectWarehouse('fromWarehouse', '<?= htmlspecialchars($whs['WarehouseCode']) ?>', '<?= htmlspecialchars($whs['WarehouseCode']) ?> - <?= htmlspecialchars($whs['WarehouseName'] ?? '') ?>')">
+                                            <?= htmlspecialchars($whs['WarehouseCode']) ?> - <?= htmlspecialchars($whs['WarehouseName'] ?? '') ?>
+                                        </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="fromWarehouse" name="fromWarehouse" required>
                             </div>
 
                             <!-- Fire/Zayi Türü -->
                             <div class="form-group">
                                 <label class="form-label required">Fire/Zayi Türü</label>
-                                <div class="radio-group">
-                                    <div class="radio-option">
+                                <div class="toggle-group">
+                                    <div class="toggle-option">
                                         <input type="radio" id="lostTypeFire" name="lostType" value="1" required>
-                                        <label for="lostTypeFire">Fire</label>
+                                        <label for="lostTypeFire" class="fire">Fire</label>
                                     </div>
-                                    <div class="radio-option">
+                                    <div class="toggle-option">
                                         <input type="radio" id="lostTypeZayi" name="lostType" value="2" required>
-                                        <label for="lostTypeZayi">Zayi</label>
+                                        <label for="lostTypeZayi" class="zayi">Zayi</label>
                                     </div>
                                 </div>
                             </div>
@@ -875,9 +1007,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             <!-- Gideceği Depo -->
                             <div class="form-group">
                                 <label class="form-label required" for="toWarehouse">Gideceği Depo</label>
-                                <select class="form-select" id="toWarehouse" name="toWarehouse" required disabled>
-                                    <option value="">Önce Fire/Zayi türünü seçiniz</option>
-                                </select>
+                                <div class="single-select-container">
+                                    <div class="single-select-input disabled" id="toWarehouseInput" onclick="if(!this.classList.contains('disabled')) toggleDropdown('toWarehouse')">
+                                        <input type="text" id="toWarehouseInputText" value="Önce Fire/Zayi türünü seçiniz" readonly>
+                                        <span class="dropdown-arrow">▼</span>
+                                    </div>
+                                    <div class="single-select-dropdown" id="toWarehouseDropdown"></div>
+                                </div>
+                                <input type="hidden" id="toWarehouse" name="toWarehouse" required>
                             </div>
 
                             <!-- Tarih -->
@@ -974,9 +1111,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     </main>
 
     <script>
-        const fromWarehouseSelect = document.getElementById('fromWarehouse');
+        // Single Select Functions
+        function toggleDropdown(id) {
+            const dropdown = document.getElementById(id + 'Dropdown');
+            const input = document.getElementById(id + 'Input');
+            const isActive = dropdown.classList.contains('show');
+            
+            // Tüm dropdown'ları kapat
+            document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
+            document.querySelectorAll('.single-select-input').forEach(i => i.classList.remove('active'));
+            
+            // Eğer disabled değilse aç/kapat
+            if (!input.classList.contains('disabled')) {
+                if (!isActive) {
+                    dropdown.classList.add('show');
+                    input.classList.add('active');
+                }
+            }
+        }
+
+        function selectWarehouse(id, value, text) {
+            const input = document.getElementById(id + 'Input');
+            const inputText = document.getElementById(id + 'InputText');
+            const hiddenInput = document.getElementById(id);
+            const dropdown = document.getElementById(id + 'Dropdown');
+            
+            inputText.value = text;
+            hiddenInput.value = value;
+            dropdown.classList.remove('show');
+            input.classList.remove('active');
+            
+            // Seçili option'ı işaretle
+            dropdown.querySelectorAll('.single-select-option').forEach(opt => {
+                opt.classList.remove('selected');
+                if (opt.dataset.value === value) {
+                    opt.classList.add('selected');
+                }
+            });
+            
+            // Event trigger
+            if (id === 'fromWarehouse') {
+                handleFromWarehouseChange(value);
+            } else if (id === 'toWarehouse') {
+                updateSaveButton();
+            }
+        }
+
+        // Dışarı tıklanınca dropdown'ları kapat
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.single-select-container')) {
+                document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
+                document.querySelectorAll('.single-select-input').forEach(i => i.classList.remove('active'));
+            }
+        });
+
+        const fromWarehouseInput = document.getElementById('fromWarehouse');
+        const toWarehouseInput = document.getElementById('toWarehouse');
         const lostTypeRadios = document.querySelectorAll('input[name="lostType"]');
-        const toWarehouseSelect = document.getElementById('toWarehouse');
         const saveBtn = document.getElementById('saveBtn');
         const form = document.getElementById('fireZayiForm');
 
@@ -993,8 +1184,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 if (lostType) {
                     loadTargetWarehouses(lostType);
                 } else {
-                    toWarehouseSelect.innerHTML = '<option value="">Önce Fire/Zayi türünü seçiniz</option>';
-                    toWarehouseSelect.disabled = true;
+                    const toWarehouseInputText = document.getElementById('toWarehouseInputText');
+                    const toWarehouseInputDiv = document.getElementById('toWarehouseInput');
+                    const toWarehouseDropdown = document.getElementById('toWarehouseDropdown');
+                    toWarehouseInputText.value = 'Önce Fire/Zayi türünü seçiniz';
+                    toWarehouseInputDiv.classList.add('disabled');
+                    toWarehouseDropdown.innerHTML = '';
+                    toWarehouseInput.value = '';
                     updateSaveButton();
                 }
             });
@@ -1002,61 +1198,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         // Gideceği depo listesini yükle
         function loadTargetWarehouses(lostType) {
-            toWarehouseSelect.disabled = true;
-            toWarehouseSelect.innerHTML = '<option value="">Yükleniyor...</option>';
+            const toWarehouseDropdown = document.getElementById('toWarehouseDropdown');
+            const toWarehouseInputDiv = document.getElementById('toWarehouseInput');
+            const toWarehouseInputText = document.getElementById('toWarehouseInputText');
+            
+            toWarehouseInputDiv.classList.add('disabled');
+            toWarehouseInputText.value = 'Yükleniyor...';
+            toWarehouseDropdown.innerHTML = '';
 
-            const fromWarehouse = fromWarehouseSelect.value;
+            const fromWarehouse = fromWarehouseInput.value;
             const url = `?ajax=targetWarehouses&lostType=${lostType}${fromWarehouse ? '&fromWarehouse=' + encodeURIComponent(fromWarehouse) : ''}`;
             
             fetch(url)
                 .then(res => res.json())
                 .then(data => {
-                    toWarehouseSelect.innerHTML = '<option value="">Depo seçiniz</option>';
+                    toWarehouseDropdown.innerHTML = '';
                     
                     if (data.error) {
                         console.error('Depo yükleme hatası:', data.error, data.debug);
-                        toWarehouseSelect.innerHTML = `<option value="">Hata: ${data.error}</option>`;
-                        toWarehouseSelect.disabled = false;
+                        toWarehouseInputText.value = `Hata: ${data.error}`;
+                        toWarehouseInputDiv.classList.remove('disabled');
                         updateSaveButton();
                         return;
                     }
 
                     if (data.data && Array.isArray(data.data) && data.data.length > 0) {
+                        // "Depo seçiniz" option'ı ekle
+                        const defaultOption = document.createElement('div');
+                        defaultOption.className = 'single-select-option';
+                        defaultOption.dataset.value = '';
+                        defaultOption.textContent = 'Depo seçiniz';
+                        defaultOption.onclick = () => selectWarehouse('toWarehouse', '', 'Depo seçiniz');
+                        toWarehouseDropdown.appendChild(defaultOption);
+                        
                         data.data.forEach(whs => {
-                            const option = document.createElement('option');
-                            option.value = whs.WarehouseCode || whs.WarehouseCode;
+                            const option = document.createElement('div');
+                            option.className = 'single-select-option';
+                            option.dataset.value = whs.WarehouseCode || whs.WarehouseCode;
                             const whsName = whs.WarehouseName || '';
                             option.textContent = whsName ? `${whs.WarehouseCode} - ${whsName}` : whs.WarehouseCode;
-                            toWarehouseSelect.appendChild(option);
+                            option.onclick = () => selectWarehouse('toWarehouse', whs.WarehouseCode, whsName ? `${whs.WarehouseCode} - ${whsName}` : whs.WarehouseCode);
+                            toWarehouseDropdown.appendChild(option);
                         });
                         
                         // Eğer tek depo varsa otomatik seç
                         if (data.data.length === 1) {
-                            toWarehouseSelect.value = data.data[0].WarehouseCode;
+                            const firstWhs = data.data[0];
+                            const whsName = firstWhs.WarehouseName || '';
+                            selectWarehouse('toWarehouse', firstWhs.WarehouseCode, whsName ? `${firstWhs.WarehouseCode} - ${whsName}` : firstWhs.WarehouseCode);
+                        } else {
+                            toWarehouseInputText.value = 'Depo seçiniz';
                         }
                     } else {
                         console.warn('Depo bulunamadı:', data.debug);
-                        toWarehouseSelect.innerHTML = '<option value="">Depo bulunamadı</option>';
+                        toWarehouseInputText.value = 'Depo bulunamadı';
                     }
                     
-                    toWarehouseSelect.disabled = false;
+                    toWarehouseInputDiv.classList.remove('disabled');
                     updateSaveButton();
                 })
                 .catch(err => {
                     console.error('Fetch hatası:', err);
-                    toWarehouseSelect.innerHTML = '<option value="">Yükleme hatası</option>';
-                    toWarehouseSelect.disabled = false;
+                    toWarehouseInputText.value = 'Yükleme hatası';
+                    toWarehouseInputDiv.classList.remove('disabled');
                     updateSaveButton();
                 });
         }
 
+        function handleFromWarehouseChange(value) {
+            if (value) {
+                document.getElementById('productListSection').style.display = 'block';
+                loadProducts();
+            } else {
+                document.getElementById('productListSection').style.display = 'none';
+            }
+            updateSaveButton();
+        }
+
         // Form validasyonu - Kaydet butonunu aktif/pasif yap
         function updateSaveButton() {
-            const fromWarehouse = fromWarehouseSelect.value;
+            const fromWarehouse = fromWarehouseInput.value;
             const lostType = document.querySelector('input[name="lostType"]:checked')?.value;
-            const toWarehouse = toWarehouseSelect.value;
+            const toWarehouse = toWarehouseInput.value;
+            const toWarehouseInputDiv = document.getElementById('toWarehouseInput');
+            const isDisabled = toWarehouseInputDiv.classList.contains('disabled');
             
-            if (fromWarehouse && lostType && toWarehouse && !toWarehouseSelect.disabled && cart.length > 0) {
+            if (fromWarehouse && lostType && toWarehouse && !isDisabled && cart.length > 0) {
                 saveBtn.disabled = false;
             } else {
                 saveBtn.disabled = true;
@@ -1064,8 +1291,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
 
         // Form alanları değiştiğinde kontrol et
-        fromWarehouseSelect.addEventListener('change', updateSaveButton);
-        toWarehouseSelect.addEventListener('change', updateSaveButton);
         lostTypeRadios.forEach(radio => {
             radio.addEventListener('change', updateSaveButton);
         });
@@ -1074,19 +1299,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         let searchTimeout = null;
         let cart = [];
 
-        // Çıkış depo seçildiğinde ürün listesini göster
-        fromWarehouseSelect.addEventListener('change', function() {
-            if (this.value) {
-                document.getElementById('productListSection').style.display = 'block';
-                loadProducts();
-            } else {
-                document.getElementById('productListSection').style.display = 'none';
-            }
-        });
-
         // Ürün listesini yükle
         function loadProducts(search = '') {
-            const warehouseCode = fromWarehouseSelect.value;
+            const warehouseCode = fromWarehouseInput.value;
             if (!warehouseCode) return;
 
             const tbody = document.getElementById('productTableBody');
@@ -1309,8 +1524,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const cartItem = {
                 ItemCode: item.ItemCode,
                 ItemName: item.ItemName,
-                FromWarehouse: fromWarehouseSelect.value,
-                ToWarehouse: toWarehouseSelect.value,
+                FromWarehouse: fromWarehouseInput.value,
+                ToWarehouse: toWarehouseInput.value,
                 UoMEntry: uomEntry,
                 UoMCode: uomCode,
                 BaseQty: baseQty,
@@ -1457,8 +1672,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
             const formData = new FormData();
             formData.append('action', 'create');
-            formData.append('fromWarehouse', fromWarehouseSelect.value);
-            formData.append('toWarehouse', toWarehouseSelect.value);
+            formData.append('fromWarehouse', fromWarehouseInput.value);
+            formData.append('toWarehouse', toWarehouseInput.value);
             formData.append('lostType', document.querySelector('input[name="lostType"]:checked')?.value);
             formData.append('docDate', document.getElementById('docDate').value);
             formData.append('comments', document.getElementById('comments').value);
