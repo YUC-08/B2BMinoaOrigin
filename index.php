@@ -21,6 +21,8 @@ if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #2c3e50;
+            line-height: 1.6;
             min-height: 100vh;
             display: flex;
             overflow: hidden;

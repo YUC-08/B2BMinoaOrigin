@@ -62,7 +62,6 @@ if (($transfersData['status'] ?? 0) == 200) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fire ve Zayi Listesi - MINOA</title>
-    <?php include 'navbar.php'; ?>
     <link rel="stylesheet" href="styles.css">
     <style>
         * {
@@ -74,7 +73,8 @@ if (($transfersData['status'] ?? 0) == 200) {
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background: #f5f7fa;
-            color: #111827;
+            color: #2c3e50;
+            line-height: 1.6;
         }
 
         .main-content {
@@ -123,9 +123,9 @@ if (($transfersData['status'] ?? 0) == 200) {
 
         .filter-section {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 16px;
-            padding: 20px 24px;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            padding: 24px;
             background: #f8fafc;
             border-bottom: 1px solid #e5e7eb;
         }
@@ -133,13 +133,13 @@ if (($transfersData['status'] ?? 0) == 200) {
         .filter-group {
             display: flex;
             flex-direction: column;
-            gap: 6px;
+            gap: 8px;
         }
 
         .filter-group label {
-            font-size: 12px;
-            color: #4b5563;
             font-weight: 600;
+            color: #1e3a8a;
+            font-size: 13px;
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
@@ -164,10 +164,11 @@ if (($transfersData['status'] ?? 0) == 200) {
 
         .table-controls {
             display: flex;
-            justify-content: space-between;
+            justify-content: flex-start;
             align-items: center;
             padding: 20px 24px;
             border-bottom: 1px solid #e5e7eb;
+            margin-bottom: 0;
         }
 
         .show-entries {
@@ -369,6 +370,7 @@ if (($transfersData['status'] ?? 0) == 200) {
     </style>
 </head>
 <body>
+    <?php include 'navbar.php'; ?>
     <main class="main-content">
         <header class="page-header">
             <h2>Fire ve Zayi Listesi</h2>
@@ -379,20 +381,16 @@ if (($transfersData['status'] ?? 0) == 200) {
         </header>
 
         <div class="content-wrapper">
+            <!-- Filtreler -->
             <div class="card">
-                <!-- Filtreler -->
                 <div class="filter-section">
                     <div class="filter-group">
                         <label>Belge No</label>
                         <input type="text" id="filter-doc-entry" placeholder="Belge no girin...">
                     </div>
                     <div class="filter-group">
-                        <label>Başlangıç Tarihi</label>
-                        <input type="date" id="filter-start-date">
-                    </div>
-                    <div class="filter-group">
-                        <label>Bitiş Tarihi</label>
-                        <input type="date" id="filter-end-date">
+                        <label>Tarih</label>
+                        <input type="date" id="filter-date">
                     </div>
                     <div class="filter-group">
                         <label>Tür</label>
@@ -403,7 +401,10 @@ if (($transfersData['status'] ?? 0) == 200) {
                         </select>
                     </div>
                 </div>
+            </div>
 
+            <!-- Tablo -->
+            <div class="card">
                 <!-- Tablo Kontrolleri -->
                 <div class="table-controls">
                     <div class="show-entries">
@@ -414,9 +415,6 @@ if (($transfersData['status'] ?? 0) == 200) {
                             <option value="100">100</option>
                         </select>
                         <span>kayıt göster</span>
-                    </div>
-                    <div class="search-box">
-                        <input type="text" class="search-input" id="table-search" placeholder="Ara...">
                     </div>
                 </div>
 
@@ -488,10 +486,8 @@ if (($transfersData['status'] ?? 0) == 200) {
         // Filtreleme
         function applyFilters() {
             const docEntry = document.getElementById('filter-doc-entry').value.toLowerCase();
-            const startDate = document.getElementById('filter-start-date').value;
-            const endDate = document.getElementById('filter-end-date').value;
+            const date = document.getElementById('filter-date').value;
             const type = document.getElementById('filter-type').value;
-            const search = document.getElementById('table-search').value.toLowerCase();
 
             filteredData = allData.filter(item => {
                 // Belge No filtresi
@@ -500,24 +496,14 @@ if (($transfersData['status'] ?? 0) == 200) {
                 }
 
                 // Tarih filtresi
-                if (startDate) {
+                if (date) {
                     const itemDate = item.DocDate ? item.DocDate.split('T')[0] : '';
-                    if (itemDate < startDate) return false;
-                }
-                if (endDate) {
-                    const itemDate = item.DocDate ? item.DocDate.split('T')[0] : '';
-                    if (itemDate > endDate) return false;
+                    if (itemDate !== date) return false;
                 }
 
                 // Tür filtresi
                 if (type && item.U_ASB2B_LOST !== type) {
                     return false;
-                }
-
-                // Genel arama
-                if (search) {
-                    const searchable = `${item.DocEntry || ''} ${item.Series || ''} ${item.FromWarehouse || item.FromWhs || ''} ${item.ToWarehouse || item.ToWhs || ''}`.toLowerCase();
-                    if (!searchable.includes(search)) return false;
                 }
 
                 return true;
@@ -604,10 +590,8 @@ if (($transfersData['status'] ?? 0) == 200) {
 
         // Event listeners
         document.getElementById('filter-doc-entry').addEventListener('input', applyFilters);
-        document.getElementById('filter-start-date').addEventListener('change', applyFilters);
-        document.getElementById('filter-end-date').addEventListener('change', applyFilters);
+        document.getElementById('filter-date').addEventListener('change', applyFilters);
         document.getElementById('filter-type').addEventListener('change', applyFilters);
-        document.getElementById('table-search').addEventListener('input', applyFilters);
         document.getElementById('entries-per-page').addEventListener('change', function() {
             entriesPerPage = parseInt(this.value);
             currentPage = 1;
@@ -625,6 +609,8 @@ if (($transfersData['status'] ?? 0) == 200) {
 
         // Sayfa yüklendiğinde
         document.addEventListener('DOMContentLoaded', function() {
+            // Scroll pozisyonunu sıfırla (navbar kaymasını önle)
+            window.scrollTo(0, 0);
             renderTable();
         });
     </script>

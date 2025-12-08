@@ -209,6 +209,7 @@ function formatNumber($num) {
             width: 100%;
             border-collapse: collapse;
             font-size: 14px;
+            table-layout: fixed;
         }
 
         .data-table thead {
@@ -226,6 +227,10 @@ function formatNumber($num) {
             border-bottom: 2px solid #e5e7eb;
         }
 
+        .data-table th.text-right {
+            text-align: right;
+        }
+
         .data-table tbody tr {
             border-bottom: 1px solid #e5e7eb;
             transition: background 0.15s;
@@ -238,6 +243,11 @@ function formatNumber($num) {
         .data-table td {
             padding: 12px 16px;
             color: #374151;
+            text-align: left;
+        }
+
+        .data-table td.text-right {
+            text-align: right;
         }
 
         .text-right {
@@ -406,10 +416,12 @@ function formatNumber($num) {
                                 </tr>
                                 <?php endforeach; ?>
                                 <?php if (!empty($lines)): ?>
-                                <tr style="background: #f8fafc; font-weight: 600;">
-                                    <td colspan="6" style="text-align: right; padding: 16px;">GENEL TOPLAM:</td>
-                                    <td class="text-right" style="padding: 16px; font-size: 16px; color: #1e40af;">
-                                        <?= formatNumber($grandTotal) ?> ₺
+                                <tr style="background: #f8fafc; font-weight: 600; border-top: 2px solid #e5e7eb;">
+                                    <td colspan="4" style="padding: 16px; border: none;"></td>
+                                    <td style="padding: 16px; border: none;"></td>
+                                    <td class="text-right" style="padding: 16px; font-size: 14px; color: #6b7280; border: none;">GENEL TOPLAM:</td>
+                                    <td class="text-right" style="padding: 16px; font-size: 16px; color: #1e40af; border: none;">
+                                        <strong><?= formatNumber($grandTotal) ?> ₺</strong>
                                     </td>
                                 </tr>
                                 <?php endif; ?>

@@ -893,10 +893,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             </div>
                         </div>
 
-                        <div class="action-buttons">
-                            <button type="button" class="btn btn-secondary" onclick="window.location.href='Fire-Zayi.php'">İptal</button>
-                            <button type="submit" class="btn btn-primary" id="saveBtn" disabled>Kaydet</button>
-                        </div>
                     </form>
                 </div>
             </section>
@@ -966,6 +962,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                    <!-- Butonlar Sepet Altında -->
+                    <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; padding-top: 24px; border-top: 2px solid #f3f4f6;">
+                        <button type="button" class="btn btn-secondary" onclick="window.location.href='Fire-Zayi.php'">İptal</button>
+                        <button type="button" class="btn btn-primary" id="saveBtn" disabled onclick="saveFireZayi()">Kaydet</button>
                     </div>
                 </div>
             </section>
@@ -1447,10 +1448,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
         }
 
-        // Form submit - Fire/Zayi belgesi oluştur
-        form.addEventListener('submit', function(e) {
-            e.preventDefault();
-            
+        // Fire/Zayi belgesi kaydet
+        function saveFireZayi() {
             if (cart.length === 0) {
                 alert('Lütfen sepete en az bir ürün ekleyiniz');
                 return;
@@ -1493,7 +1492,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 saveBtn.disabled = false;
                 saveBtn.textContent = 'Kaydet';
             });
-        });
+        }
 
         // Fire/Zayi türü değiştiğinde sepeti de güncelle
         lostTypeRadios.forEach(radio => {
