@@ -597,6 +597,11 @@ if ($avatarText === '') {
             <span class="sidebar-text">Transferler</span>
         </a>
 
+        <a href="Sevkiyat.php" class="sidebar-item <?= ($currentPage == 'Sevkiyat.php' || $currentPage == 'SevkiyatDetay.php' || $currentPage == 'SevkiyatSO.php') ? 'active' : '' ?>">
+            <span class="sidebar-icon">🚚</span>
+            <span class="sidebar-text">Sevkiyat</span>
+        </a>
+
         <?php if ($ownerCode === 'CF' || $ownerCode === 'RT'): ?>
         <a href="Uretim.php" class="sidebar-item <?= ($currentPage == 'Uretim.php' || $currentPage == 'UretimSO.php' || $currentPage == 'UretimDetay.php') ? 'active' : '' ?>">
             <span class="sidebar-icon">📋</span>

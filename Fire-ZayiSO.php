@@ -424,7 +424,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Yeni Fire/Zayi - MINOA</title>
-    <?php include 'navbar.php'; ?>
     <style>
         * {
             margin: 0;
@@ -435,7 +434,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background: #f5f7fa;
-            color: #111827;
+            color: #2c3e50;
+            line-height: 1.6;
         }
 
         .main-content {
@@ -955,6 +955,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     </style>
 </head>
 <body>
+    <?php include 'navbar.php'; ?>
     <main class="main-content">
         <header class="page-header">
             <h2>Yeni Fire/Zayi Ekle</h2>
@@ -1088,14 +1089,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                     <th>Birim</th>
                                     <th class="text-right">Fire Miktar</th>
                                     <th class="text-right">Zayi Miktar</th>
-                                    <th class="text-right">Birim Fiyat</th>
-                                    <th class="text-right">Satır Toplamı</th>
                                     <th>İşlem</th>
                                 </tr>
                             </thead>
                             <tbody id="cartTableBody">
                                 <tr>
-                                    <td colspan="10" class="empty-message">Sepet boş</td>
+                                    <td colspan="8" class="empty-message">Sepet boş</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1558,7 +1557,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const lostType = document.querySelector('input[name="lostType"]:checked')?.value;
             
             if (cart.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="10" class="empty-message">Sepet boş - Ürün seçiniz</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="empty-message">Sepet boş - Ürün seçiniz</td></tr>';
                 document.getElementById('cartSection').style.display = 'none';
                 return;
             }
@@ -1572,9 +1571,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 
                 const fireQty = parseFloat(item.FireQty || 0);
                 const zayiQty = parseFloat(item.ZayiQty || 0);
-                const unitPrice = parseFloat(item.UnitPrice || 0);
-                const quantity = lostType === '1' ? fireQty : zayiQty;
-                const lineTotal = quantity * unitPrice;
 
                 const fireDisabled = lostType !== '1' ? 'disabled' : '';
                 const zayiDisabled = lostType !== '2' ? 'disabled' : '';
@@ -1584,8 +1580,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     <td>${item.ItemName}</td>
                     <td>${item.FromWarehouse}</td>
                     <td>${item.ToWarehouse}</td>
-                    <td>${item.UoMCode}</td>
-                    <td>
+                    <td>${item.UoMCode || 'AD'}</td>
+                    <td class="text-right">
                         <div class="quantity-controls">
                             <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 'fire', -1)" ${fireDisabled}>−</button>
                             <input type="number" 
@@ -1598,7 +1594,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 'fire', 1)" ${fireDisabled}>+</button>
                         </div>
                     </td>
-                    <td>
+                    <td class="text-right">
                         <div class="quantity-controls">
                             <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 'zayi', -1)" ${zayiDisabled}>−</button>
                             <input type="number" 
@@ -1611,16 +1607,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 'zayi', 1)" ${zayiDisabled}>+</button>
                         </div>
                     </td>
-                    <td>
-                        <input type="number" 
-                               class="qty-input" 
-                               value="${unitPrice.toFixed(2)}"
-                               min="0" 
-                               step="0.01"
-                               onchange="updateCartQuantity(${index}, 'UnitPrice', this.value)"
-                               placeholder="0.00">
-                    </td>
-                    <td class="text-right"><strong>${lineTotal.toFixed(2)} ₺</strong></td>
                     <td style="text-align: center;">
                         <button class="btn btn-danger btn-small" onclick="removeFromCart(${index})">Sil</button>
                     </td>
@@ -1714,6 +1700,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             radio.addEventListener('change', function() {
                 updateCartTable();
             });
+        });
+
+        // Sayfa yüklendiğinde scroll pozisyonunu sıfırla (navbar kaymasını önle)
+        document.addEventListener('DOMContentLoaded', function() {
+            window.scrollTo(0, 0);
         });
     </script>
 </body>
