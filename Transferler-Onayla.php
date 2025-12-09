@@ -181,44 +181,6 @@ if ($action === 'approve' && $newStatus === '2') {
     
     $stockTransferLines = [];
     
-    // Item cost bilgisini almak için helper fonksiyon
-    $getItemCost = function($itemCode, $warehouseCode, $line = null) use ($sap) {
-        $itemCost = 0;
-        try {
-            // Önce warehouse'a özel maliyet bilgisini al
-            $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$warehouseCode}'";
-            $itemWhResult = $sap->get($itemWhQuery);
-            $itemWhData = $itemWhResult['response'] ?? null;
-            
-            if ($itemWhData && isset($itemWhData['value']) && !empty($itemWhData['value'])) {
-                $whInfo = $itemWhData['value'][0];
-                $itemCost = floatval($whInfo['AveragePrice'] ?? $whInfo['LastPrice'] ?? 0);
-            }
-            
-            // Eğer warehouse'a özel maliyet yoksa, item'ın genel maliyetini al
-            if ($itemCost == 0) {
-                $itemQuery = "Items('{$itemCode}')?\$select=ItemCode,StandardPrice,LastPurchasePrice,AvgPrice";
-                $itemResult = $sap->get($itemQuery);
-                $itemData = $itemResult['response'] ?? null;
-                
-                if ($itemData) {
-                    $itemCost = floatval($itemData['AvgPrice'] ?? $itemData['StandardPrice'] ?? $itemData['LastPurchasePrice'] ?? 0);
-                }
-            }
-            
-            // Eğer hala maliyet yoksa, line'dan al (varsa)
-            if ($itemCost == 0 && $line) {
-                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
-            }
-        } catch (Exception $e) {
-            // Hata durumunda line'dan al (varsa)
-            if ($line) {
-                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
-            }
-        }
-        return $itemCost;
-    };
-    
     // Eğer sepetteki lines gönderilmişse, onları kullan (kullanıcının seçtiği "Gönderilecek" miktarları)
     // ÖNEMLİ: cartLines içindeki Quantity değeri zaten sentQty * baseQty olarak hesaplanmış (Transferler.php'den geliyor)
     if (!empty($cartLines) && is_array($cartLines)) {
@@ -232,20 +194,13 @@ if ($action === 'approve' && $newStatus === '2') {
                 continue;
             }
             
-            // Item cost bilgisini al
-            $itemCost = $getItemCost($itemCode, $fromWarehouse, $cartLine);
-            
+            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $lineData = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $quantity, // Sepetteki "Gönderilecek" miktar × baseQty (kullanıcının seçtiği miktar)
                 'FromWarehouseCode' => $fromWarehouse,
                 'WarehouseCode' => $sevkiyatDepo
             ];
-            
-            // Cost bilgisi varsa ekle
-            if ($itemCost > 0) {
-                $lineData['Price'] = $itemCost;
-            }
             
             $stockTransferLines[] = $lineData;
         }
@@ -260,20 +215,13 @@ if ($action === 'approve' && $newStatus === '2') {
                 continue;
             }
             
-            // Item cost bilgisini al
-            $itemCost = $getItemCost($itemCode, $fromWarehouse, $line);
-            
+            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $lineData = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $quantity, // Talep edilen miktar (fallback - normalde kullanılmamalı)
                 'FromWarehouseCode' => $fromWarehouse,
                 'WarehouseCode' => $sevkiyatDepo
             ];
-            
-            // Cost bilgisi varsa ekle
-            if ($itemCost > 0) {
-                $lineData['Price'] = $itemCost;
-            }
             
             $stockTransferLines[] = $lineData;
         }

@@ -545,7 +545,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
                         <th>Şube Adı</th>
                         <th class="stock-column" style="display: none;">Stokta</th>
                         <th class="stock-column" style="display: none;">Stoktaki Miktar</th>
-                        <th>Minimum Miktar</th>
+                        <th>Minimum</th>
                         <th>Sipariş Miktarı</th>
                         <th>Ölçü Birimi</th>
                         <th>Dönüşüm</th>

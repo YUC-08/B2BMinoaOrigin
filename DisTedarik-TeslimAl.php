@@ -301,44 +301,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
 
-    // Item cost bilgisini almak için helper fonksiyon (Transferler-Onayla.php'deki gibi)
-    $getItemCost = function($itemCode, $warehouseCode, $line = null) use ($sap) {
-        $itemCost = 0;
-        try {
-            // Önce warehouse'a özel maliyet bilgisini al
-            $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$warehouseCode}'";
-            $itemWhResult = $sap->get($itemWhQuery);
-            $itemWhData = $itemWhResult['response'] ?? null;
-            
-            if ($itemWhData && isset($itemWhData['value']) && !empty($itemWhData['value'])) {
-                $whInfo = $itemWhData['value'][0];
-                $itemCost = floatval($whInfo['AveragePrice'] ?? $whInfo['LastPrice'] ?? 0);
-            }
-            
-            // Eğer warehouse'a özel maliyet yoksa, item'ın genel maliyetini al
-            if ($itemCost == 0) {
-                $itemQuery = "Items('{$itemCode}')?\$select=ItemCode,StandardPrice,LastPurchasePrice,AvgPrice";
-                $itemResult = $sap->get($itemQuery);
-                $itemData = $itemResult['response'] ?? null;
-                
-                if ($itemData) {
-                    $itemCost = floatval($itemData['AvgPrice'] ?? $itemData['StandardPrice'] ?? $itemData['LastPurchasePrice'] ?? 0);
-                }
-            }
-            
-            // Eğer hala maliyet yoksa, line'dan al (varsa)
-            if ($itemCost == 0 && $line) {
-                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
-            }
-        } catch (Exception $e) {
-            // Hata durumunda line'dan al (varsa)
-            if ($line) {
-                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
-            }
-        }
-        return $itemCost;
-    };
-    
     // PurchaseRequest DocEntry'yi al (U_ASB2B_QutMaster için)
     $purchaseRequestDocEntry = null;
     $purchaseRequestDocNum = null;
@@ -398,9 +360,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         if ($eksikFazlaQty < 0 && !empty($sevkiyatDepo)) {
             $eksikMiktar = abs($eksikFazlaQty);
             
-            // Item cost bilgisini al
-            $itemCost = $getItemCost($itemCode, $mainWarehouse, $lineData);
-            
+            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $linePayload = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $eksikMiktar,
@@ -411,11 +371,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 'U_ASB2B_Comments' => (!empty($not) ? $not . ' | ' : '') . "Eksik: {$eksikMiktar} adet"
             ];
             
-            // Cost bilgisi varsa ekle
-            if ($itemCost > 0) {
-                $linePayload['Price'] = $itemCost;
-            }
-            
             $stockTransferLines[] = $linePayload;
         }
         
@@ -423,9 +378,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // ÖNEMLİ: Kusurlu miktar MUTLAKA Fire/Zayi deposuna gitmeli, sevkiyat deposuna değil!
         // Örnek: 100-KT-0'dan 100-KT-2'ye
         if ($kusurluQty > 0 && !empty($fireZayiWarehouse)) {
-            // Item cost bilgisini al
-            $itemCost = $getItemCost($itemCode, $mainWarehouse, $lineData);
-            
+            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $linePayload = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $kusurluQty, // Kusurlu miktar direkt kullanılır (BaseQty çarpma yok)
@@ -434,11 +387,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 'U_ASB2B_Damaged' => 'K', // Kusurlu
                 'U_ASB2B_Comments' => (!empty($not) ? $not . ' | ' : '') . "Kusurlu: {$kusurluQty} adet"
             ];
-            
-            // Cost bilgisi varsa ekle
-            if ($itemCost > 0) {
-                $linePayload['Price'] = $itemCost;
-            }
             
             $stockTransferLines[] = $linePayload;
         }
@@ -469,7 +417,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if (!empty($stockTransferLines) && $successCount > 0) {
         // StockTransfers için satırlar varsa, tek bir StockTransfers belgesi oluştur (Transferler-TeslimAl.php mantığı)
         $docDate = date('Y-m-d');
-        $headerComments = "Dış Tedarik Teslim Al - Eksik ve Kusurlu Transfer";
+        
+        // Header Comments: Sadece kusurlu miktarları göster (eksik/fazla sevkiyat deposuna gidiyor)
+        $headerCommentsArray = [];
+        foreach ($lines as $index => $lineData) {
+            $itemCode = $lineData['ItemCode'] ?? '';
+            $itemName = $lineData['ItemName'] ?? $itemCode;
+            $kusurluQty = floatval($_POST['kusurlu'][$index] ?? 0);
+            $not = trim($_POST['not'][$index] ?? '');
+            
+            // NOT: Fire/Zayi belgesinin açıklamasında sadece kusurlu miktarlar görünecek
+            // Eksik/Fazla miktarlar sevkiyat deposuna gidiyor, bu yüzden burada görünmemeli
+            if ($kusurluQty > 0) {
+                $commentParts = [];
+                $commentParts[] = "Kusurlu: {$kusurluQty}";
+                
+                if (!empty($not)) {
+                    $commentParts[] = "Not: {$not}";
+                }
+                
+                $headerCommentsArray[] = "{$itemCode} ({$itemName}): " . implode(", ", $commentParts);
+            }
+        }
+        $headerComments = !empty($headerCommentsArray) ? implode(" | ", $headerCommentsArray) : "Dış Tedarik Teslim Al - Transfer";
         
         // ToWarehouse'u belirle: Eğer sevkiyat deposu varsa onu kullan, yoksa fire/zayi deposunu kullan
         $toWarehouse = !empty($sevkiyatDepo) ? $sevkiyatDepo : $fireZayiWarehouse;
@@ -480,6 +450,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // PurchaseRequest DocEntry ve DocNum'u kullan (U_ASB2B_QutMaster ve DocumentReferences için)
         $qutMaster = $purchaseRequestDocEntry ?? intval($requestNo);
         $qutMasterDocNum = $purchaseRequestDocNum ?? intval($requestNo);
+        
+        // Header'da U_ASB2B_LOST set etmek için: Eğer herhangi bir satırda Fire/Zayi varsa
+        $headerLost = null; // null = normal transfer, '1' = Fire, '2' = Zayi
+        foreach ($stockTransferLines as $line) {
+            $lost = $line['U_ASB2B_LOST'] ?? null;
+            $damaged = $line['U_ASB2B_Damaged'] ?? null;
+            
+            // Eğer satırda Fire/Zayi varsa, header'a da set et
+            if ($lost == '1' || $lost == '2') {
+                // Eğer daha önce Zayi bulunduysa ve şimdi Fire bulunuyorsa, Fire öncelikli
+                // Eğer daha önce Fire bulunduysa ve şimdi Zayi bulunuyorsa, Fire kalır
+                if ($headerLost === null || $headerLost == '2') {
+                    $headerLost = $lost;
+                }
+            } elseif ($damaged == 'K' || $damaged == 'E') {
+                // Kusurlu veya Eksik varsa ama U_ASB2B_LOST yoksa, Zayi olarak işaretle
+                if ($headerLost === null) {
+                    $headerLost = '2'; // Zayi
+                }
+            }
+        }
         
         $stockTransferPayload = [
             'FromWarehouse' => $mainWarehouse, // Ana depo
@@ -501,6 +492,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             ],
             'StockTransferLines' => $stockTransferLines
         ];
+        
+        // Eğer Fire/Zayi varsa header'a da ekle
+        if ($headerLost !== null) {
+            $stockTransferPayload['U_ASB2B_LOST'] = $headerLost;
+        }
         
         // Transferler-TeslimAl.php'deki gibi direkt POST yap
         $stockTransferResult = $sap->post('StockTransfers', $stockTransferPayload);

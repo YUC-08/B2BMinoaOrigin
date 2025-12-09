@@ -25,15 +25,15 @@ if (($transferData['status'] ?? 0) != 200) {
 }
 
 $transfer = $transferData['response'] ?? $transferData;
-$lines = [];
+$allLines = [];
 
 // Header response'undan StockTransferLines'ı al
 if (isset($transfer['StockTransferLines']) && is_array($transfer['StockTransferLines'])) {
-    $lines = $transfer['StockTransferLines'];
+    $allLines = $transfer['StockTransferLines'];
 }
 
 // Eğer hala boşsa, direkt collection path'i dene
-if (empty($lines)) {
+if (empty($allLines)) {
     $linesQuery = "StockTransfers({$docEntry})/StockTransferLines";
     $linesData = $sap->get($linesQuery);
     
@@ -42,13 +42,103 @@ if (empty($lines)) {
         
         // Farklı response yapılarını kontrol et
         if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
-            $lines = $linesResponse['value'];
+            $allLines = $linesResponse['value'];
         } elseif (isset($linesResponse['StockTransferLines']) && is_array($linesResponse['StockTransferLines'])) {
-            $lines = $linesResponse['StockTransferLines'];
+            $allLines = $linesResponse['StockTransferLines'];
         } elseif (is_array($linesResponse)) {
-            $lines = $linesResponse;
+            $allLines = $linesResponse;
         }
     }
+}
+
+// Fire/Zayi satırlarını filtrele: Sadece U_ASB2B_LOST veya U_ASB2B_Damaged dolu olan satırlar
+// NOT: Fire/Zayi belgesinde sadece Fire/Zayi satırları görünmeli (kusurlu, eksik, fazla)
+$lines = [];
+$itemSummary = []; // Item bazında toplam miktarlar (açıklama için)
+
+foreach ($allLines as $line) {
+    $uAsb2bLost = trim($line['U_ASB2B_LOST'] ?? '');
+    $uAsb2bDamaged = trim($line['U_ASB2B_Damaged'] ?? '');
+    
+    // Fire & Zayi: U_ASB2B_LOST veya U_ASB2B_Damaged dolu VE '-' değil
+    $isFireZayi = (!empty($uAsb2bLost) && $uAsb2bLost !== '-') || (!empty($uAsb2bDamaged) && $uAsb2bDamaged !== '-');
+    
+    if ($isFireZayi) {
+        $lines[] = $line;
+        
+        // Açıklama için item bazında toplam miktarları hesapla
+        $itemCode = $line['ItemCode'] ?? '';
+        $itemName = $line['ItemDescription'] ?? $itemCode;
+        $quantity = floatval($line['Quantity'] ?? 0);
+        
+        if (!isset($itemSummary[$itemCode])) {
+            $itemSummary[$itemCode] = [
+                'name' => $itemName,
+                'kusurlu' => 0,
+                'eksik' => 0,
+                'fazla' => 0,
+                'zayi' => 0
+            ];
+        }
+        
+        // Tip bilgisine göre miktarı ekle
+        if ($uAsb2bDamaged == 'K') {
+            $itemSummary[$itemCode]['kusurlu'] += $quantity;
+        } elseif ($uAsb2bDamaged == 'E') {
+            $itemSummary[$itemCode]['eksik'] += $quantity;
+        } elseif ($uAsb2bLost == '1') {
+            $itemSummary[$itemCode]['fazla'] += $quantity;
+        } elseif ($uAsb2bLost == '2') {
+            $itemSummary[$itemCode]['zayi'] += $quantity;
+        }
+    }
+}
+
+// Modül adını belirle (U_ASB2B_TYPE'a göre)
+$moduleName = '';
+$uAsb2bType = trim($transfer['U_ASB2B_TYPE'] ?? '');
+if ($uAsb2bType == 'MAIN') {
+    $moduleName = 'ANA DEPO';
+} elseif ($uAsb2bType == 'TRANSFER') {
+    // Dış Tedarik mi Transferler mi kontrol et (DocumentReferences'a bak)
+    $documentRefs = $transfer['DocumentReferences'] ?? [];
+    $isDisTedarik = false;
+    foreach ($documentRefs as $ref) {
+        if (($ref['RefObjType'] ?? '') == 'rot_PurchaseRequest') {
+            $isDisTedarik = true;
+            break;
+        }
+    }
+    $moduleName = $isDisTedarik ? 'DIŞ TEDARİK' : 'TRANSFER';
+} else {
+    $moduleName = strtoupper($uAsb2bType ?: 'BİLİNMEYEN');
+}
+
+// Açıklama metnini oluştur (modül adı + eksik/fazla bilgileri)
+$commentsParts = [];
+foreach ($itemSummary as $itemCode => $summary) {
+    $itemParts = [];
+    if ($summary['kusurlu'] > 0) {
+        $itemParts[] = "Kusurlu: " . formatNumber($summary['kusurlu']);
+    }
+    if ($summary['eksik'] > 0) {
+        $itemParts[] = "Eksik: " . formatNumber($summary['eksik']);
+    }
+    if ($summary['fazla'] > 0) {
+        $itemParts[] = "Fazla: " . formatNumber($summary['fazla']);
+    }
+    if ($summary['zayi'] > 0) {
+        $itemParts[] = "Zayi: " . formatNumber($summary['zayi']);
+    }
+    
+    if (!empty($itemParts)) {
+        $commentsParts[] = "{$itemCode} ({$summary['name']}): " . implode(", ", $itemParts);
+    }
+}
+$itemComments = !empty($commentsParts) ? implode(" | ", $commentsParts) : '';
+$enhancedComments = !empty($moduleName) ? "[{$moduleName}] " . $itemComments : $itemComments;
+if (empty($enhancedComments)) {
+    $enhancedComments = $transfer['Comments'] ?? '';
 }
 
 // Tür mapping
@@ -73,10 +163,42 @@ function formatDate($date) {
     return date('d.m.Y', strtotime($date));
 }
 
-// Sayı formatlama
+// Sayı formatlama (ondalık kısım yok)
 function formatNumber($num) {
     if (empty($num) && $num !== 0) return '-';
-    return number_format((float)$num, 2, ',', '.');
+    $num = (float)$num;
+    // Eğer tam sayı ise ondalık kısım gösterme
+    if ($num == floor($num)) {
+        return number_format($num, 0, ',', '.');
+    }
+    return number_format($num, 2, ',', '.');
+}
+
+// Satır tipi metni
+function getLineTypeText($lost, $damaged) {
+    if ($lost == '1') return 'Fazla';
+    if ($lost == '2') return 'Zayi';
+    if ($damaged == 'K') return 'Kusurlu';
+    if ($damaged == 'E') return 'Eksik';
+    return '';
+}
+
+// POST işlemi: Tür değiştirme
+$errorMsg = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_type') {
+    $newType = $_POST['type'] ?? '';
+    if (in_array($newType, ['1', '2'])) {
+        $updatePayload = ['U_ASB2B_LOST' => $newType];
+        $updateResult = $sap->patch("StockTransfers({$docEntry})", $updatePayload);
+        
+        if (($updateResult['status'] ?? 0) == 200 || ($updateResult['status'] ?? 0) == 204) {
+            // Başarılı, sayfayı yenile
+            header("Location: Fire-ZayiDetay.php?DocEntry={$docEntry}");
+            exit;
+        } else {
+            $errorMsg = "Tür güncellenemedi! " . json_encode($updateResult['response'] ?? []);
+        }
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -313,6 +435,14 @@ function formatNumber($num) {
         </header>
 
         <div class="content-wrapper">
+            <?php if (!empty($errorMsg)): ?>
+            <div class="card" style="background: #fee2e2; border: 2px solid #dc2626; margin-bottom: 1.5rem;">
+                <div class="card-body">
+                    <p style="color: #991b1b; font-weight: 600; margin: 0;"><?= htmlspecialchars($errorMsg) ?></p>
+                </div>
+            </div>
+            <?php endif; ?>
+            
             <!-- Üst Bilgiler -->
             <section class="card">
                 <div class="card-header">
@@ -325,43 +455,29 @@ function formatNumber($num) {
                             <span class="info-value"><?= htmlspecialchars($transfer['DocEntry'] ?? '') ?></span>
                         </div>
                         <div class="info-item">
-                            <span class="info-label">Seri</span>
-                            <span class="info-value"><?= htmlspecialchars($transfer['Series'] ?? '-') ?></span>
-                        </div>
-                        <div class="info-item">
                             <span class="info-label">Tarih</span>
                             <span class="info-value"><?= formatDate($transfer['DocDate'] ?? '') ?></span>
                         </div>
                         <div class="info-item">
                             <span class="info-label">Tür</span>
                             <span class="info-value">
-                                <span class="status-badge <?= getTypeClass($transfer['U_ASB2B_LOST'] ?? '') ?>">
-                                    <?= getTypeText($transfer['U_ASB2B_LOST'] ?? '') ?>
-                                </span>
+                                <form method="POST" action="" style="display: inline-block;" onsubmit="return confirm('Türü değiştirmek istediğinize emin misiniz?');">
+                                    <input type="hidden" name="action" value="update_type">
+                                    <select name="type" onchange="this.form.submit()" style="padding: 6px 12px; border-radius: 20px; border: none; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; cursor: pointer; <?= ($transfer['U_ASB2B_LOST'] ?? '') == '1' ? 'background: #fee2e2; color: #991b1b;' : 'background: #fef3c7; color: #92400e;' ?>">
+                                        <option value="1" <?= ($transfer['U_ASB2B_LOST'] ?? '') == '1' ? 'selected' : '' ?>>Fire</option>
+                                        <option value="2" <?= ($transfer['U_ASB2B_LOST'] ?? '') == '2' ? 'selected' : '' ?>>Zayi</option>
+                                    </select>
+                                </form>
                             </span>
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Çıkış Depo</span>
-                            <span class="info-value"><?= htmlspecialchars($transfer['FromWarehouse'] ?? $transfer['FromWarehouseCode'] ?? '-') ?></span>
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Giriş Depo</span>
-                            <span class="info-value"><?= htmlspecialchars($transfer['ToWarehouse'] ?? $transfer['ToWarehouseCode'] ?? '-') ?></span>
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Şube</span>
-                            <span class="info-value"><?= htmlspecialchars($transfer['U_ASB2B_BRAN'] ?? '-') ?></span>
                         </div>
                         <div class="info-item">
                             <span class="info-label">Sahip</span>
                             <span class="info-value"><?= htmlspecialchars($transfer['U_AS_OWNR'] ?? '-') ?></span>
                         </div>
-                        <?php if (!empty($transfer['Comments'] ?? '')): ?>
                         <div class="info-item" style="grid-column: 1 / -1;">
                             <span class="info-label">Açıklama</span>
-                            <span class="info-value"><?= htmlspecialchars($transfer['Comments'] ?? '') ?></span>
+                            <span class="info-value"><?= htmlspecialchars($enhancedComments) ?></span>
                         </div>
-                        <?php endif; ?>
                     </div>
                 </div>
             </section>
@@ -379,52 +495,40 @@ function formatNumber($num) {
                                     <th>Satır No</th>
                                     <th>Ürün Kodu</th>
                                     <th>Ürün Adı</th>
-                                    <th>Birim</th>
                                     <th class="text-right">Miktar</th>
-                                    <th class="text-right">Birim Fiyat</th>
-                                    <th class="text-right">Toplam</th>
                                 </tr>
                             </thead>
                             <tbody id="linesTableBody">
                                 <?php if (empty($lines)): ?>
                                 <tr>
-                                    <td colspan="7" style="text-align: center; padding: 40px; color: #6b7280;">
+                                    <td colspan="4" style="text-align: center; padding: 40px; color: #6b7280;">
                                         Satır bulunmamaktadır.
                                     </td>
                                 </tr>
                                 <?php else: ?>
                                 <?php 
-                                $grandTotal = 0;
                                 foreach ($lines as $line): 
                                     $lineNum = $line['LineNum'] ?? $line['LineNumber'] ?? '';
                                     $itemCode = $line['ItemCode'] ?? '';
                                     $itemName = $line['ItemDescription'] ?? '';
                                     $uomCode = $line['UoMCode'] ?? '';
                                     $quantity = floatval($line['Quantity'] ?? 0);
-                                    $unitPrice = floatval($line['UnitPrice'] ?? 0);
-                                    $total = $quantity * $unitPrice;
-                                    $grandTotal += $total;
+                                    $uAsb2bLost = trim($line['U_ASB2B_LOST'] ?? '');
+                                    $uAsb2bDamaged = trim($line['U_ASB2B_Damaged'] ?? '');
+                                    $lineTypeText = getLineTypeText($uAsb2bLost, $uAsb2bDamaged);
                                 ?>
                                 <tr>
                                     <td><?= htmlspecialchars($lineNum) ?></td>
                                     <td><strong><?= htmlspecialchars($itemCode) ?></strong></td>
                                     <td><?= htmlspecialchars($itemName) ?></td>
-                                    <td><?= htmlspecialchars($uomCode) ?></td>
-                                    <td class="text-right"><?= formatNumber($quantity) ?></td>
-                                    <td class="text-right"><?= formatNumber($unitPrice) ?> ₺</td>
-                                    <td class="text-right"><strong><?= formatNumber($total) ?> ₺</strong></td>
-                                </tr>
-                                <?php endforeach; ?>
-                                <?php if (!empty($lines)): ?>
-                                <tr style="background: #f8fafc; font-weight: 600; border-top: 2px solid #e5e7eb;">
-                                    <td colspan="4" style="padding: 16px; border: none;"></td>
-                                    <td style="padding: 16px; border: none;"></td>
-                                    <td class="text-right" style="padding: 16px; font-size: 14px; color: #6b7280; border: none;">GENEL TOPLAM:</td>
-                                    <td class="text-right" style="padding: 16px; font-size: 16px; color: #1e40af; border: none;">
-                                        <strong><?= formatNumber($grandTotal) ?> ₺</strong>
+                                    <td class="text-right">
+                                        <?= formatNumber($quantity) ?> <?= htmlspecialchars($uomCode) ?>
+                                        <?php if (!empty($lineTypeText)): ?>
+                                            <span style="color: #6b7280; font-size: 12px; margin-left: 8px;">(<?= htmlspecialchars($lineTypeText) ?>)</span>
+                                        <?php endif; ?>
                                     </td>
                                 </tr>
-                                <?php endif; ?>
+                                <?php endforeach; ?>
                                 <?php endif; ?>
                             </tbody>
                         </table>

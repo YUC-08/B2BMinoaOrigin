@@ -39,8 +39,10 @@ function getTypeClass($lost) {
 }
 
 // StockTransfers verilerini çek
+// NOT: Hem 'TRANSFER' hem 'MAIN' tipindeki belgeleri kabul et
+// NOT: Header'da U_ASB2B_LOST olan belgeleri getir
 $select = "DocEntry,Series,DocDate,FromWarehouse,ToWarehouse,Printed,U_ASB2B_LOST,U_AS_OWNR,U_ASB2B_BRAN";
-$filter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_TYPE eq 'TRANSFER' and (U_ASB2B_LOST eq '1' or U_ASB2B_LOST eq '2')";
+$filter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and (U_ASB2B_TYPE eq 'TRANSFER' or U_ASB2B_TYPE eq 'MAIN') and (U_ASB2B_LOST eq '1' or U_ASB2B_LOST eq '2')";
 $orderBy = "DocEntry desc";
 
 $query = "StockTransfers?\$select=" . urlencode($select) . "&\$filter=" . urlencode($filter) . "&\$orderby=" . urlencode($orderBy);
@@ -55,6 +57,44 @@ if (($transfersData['status'] ?? 0) == 200) {
         $transfers = $transfersData['value'];
     }
 }
+
+// Her transfer için doğru Fire/Zayi deposunu bul
+foreach ($transfers as &$transfer) {
+    $lost = $transfer['U_ASB2B_LOST'] ?? '';
+    $transferBranch = $transfer['U_ASB2B_BRAN'] ?? $branch;
+    
+    $fireZayiWarehouse = '-';
+    
+    if ($lost == '1') {
+        // Fire ise U_ASB2B_MAIN='3'
+        $fireFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$transferBranch}' and U_ASB2B_MAIN eq '3'";
+        $fireQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($fireFilter);
+        $fireData = $sap->get($fireQuery);
+        
+        if (($fireData['status'] ?? 0) == 200) {
+            $fireList = $fireData['response']['value'] ?? [];
+            if (!empty($fireList)) {
+                $fireZayiWarehouse = $fireList[0]['WarehouseCode'] ?? '-';
+            }
+        }
+    } elseif ($lost == '2') {
+        // Zayi ise U_ASB2B_MAIN='4'
+        $zayiFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$transferBranch}' and U_ASB2B_MAIN eq '4'";
+        $zayiQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($zayiFilter);
+        $zayiData = $sap->get($zayiQuery);
+        
+        if (($zayiData['status'] ?? 0) == 200) {
+            $zayiList = $zayiData['response']['value'] ?? [];
+            if (!empty($zayiList)) {
+                $fireZayiWarehouse = $zayiList[0]['WarehouseCode'] ?? '-';
+            }
+        }
+    }
+    
+    // Giriş depo olarak Fire/Zayi deposunu set et
+    $transfer['_ToWarehouse'] = $fireZayiWarehouse;
+}
+unset($transfer); // Reference'ı temizle
 ?>
 <!DOCTYPE html>
 <html lang="tr">
@@ -445,7 +485,7 @@ if (($transfersData['status'] ?? 0) == 200) {
                                 <td><?= htmlspecialchars($transfer['Series'] ?? '-') ?></td>
                                 <td><?= formatDate($transfer['DocDate'] ?? '') ?></td>
                                 <td><?= htmlspecialchars($transfer['FromWarehouse'] ?? $transfer['FromWhs'] ?? '-') ?></td>
-                                <td><?= htmlspecialchars($transfer['ToWarehouse'] ?? $transfer['ToWhs'] ?? '-') ?></td>
+                                <td><?= htmlspecialchars($transfer['_ToWarehouse'] ?? $transfer['ToWarehouse'] ?? $transfer['ToWhs'] ?? '-') ?></td>
                                 <td>
                                     <span class="status-badge <?= getTypeClass($transfer['U_ASB2B_LOST'] ?? '') ?>">
                                         <?= getTypeText($transfer['U_ASB2B_LOST'] ?? '') ?>
@@ -526,7 +566,7 @@ if (($transfersData['status'] ?? 0) == 200) {
                 tbody.innerHTML = pageData.map(item => {
                     const docDate = item.DocDate ? formatDate(item.DocDate) : '-';
                     const fromWhs = item.FromWarehouse || item.FromWhs || '-';
-                    const toWhs = item.ToWarehouse || item.ToWhs || '-';
+                    const toWhs = item._ToWarehouse || item.ToWarehouse || item.ToWhs || '-';
                     const lost = item.U_ASB2B_LOST || '';
                     const typeText = lost === '1' ? 'Fire' : lost === '2' ? 'Zayi' : '-';
                     const typeClass = lost === '1' ? 'status-fire' : lost === '2' ? 'status-zayi' : '';

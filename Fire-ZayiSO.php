@@ -323,70 +323,130 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $comments = trim($_POST['comments'] ?? '');
     $lines = isset($_POST['lines']) ? json_decode($_POST['lines'], true) : [];
     
-    if (empty($fromWarehouse) || empty($toWarehouse) || empty($lostType) || empty($lines)) {
-        echo json_encode(['success' => false, 'message' => 'Eksik bilgi: Depo, tür ve en az bir kalem gereklidir']);
+    if (empty($fromWarehouse) || empty($lines)) {
+        echo json_encode(['success' => false, 'message' => 'Eksik bilgi: Çıkış depo ve en az bir kalem gereklidir']);
         exit;
     }
     
-    if ($lostType !== '1' && $lostType !== '2') {
-        echo json_encode(['success' => false, 'message' => 'Geçersiz tür (Fire: 1, Zayi: 2)']);
-        exit;
+    // Fire ve Zayi depolarını bul
+    $fireWarehouse = null;
+    $zayiWarehouse = null;
+    
+    // Fire deposu (U_ASB2B_MAIN='3')
+    $fireFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '3'";
+    $fireQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($fireFilter);
+    $fireData = $sap->get($fireQuery);
+    if (($fireData['status'] ?? 0) == 200) {
+        $fireList = $fireData['response']['value'] ?? [];
+        if (!empty($fireList)) {
+            $fireWarehouse = $fireList[0]['WarehouseCode'] ?? null;
+        }
     }
     
-    // StockTransferLines oluştur
+    // Zayi deposu (U_ASB2B_MAIN='4')
+    $zayiFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '4'";
+    $zayiQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($zayiFilter);
+    $zayiData = $sap->get($zayiQuery);
+    if (($zayiData['status'] ?? 0) == 200) {
+        $zayiList = $zayiData['response']['value'] ?? [];
+        if (!empty($zayiList)) {
+            $zayiWarehouse = $zayiList[0]['WarehouseCode'] ?? null;
+        }
+    }
+    
+    // Eğer Zayi deposu bulunamadıysa, kullanıcının seçtiği "Gideceği Depo" değerini kullan
+    if (empty($zayiWarehouse) && !empty($toWarehouse)) {
+        $zayiWarehouse = $toWarehouse;
+    }
+    
+    // Eğer Fire deposu bulunamadıysa, kullanıcının seçtiği "Gideceği Depo" değerini kullan
+    if (empty($fireWarehouse) && !empty($toWarehouse)) {
+        $fireWarehouse = $toWarehouse;
+    }
+    
+    // StockTransferLines oluştur - Her item için hem Fire hem Zayi satırları
     $stockTransferLines = [];
+    $hasFire = false;
+    $hasZayi = false;
+    
     foreach ($lines as $line) {
         $itemCode = $line['ItemCode'] ?? '';
         $fireQty = floatval($line['FireQty'] ?? 0);
         $zayiQty = floatval($line['ZayiQty'] ?? 0);
-        $unitPrice = floatval($line['UnitPrice'] ?? 0);
         $uomEntry = $line['UoMEntry'] ?? null;
         $uomCode = $line['UoMCode'] ?? '';
         
-        // Belge türüne göre miktar seç
-        $quantity = $lostType === '1' ? $fireQty : $zayiQty;
-        
-        if (empty($itemCode) || $quantity <= 0) {
+        if (empty($itemCode)) {
             continue;
         }
         
-        $lineData = [
-            'ItemCode' => $itemCode,
-            'Quantity' => $quantity,
-            'FromWarehouseCode' => $fromWarehouse,
-            'WarehouseCode' => $toWarehouse
-        ];
-        
-        // UoM bilgisi
-        if (!empty($uomEntry)) {
-            $lineData['UoMEntry'] = intval($uomEntry);
+        // Fire miktarı varsa Fire deposuna satır ekle
+        // Eğer Fire deposu bulunamadıysa ama kullanıcı "Gideceği Depo" seçtiyse onu kullan
+        $targetFireWarehouse = !empty($fireWarehouse) ? $fireWarehouse : $toWarehouse;
+        if ($fireQty > 0 && !empty($targetFireWarehouse)) {
+            $fireLineData = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $fireQty,
+                'FromWarehouseCode' => $fromWarehouse,
+                'WarehouseCode' => $targetFireWarehouse,
+                'U_ASB2B_LOST' => '1' // Fire
+            ];
+            
+            if (!empty($uomEntry)) {
+                $fireLineData['UoMEntry'] = intval($uomEntry);
+            }
+            if (!empty($uomCode)) {
+                $fireLineData['UoMCode'] = $uomCode;
+            }
+            
+            $stockTransferLines[] = $fireLineData;
+            $hasFire = true;
         }
-        if (!empty($uomCode)) {
-            $lineData['UoMCode'] = $uomCode;
-        }
         
-        // Birim fiyat (opsiyonel)
-        if ($unitPrice > 0) {
-            $lineData['UnitPrice'] = $unitPrice;
+        // Zayi miktarı varsa Zayi deposuna satır ekle
+        // Eğer Zayi deposu bulunamadıysa ama kullanıcı "Gideceği Depo" seçtiyse onu kullan
+        $targetZayiWarehouse = !empty($zayiWarehouse) ? $zayiWarehouse : $toWarehouse;
+        if ($zayiQty > 0 && !empty($targetZayiWarehouse)) {
+            $zayiLineData = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $zayiQty,
+                'FromWarehouseCode' => $fromWarehouse,
+                'WarehouseCode' => $targetZayiWarehouse,
+                'U_ASB2B_LOST' => '2' // Zayi
+            ];
+            
+            if (!empty($uomEntry)) {
+                $zayiLineData['UoMEntry'] = intval($uomEntry);
+            }
+            if (!empty($uomCode)) {
+                $zayiLineData['UoMCode'] = $uomCode;
+            }
+            
+            $stockTransferLines[] = $zayiLineData;
+            $hasZayi = true;
         }
-        
-        $stockTransferLines[] = $lineData;
     }
     
     if (empty($stockTransferLines)) {
-        echo json_encode(['success' => false, 'message' => 'Geçerli satır bulunamadı']);
+        echo json_encode(['success' => false, 'message' => 'Geçerli satır bulunamadı. Fire veya Zayi miktarı giriniz.']);
         exit;
     }
+    
+    // Header U_ASB2B_LOST: Fire öncelikli
+    $headerLost = $hasFire ? '1' : ($hasZayi ? '2' : '1');
+    
+    // Header ToWarehouse: Fire varsa Fire deposu, yoksa Zayi deposu
+    $headerToWarehouse = $hasFire ? $fireWarehouse : ($hasZayi ? $zayiWarehouse : $toWarehouse);
     
     // StockTransfers payload
     $payload = [
         'U_ASB2B_TYPE' => 'TRANSFER',
-        'U_ASB2B_LOST' => $lostType,
+        'U_ASB2B_LOST' => $headerLost,
         'U_AS_OWNR' => $uAsOwnr,
         'U_ASB2B_BRAN' => $branch,
         'DocDate' => $docDate,
         'FromWarehouse' => $fromWarehouse,
-        'ToWarehouse' => $toWarehouse,
+        'ToWarehouse' => $headerToWarehouse,
         'StockTransferLines' => $stockTransferLines
     ];
     
