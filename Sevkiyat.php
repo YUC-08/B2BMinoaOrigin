@@ -210,6 +210,9 @@ if (!empty($userWarehouses) && !empty($transfers)) {
             font-size: 14px;
             transition: all 0.2s ease;
             background: white;
+            min-height: 42px;
+            height: 42px;
+            box-sizing: border-box;
         }
 
         .filter-group input:focus,
@@ -354,13 +357,15 @@ if (!empty($userWarehouses) && !empty($transfers)) {
         .single-select-input {
             display: flex;
             align-items: center;
-            padding: 10px 14px;
+            padding: 0 14px;
             border: 2px solid #e5e7eb;
             border-radius: 8px;
             background: white;
             cursor: pointer;
             min-height: 42px;
+            height: 42px;
             transition: all 0.2s ease;
+            box-sizing: border-box;
         }
         
         .single-select-input:hover {
@@ -380,6 +385,11 @@ if (!empty($userWarehouses) && !empty($transfers)) {
             cursor: pointer;
             font-size: 14px;
             color: #2c3e50;
+            padding: 0;
+            margin: 0;
+            height: auto;
+            box-sizing: border-box;
+            width: 100%;
         }
         
         .dropdown-arrow {
@@ -387,6 +397,7 @@ if (!empty($userWarehouses) && !empty($transfers)) {
             color: #6b7280;
             font-size: 12px;
             margin-left: 8px;
+            flex-shrink: 0;
         }
         
         .single-select-input.active .dropdown-arrow {

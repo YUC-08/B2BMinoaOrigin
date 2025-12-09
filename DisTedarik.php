@@ -56,11 +56,30 @@ function extractDocDateFromRow($row) {
 }
 
 $groupedRows = [];
+$requestsToUpdate = []; // Status güncellenecek talepler
+
 foreach ($allRows as $row) {
     $requestNo = $row['RequestNo'] ?? '';
     if (empty($requestNo)) continue;
     
     $status = isset($row['U_ASB2B_STATUS']) ? (string)$row['U_ASB2B_STATUS'] : null;
+    // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
+    if (empty($status) || $status === 'null' || $status === '') {
+        $status = '1';
+    }
+    
+    $orderNo = trim($row['U_ASB2B_ORNO'] ?? '');
+    $orderDateValue = $row['U_ASB2B_ORDT'] ?? '';
+    
+    // Sipariş no varsa ama status hala '1' (Onay bekleniyor) ise, status'u '3' (Sevk edildi) olarak güncelle
+    if ($orderNo !== '' && $orderNo !== '-' && ($status === '1' || empty($status))) {
+        $status = '3'; // Sevk edildi
+        // PurchaseRequests'in status'unu güncellemek için işaretle
+        if (!in_array($requestNo, $requestsToUpdate)) {
+            $requestsToUpdate[] = $requestNo;
+        }
+    }
+    
     $statusPriority = getStatusPriority($status);
     $docDateValue = extractDocDateFromRow($row);
     
@@ -81,9 +100,6 @@ foreach ($allRows as $row) {
             $groupedRows[$requestNo]['StatusPriority'] = $statusPriority;
         }
     }
-    
-    $orderNo = trim($row['U_ASB2B_ORNO'] ?? '');
-    $orderDateValue = $row['U_ASB2B_ORDT'] ?? '';
     
     if ($orderNo !== '' && $orderNo !== '-') {
         if (!isset($groupedRows[$requestNo]['Orders'][$orderNo])) {
@@ -107,6 +123,19 @@ foreach ($allRows as $row) {
     }
 }
 
+// PurchaseRequests'lerin status'unu güncelle (sipariş no varsa ama status hala '1' ise)
+if (!empty($requestsToUpdate)) {
+    foreach ($requestsToUpdate as $requestNoToUpdate) {
+        $requestNoInt = intval($requestNoToUpdate);
+        $updatePayload = ['U_ASB2B_STATUS' => '3']; // Sevk edildi
+        $updateResult = $sap->patch("PurchaseRequests({$requestNoInt})", $updatePayload);
+        // Hata olsa bile devam et (loglama yapılabilir)
+        if (($updateResult['status'] ?? 0) != 200 && ($updateResult['status'] ?? 0) != 204) {
+            error_log("[DisTedarik] PurchaseRequests({$requestNoInt}) status güncellenemedi: HTTP " . ($updateResult['status'] ?? 'NO STATUS'));
+        }
+    }
+}
+
 $displayRows = [];
 
 if (!empty($groupedRows)) {
@@ -126,7 +155,7 @@ if (!empty($groupedRows)) {
                     'OrderNo' => $orderData['OrderNo'],
                     'DocDate' => $orderData['DocDate'] ?? $group['DocDate'] ?? '',
                     'OrderDate' => $orderData['OrderDate'] ?? '',
-                    'Status' => $orderData['Status'] ?? null,
+                    'Status' => !empty($orderData['Status']) ? $orderData['Status'] : '1',
                     'HasOrder' => true
                 ];
             }
@@ -136,7 +165,7 @@ if (!empty($groupedRows)) {
                 'OrderNo' => '-',
                 'DocDate' => $group['DocDate'] ?? '',
                 'OrderDate' => '',
-                'Status' => $group['StatusValue'] ?? null,
+                'Status' => !empty($group['StatusValue']) ? $group['StatusValue'] : '1',
                 'HasOrder' => false
             ];
         }
@@ -831,9 +860,9 @@ body {
                                     $orderNoDisplay = $rowData['OrderNo'] ?? '-';
                                     $docDateValue = $rowData['DocDate'] ?? '';
                                     $orderDateValue = $rowData['OrderDate'] ?? '';
-                                    $statusValue = $rowData['Status'] ?? null;
-                                    $statusText = $statusValue !== null ? getStatusText($statusValue) : 'Bilinmiyor';
-                                    $statusClass = $statusValue !== null ? getStatusClass($statusValue) : 'status-unknown';
+                                    $statusValue = $rowData['Status'] ?? '1'; // Default: Onay bekleniyor
+                                    $statusText = getStatusText($statusValue);
+                                    $statusClass = getStatusClass($statusValue);
                                     $hasOrder = !empty($rowData['HasOrder']);
                                     $docDate = !empty($docDateValue) ? formatDate($docDateValue) : '-';
                                     $orderDate = !empty($orderDateValue) ? formatDate($orderDateValue) : '-';

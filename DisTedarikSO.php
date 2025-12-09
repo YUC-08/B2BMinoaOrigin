@@ -28,20 +28,20 @@ function formatQuantity($qty) {
     return str_replace('.', ',', rtrim(rtrim(sprintf('%.2f', $num), '0'), ','));
 }
 
-// Ana depo (FromWhsName için) - U_ASB2B_FATH eq 'Y'
-$fromWarehouseFilter = "U_ASB2B_FATH eq 'Y' and U_AS_OWNR eq '{$uAsOwnr}'";
+// Ana depo - Kullanıcının şubesine göre ana depo (U_ASB2B_MAIN eq '1')
+$fromWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '1'";
 $fromWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fromWarehouseFilter);
 $fromWarehouseData = $sap->get($fromWarehouseQuery);
 $fromWarehouses = $fromWarehouseData['response']['value'] ?? [];
 $fromWarehouse = !empty($fromWarehouses) ? $fromWarehouses[0]['WarehouseCode'] : null;
 $fromWhsName = !empty($fromWarehouses) ? ($fromWarehouses[0]['WarehouseName'] ?? '') : '';
 
-// Gideceği depo (talep eden depo) - U_ASB2B_MAIN eq '2'
+// Gideceği depo (talep eden depo) - Sevkiyat deposu (U_ASB2B_MAIN eq '2')
 $toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '2'";
-$toWarehouseQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilter);
+$toWarehouseQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilter); 
 $toWarehouseData = $sap->get($toWarehouseQuery);
 $toWarehouses = $toWarehouseData['response']['value'] ?? [];
-$toWarehouse = !empty($toWarehouses) ? $toWarehouses[0]['WarehouseCode'] : null;
+$toWarehouse = !empty($toWarehouses) ? $toWarehouses[0]['WarehouseCode'] : null; 
 
 // Kayıt dışı mod kontrolü
 $isUnregisteredMode = isset($_GET['mode']) && $_GET['mode'] === 'unregistered';
@@ -153,13 +153,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'] === 'items') {
     header('Content-Type: application/json');
     
-    // FromWhsName kontrolü
-    if (empty($fromWhsName)) {
+    // WhsCode kontrolü
+    if (empty($fromWarehouse)) {
         echo json_encode([
             'data' => [],
             'count' => 0,
             'hasMore' => false,
-            'error' => 'Ana depo adı bulunamadı! FromWarehouse: ' . ($fromWarehouse ?: 'BULUNAMADI')
+            'error' => 'Ana depo kodu bulunamadı! U_AS_OWNR: ' . $uAsOwnr . ', Branch: ' . $branch
         ]);
         exit;
     }
@@ -171,9 +171,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
     $itemGroups = isset($_GET['item_groups']) ? json_decode($_GET['item_groups'], true) : [];
     $stockStatus = trim($_GET['stock_status'] ?? '');
     
-    // FromWhsName ile filtreleme (AnaDepoSO.php'deki gibi)
-    $fromWhsNameEscaped = str_replace("'", "''", $fromWhsName);
-    $filter = "FromWhsName eq '{$fromWhsNameEscaped}'";
+    // WhsCode ile filtreleme
+    $fromWarehouseEscaped = str_replace("'", "''", $fromWarehouse);
+    $filter = "WhsCode eq '{$fromWarehouseEscaped}'";
 
     // Kalem Tanımı filtresi (multi-select) - ItemCode - ItemName formatından parse et
     if (!empty($itemNames) && is_array($itemNames)) {
@@ -265,14 +265,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'] === 'filter_options') {
     header('Content-Type: application/json');
     
-    if (empty($fromWhsName)) {
+    if (empty($fromWarehouse)) {
         echo json_encode(['itemNames' => [], 'itemGroups' => []]);
         exit;
     }
     
-    $fromWhsNameEscaped = str_replace("'", "''", $fromWhsName);
+    $fromWarehouseEscaped = str_replace("'", "''", $fromWarehouse);
     // ✅ ItemCode da dahil edildi (kalem kodları için)
-    $itemsQuery = "view.svc/ASB2B_MainWhsItem_B1SLQuery?\$filter=FromWhsName eq '{$fromWhsNameEscaped}'&\$select=ItemCode,ItemName,ItemGroup&\$top=1000";
+    $itemsQuery = "view.svc/ASB2B_MainWhsItem_B1SLQuery?\$filter=WhsCode eq '{$fromWarehouseEscaped}'&\$select=ItemCode,ItemName,ItemGroup&\$top=1000";
     $itemsData = $sap->get($itemsQuery);
     $items = $itemsData['response']['value'] ?? [];
     
@@ -1119,7 +1119,7 @@ body {
                             <th>Kalem Grubu</th>
                             <th>Şube Miktarı</th>
                             <th>Minimum</th>
-                            <th>Sipariş Miktarı</th>
+                            <th>Talep Miktarı</th>
                             <th>Birim</th>
                             <th>Dönüşüm</th>
                             <th>Varsayılan Tedarikçi</th>

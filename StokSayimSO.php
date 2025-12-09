@@ -865,13 +865,13 @@ function formatDate($dateString) {
         }
 
         .btn-success {
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            background: linear-gradient(135deg,rgb(56, 30, 255) 0%,rgb(2, 64, 196) 100%);
             color: white;
             box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
         }
 
         .btn-success:hover {
-            background: linear-gradient(135deg, #059669 0%, #047857 100%);
+            background: linear-gradient(135deg,rgb(44, 120, 233) 0%,rgb(48, 92, 236) 100%);
             box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4);
             transform: translateY(-2px);
         }

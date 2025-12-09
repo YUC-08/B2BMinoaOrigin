@@ -44,6 +44,10 @@ if ($isPurchaseOrder) {
             
             if (!empty($viewRows)) {
                 $orderStatus = $viewRows[0]['U_ASB2B_STATUS'] ?? null;
+                // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
+                if (empty($orderStatus) || $orderStatus === 'null' || $orderStatus === '') {
+                    $orderStatus = '1';
+                }
                 $canReceive = isReceivableStatus($orderStatus);
             }
         }
@@ -74,6 +78,10 @@ if ($isPurchaseOrder) {
             $orderNoFromView = $row['U_ASB2B_ORNO'] ?? null;
             if (!empty($orderNoFromView) && $orderNoFromView !== null && $orderNoFromView !== '' && $orderNoFromView !== '-') {
                 $status = $row['U_ASB2B_STATUS'] ?? null;
+                // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
+                if (empty($status) || $status === 'null' || $status === '') {
+                    $status = '1';
+                }
                 $statusText = getStatusText($status);
                 $canReceive = isReceivableStatus($status);
                 
@@ -172,6 +180,10 @@ if (!empty($aliciSube)) {
 }
 
 function getStatusText($status) {
+    // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
+    if (empty($status) || $status === 'null' || $status === '') {
+        $status = '1';
+    }
     $statusMap = [
         '0' => 'Sipariş yok',
         '1' => 'Onay bekleniyor',
@@ -180,10 +192,14 @@ function getStatusText($status) {
         '4' => 'Tamamlandı',
         '5' => 'İptal edildi'
     ];
-    return $statusMap[(string)$status] ?? 'Bilinmiyor';
+    return $statusMap[(string)$status] ?? 'Onay bekleniyor';
 }
 
 function getStatusClass($status) {
+    // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
+    if (empty($status) || $status === 'null' || $status === '') {
+        $status = '1';
+    }
     $classMap = [
         '0' => 'status-unknown',
         '1' => 'status-pending',
@@ -192,7 +208,7 @@ function getStatusClass($status) {
         '4' => 'status-completed',
         '5' => 'status-cancelled'
     ];
-    return $classMap[(string)$status] ?? 'status-unknown';
+    return $classMap[(string)$status] ?? 'status-pending';
 }
 ?>
 <!DOCTYPE html>
@@ -490,6 +506,10 @@ body {
                         $singleOrder = $allOrdersForRequest[0];
                         $singleOrderNo = $singleOrder['OrderNo'] ?? null;
                         $singleOrderStatus = $singleOrder['Status'] ?? null;
+                        // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
+                        if (empty($singleOrderStatus) || $singleOrderStatus === 'null' || $singleOrderStatus === '') {
+                            $singleOrderStatus = '1';
+                        }
                         
                         if (!empty($singleOrderNo) && isReceivableStatus($singleOrderStatus)) {
                             // Tek sipariş için orderNos parametresi kullan (geriye dönük uyumluluk için orderNo da destekleniyor)
@@ -571,11 +591,22 @@ body {
                             <div class="detail-item">
                                 <label>Talep Durumu:</label>
                                 <div class="detail-value">
-                                    <?php if ($isPurchaseOrder && isset($orderStatus)): ?>
-                                        <span class="status-badge <?= getStatusClass($orderStatus) ?>"><?= getStatusText($orderStatus) ?></span>
-                                    <?php else: ?>
-                                        <span class="status-badge status-unknown">Bilinmiyor</span>
-                                    <?php endif; ?>
+                                    <?php 
+                                    if ($isPurchaseOrder) {
+                                        // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
+                                        $displayStatus = $orderStatus ?? '1';
+                                        if (empty($displayStatus) || $displayStatus === 'null' || $displayStatus === '') {
+                                            $displayStatus = '1';
+                                        }
+                                    ?>
+                                        <span class="status-badge <?= getStatusClass($displayStatus) ?>"><?= getStatusText($displayStatus) ?></span>
+                                    <?php 
+                                    } else { 
+                                    ?>
+                                        <span class="status-badge status-pending">Onay bekleniyor</span>
+                                    <?php 
+                                    } 
+                                    ?>
                                 </div>
                             </div>
                           
