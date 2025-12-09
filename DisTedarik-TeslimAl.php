@@ -11,21 +11,57 @@ $sap = new SAPConnect();
 $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
 $branch = $_SESSION["Branch2"]["Name"] ?? $_SESSION["WhsCode"] ?? '';
 
-// Fire & Zayi deposunu bul (U_ASB2B_MAIN='3' veya özel bir UDF ile işaretlenmiş olabilir)
+// Ana depo bul (U_ASB2B_MAIN='1') - PurchaseDeliveryNotes için kullanılacak
+$mainWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '1'";
+$mainWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($mainWarehouseFilter);
+$mainWarehouseData = $sap->get($mainWarehouseQuery);
+$mainWarehouses = $mainWarehouseData['response']['value'] ?? [];
+$mainWarehouse = !empty($mainWarehouses) ? $mainWarehouses[0]['WarehouseCode'] : null;
+$mainWarehouseName = !empty($mainWarehouses) ? ($mainWarehouses[0]['WarehouseName'] ?? '') : '';
+
+// Sevkiyat deposu bul (U_ASB2B_MAIN='2') - Eksik miktar transferi için
+$sevkiyatDepoFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '2'";
+$sevkiyatDepoQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($sevkiyatDepoFilter);
+$sevkiyatDepoData = $sap->get($sevkiyatDepoQuery);
+$sevkiyatDepos = $sevkiyatDepoData['response']['value'] ?? [];
+$sevkiyatDepo = !empty($sevkiyatDepos) ? $sevkiyatDepos[0]['WarehouseCode'] : null;
+$sevkiyatDepoName = !empty($sevkiyatDepos) ? ($sevkiyatDepos[0]['WarehouseName'] ?? '') : '';
+
+// Fire & Zayi deposunu bul (Transferler-TeslimAl.php ve anadepo_teslim_al.php mantığı)
+// Önce U_ASB2B_MAIN='3' ile ara
+// Örnek sorgu: https://localhost:50000/b1s/v2/Warehouses?$select=WarehouseCode,WarehouseName&$filter=U_AS_OWNR eq 'KT' and U_ASB2B_BRAN eq '100' and U_ASB2B_MAIN eq '3'
 $fireZayiWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '3'";
-$fireZayiWarehouseQuery = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter);
+$fireZayiWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fireZayiWarehouseFilter);
 $fireZayiWarehouseData = $sap->get($fireZayiWarehouseQuery);
 $fireZayiWarehouses = $fireZayiWarehouseData['response']['value'] ?? [];
 $fireZayiWarehouse = !empty($fireZayiWarehouses) ? $fireZayiWarehouses[0]['WarehouseCode'] : null;
 
-// Eğer U_ASB2B_MAIN='3' ile bulunamazsa, alternatif olarak U_ASB2B_FIREZAYI='Y' gibi bir UDF ile arayabiliriz
+// Eğer U_ASB2B_MAIN='3' ile bulunamazsa, U_ASB2B_FIREZAYI='Y' ile ara
 if (empty($fireZayiWarehouse)) {
-    // Alternatif: U_ASB2B_FIREZAYI='Y' ile işaretlenmiş depo
     $fireZayiWarehouseFilter2 = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_FIREZAYI eq 'Y'";
     $fireZayiWarehouseQuery2 = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter2);
     $fireZayiWarehouseData2 = $sap->get($fireZayiWarehouseQuery2);
     $fireZayiWarehouses2 = $fireZayiWarehouseData2['response']['value'] ?? [];
     $fireZayiWarehouse = !empty($fireZayiWarehouses2) ? $fireZayiWarehouses2[0]['WarehouseCode'] : null;
+}
+
+// Eğer hala bulunamazsa, WarehouseCode pattern'ine bak (örn: 100-KT-2, 200-KT-2)
+// Son karakter '2' olan depolar Fire/Zayi deposu olabilir
+if (empty($fireZayiWarehouse)) {
+    // Tüm depoları çek ve son karakteri '2' olanları bul
+    $allWarehousesFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}'";
+    $allWarehousesQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($allWarehousesFilter);
+    $allWarehousesData = $sap->get($allWarehousesQuery);
+    $allWarehouses = $allWarehousesData['response']['value'] ?? [];
+    
+    foreach ($allWarehouses as $whs) {
+        $whsCode = $whs['WarehouseCode'] ?? '';
+        // Son karakter '2' ise Fire/Zayi deposu olabilir (örn: 100-KT-2, 200-KT-2)
+        if (!empty($whsCode) && substr($whsCode, -1) === '2') {
+            $fireZayiWarehouse = $whsCode;
+            break;
+        }
+    }
 }
 
 $requestNo   = $_GET['requestNo'] ?? '';
@@ -177,21 +213,23 @@ $canReceive = true;
 $docStatus = null;
 
 // -----------------------------
-// POST işlemi: PurchaseDeliveryNotes
+// POST işlemi: PurchaseDeliveryNotes ve StockTransfers
 // -----------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'teslim_al') {
-    header('Content-Type: application/json');
+    // Transferler-TeslimAl.php'deki gibi direkt işlem yapılacak (JSON response yok)
 
     $teslimatNo     = trim($_POST['teslimat_no'] ?? '');
     $teslimatTarihi = $_POST['teslimat_tarihi'] ?? date('Y-m-d');
 
     if (empty($teslimatNo)) {
-        echo json_encode(['success' => false, 'message' => 'Teslimat belge numarası zorunludur!']);
+        $_SESSION['error_message'] = 'Teslimat belge numarası zorunludur!';
+        header('Location: DisTedarik.php');
         exit;
     }
 
     if (empty($lines)) {
-        echo json_encode(['success' => false, 'message' => 'Sipariş satırları bulunamadı!']);
+        $_SESSION['error_message'] = 'Sipariş satırları bulunamadı!';
+        header('Location: DisTedarik.php');
         exit;
     }
 
@@ -236,135 +274,177 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $normalTransferMiktar = $fizikselMiktar - $kusurluQty;
         if ($normalTransferMiktar < 0) $normalTransferMiktar = 0;
 
-        // Normal line (Fiziksel - Kusurlu miktar)
-        if ($normalTransferMiktar > 0) {
+        // PurchaseDeliveryNotes için: Sadece irsaliye miktarı (deliveryQty) ana depoya giriş yapacak
+        if ($deliveryQty > 0) {
             $lineNum = $lineData['LineNum'] ?? 0;
             $linePayload = [
                 'BaseType' => 22, // Purchase Order
                 'BaseEntry' => intval($orderDocEntryKey),
                 'BaseLine'  => intval($lineNum),
-                'Quantity'  => $normalTransferMiktar
+                'Quantity'  => $deliveryQty, // İrsaliye miktarı
+                'WarehouseCode' => $mainWarehouse, // Kullanıcının şubesine ait ana depo (U_ASB2B_MAIN eq '1')
+                'U_ASWHST' => $mainWarehouseName // Ana depo adı
             ];
             
-            // Normal line'da eksik/fazla ve kusurlu miktarlar için ayrı line'lar oluşturulacak
-            // Bu yüzden normal line'da U_ASB2B_Damaged '-' olarak kalır
             $linePayload['U_ASB2B_Damaged'] = '-';
             
-            // Normal line'da eksik/fazla ve kusurlu miktarlar için ayrı line'lar oluşturulacak
-            // Normal line'ın Comments'ine eksik/fazla bilgisini de ekliyoruz
             $commentsParts = [];
             if (!empty($not)) {
                 $commentsParts[] = $not;
             }
             
-            // Eksik/Fazla miktar bilgisini Comments'e ekle
-            if ($eksikFazlaQty < 0) {
-                $zayiMiktar = abs($eksikFazlaQty); // Mutlak değer
-                $commentsParts[] = "EEksik: {$zayiMiktar} adet";
-            } elseif ($eksikFazlaQty > 0) {
-                $commentsParts[] = "Fazla: {$eksikFazlaQty} adet";
-            }
-            
-            // Comments'i birleştir
             if (!empty($commentsParts)) {
                 $linePayload['U_ASB2B_Comments'] = implode(' | ', $commentsParts);
             }
             
             $ordersData[$orderNoKey]['DocumentLines'][] = $linePayload;
         }
-        
-        // Fire & Zayi deposu bulunamazsa geçici olarak 200-KT-2 kullan
-        $targetFireZayiWarehouse = $fireZayiWarehouse;
-        if (empty($targetFireZayiWarehouse)) {
-            $targetFireZayiWarehouse = '200-KT-2'; // Geçici olarak sabit değer
-        }
-        
-        // Eksik miktar varsa → Ayrı line oluştur (Fire & Zayi deposuna - Zayi)
-        if ($eksikFazlaQty < 0) {
-            $zayiMiktar = abs($eksikFazlaQty); // Mutlak değer
+    }
+
+    // Item cost bilgisini almak için helper fonksiyon (Transferler-Onayla.php'deki gibi)
+    $getItemCost = function($itemCode, $warehouseCode, $line = null) use ($sap) {
+        $itemCost = 0;
+        try {
+            // Önce warehouse'a özel maliyet bilgisini al
+            $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$warehouseCode}'";
+            $itemWhResult = $sap->get($itemWhQuery);
+            $itemWhData = $itemWhResult['response'] ?? null;
             
-            // Fire & Zayi deposuna transfer satırı (Zayi)
-            // Bu line Purchase Order'dan bağımsız olduğu için BaseLine, BaseType, BaseEntry kullanmıyoruz
-            $zayiLinePayload = [
-                'ItemCode' => $itemCode, // Kalem kodu
-                'Quantity'  => $zayiMiktar, // Zayi miktar
-                'WarehouseCode' => $targetFireZayiWarehouse // Fire & Zayi deposu (200-KT-2)
+            if ($itemWhData && isset($itemWhData['value']) && !empty($itemWhData['value'])) {
+                $whInfo = $itemWhData['value'][0];
+                $itemCost = floatval($whInfo['AveragePrice'] ?? $whInfo['LastPrice'] ?? 0);
+            }
+            
+            // Eğer warehouse'a özel maliyet yoksa, item'ın genel maliyetini al
+            if ($itemCost == 0) {
+                $itemQuery = "Items('{$itemCode}')?\$select=ItemCode,StandardPrice,LastPurchasePrice,AvgPrice";
+                $itemResult = $sap->get($itemQuery);
+                $itemData = $itemResult['response'] ?? null;
+                
+                if ($itemData) {
+                    $itemCost = floatval($itemData['AvgPrice'] ?? $itemData['StandardPrice'] ?? $itemData['LastPurchasePrice'] ?? 0);
+                }
+            }
+            
+            // Eğer hala maliyet yoksa, line'dan al (varsa)
+            if ($itemCost == 0 && $line) {
+                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
+            }
+        } catch (Exception $e) {
+            // Hata durumunda line'dan al (varsa)
+            if ($line) {
+                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
+            }
+        }
+        return $itemCost;
+    };
+    
+    // PurchaseRequest DocEntry'yi al (U_ASB2B_QutMaster için)
+    $purchaseRequestDocEntry = null;
+    $purchaseRequestDocNum = null;
+    if (!empty($requestNo)) {
+        $requestNoInt = intval($requestNo);
+        $purchaseRequestQuery = "PurchaseRequests({$requestNoInt})?\$select=DocEntry,DocNum";
+        $purchaseRequestData = $sap->get($purchaseRequestQuery);
+        if (($purchaseRequestData['status'] ?? 0) == 200 && isset($purchaseRequestData['response'])) {
+            $purchaseRequestInfo = $purchaseRequestData['response'];
+            $purchaseRequestDocEntry = $purchaseRequestInfo['DocEntry'] ?? $requestNoInt;
+            $purchaseRequestDocNum = $purchaseRequestInfo['DocNum'] ?? $requestNoInt;
+        }
+    }
+    
+    // Her sipariş için ayrı POST yap (PurchaseDeliveryNotes)
+    $successCount  = 0;
+    $errorMessages = [];
+    $stockTransferLines = []; // StockTransfers için satırlar (tüm siparişler için birleştirilecek)
+
+    // DEBUG: Fire/Zayi deposu ve kusurlu miktar bilgileri
+    $debugInfo = [
+        'fireZayiWarehouse' => $fireZayiWarehouse,
+        'fireZayiWarehouseQuery' => $fireZayiWarehouseQuery,
+        'fireZayiWarehouses' => $fireZayiWarehouses,
+        'fireZayiWarehouseData' => $fireZayiWarehouseData,
+        'mainWarehouse' => $mainWarehouse,
+        'sevkiyatDepo' => $sevkiyatDepo,
+        'uAsOwnr' => $uAsOwnr,
+        'branch' => $branch,
+        'stockTransferLines' => [],
+        'kusurluMiktarlar' => []
+    ];
+
+    // Transferler-TeslimAl.php'deki gibi: Önce tüm lines'ları işle ve stockTransferLines'ı topla
+    foreach ($lines as $index => $lineData) {
+        $itemCode = $lineData['ItemCode'] ?? '';
+        $eksikFazlaQty = floatval($_POST['eksik_fazla'][$index] ?? 0);
+        $kusurluQty = floatval($_POST['kusurlu'][$index] ?? 0);
+        if ($kusurluQty < 0) $kusurluQty = 0;
+        $not = trim($_POST['not'][$index] ?? '');
+        
+        // DEBUG: Kusurlu miktar bilgileri
+        $debugInfo['kusurluMiktarlar'][] = [
+            'index' => $index,
+            'itemCode' => $itemCode,
+            'kusurluQty' => $kusurluQty,
+            'fireZayiWarehouse' => $fireZayiWarehouse,
+            'fireZayiWarehouseEmpty' => empty($fireZayiWarehouse),
+            'condition' => ($kusurluQty > 0 && !empty($fireZayiWarehouse)) ? 'PASS' : 'FAIL',
+            'conditionDetails' => [
+                'kusurluQty > 0' => ($kusurluQty > 0),
+                '!empty(fireZayiWarehouse)' => !empty($fireZayiWarehouse)
+            ]
+        ];
+        
+        // Eksik miktar varsa (eksikFazlaQty < 0) → Ana depodan sevkiyat deposuna transfer
+        if ($eksikFazlaQty < 0 && !empty($sevkiyatDepo)) {
+            $eksikMiktar = abs($eksikFazlaQty);
+            
+            // Item cost bilgisini al
+            $itemCost = $getItemCost($itemCode, $mainWarehouse, $lineData);
+            
+            $linePayload = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $eksikMiktar,
+                'FromWarehouseCode' => $mainWarehouse, // Ana depo
+                'WarehouseCode' => $sevkiyatDepo, // Sevkiyat deposu (U_ASB2B_MAIN eq '2')
+                'U_ASB2B_LOST' => '2', // Zayi
+                'U_ASB2B_Damaged' => 'E', // Eksik
+                'U_ASB2B_Comments' => (!empty($not) ? $not . ' | ' : '') . "Eksik: {$eksikMiktar} adet"
             ];
             
-            // Zayi satırı için UDF'ler
-            $zayiLinePayload['U_ASB2B_LOST'] = '2'; // Zayi
-            $zayiLinePayload['U_ASB2B_Damaged'] = 'E'; // Eksik
-            
-            // Zayi satırı Comments'i
-            $zayiCommentsParts = [];
-            if (!empty($not)) {
-                $zayiCommentsParts[] = $not;
+            // Cost bilgisi varsa ekle
+            if ($itemCost > 0) {
+                $linePayload['Price'] = $itemCost;
             }
-            $zayiCommentsParts[] = "Eksik: {$zayiMiktar} adet";
-            $zayiCommentsParts[] = 'Fire & Zayi';
             
-            $zayiLinePayload['U_ASB2B_Comments'] = implode(' | ', $zayiCommentsParts);
-            
-            $ordersData[$orderNoKey]['DocumentLines'][] = $zayiLinePayload;
+            $stockTransferLines[] = $linePayload;
         }
         
-        // Fazla miktar varsa → Ayrı line oluştur (Fire & Zayi deposuna - Fire)
-        if ($eksikFazlaQty > 0) {
-            // Fire & Zayi deposuna transfer satırı (Fire)
-            // Bu line Purchase Order'dan bağımsız olduğu için BaseLine, BaseType, BaseEntry kullanmıyoruz
-            $fireLinePayload = [
-                'ItemCode' => $itemCode, // Kalem kodu
-                'Quantity'  => $eksikFazlaQty, // Fazla miktar
-                'WarehouseCode' => $targetFireZayiWarehouse // Fire & Zayi deposu (200-KT-2)
+        // Kusurlu miktar varsa → Ana depodan Fire/Zayi deposuna transfer (alt satır)
+        // ÖNEMLİ: Kusurlu miktar MUTLAKA Fire/Zayi deposuna gitmeli, sevkiyat deposuna değil!
+        // Örnek: 100-KT-0'dan 100-KT-2'ye
+        if ($kusurluQty > 0 && !empty($fireZayiWarehouse)) {
+            // Item cost bilgisini al
+            $itemCost = $getItemCost($itemCode, $mainWarehouse, $lineData);
+            
+            $linePayload = [
+                'ItemCode' => $itemCode,
+                'Quantity' => $kusurluQty, // Kusurlu miktar direkt kullanılır (BaseQty çarpma yok)
+                'FromWarehouseCode' => $mainWarehouse, // Ana depo (100-KT-0)
+                'WarehouseCode' => $fireZayiWarehouse, // Fire/Zayi deposu (100-KT-2)
+                'U_ASB2B_Damaged' => 'K', // Kusurlu
+                'U_ASB2B_Comments' => (!empty($not) ? $not . ' | ' : '') . "Kusurlu: {$kusurluQty} adet"
             ];
             
-            // Fire satırı için UDF'ler
-            $fireLinePayload['U_ASB2B_LOST'] = '1'; // Fire
-            
-            // Fire satırı Comments'i
-            $fireCommentsParts = [];
-            if (!empty($not)) {
-                $fireCommentsParts[] = $not;
+            // Cost bilgisi varsa ekle
+            if ($itemCost > 0) {
+                $linePayload['Price'] = $itemCost;
             }
-            $fireCommentsParts[] = "Fazla: {$eksikFazlaQty} adet";
-            $fireCommentsParts[] = 'Fire & Zayi';
             
-            $fireLinePayload['U_ASB2B_Comments'] = implode(' | ', $fireCommentsParts);
-            
-            $ordersData[$orderNoKey]['DocumentLines'][] = $fireLinePayload;
-        }
-        
-        // Kusurlu miktar varsa → Ayrı line oluştur (Fire & Zayi deposuna)
-        if ($kusurluQty > 0) {
-            // Fire & Zayi deposuna transfer satırı
-            // Bu line Purchase Order'dan bağımsız olduğu için BaseLine, BaseType, BaseEntry kullanmıyoruz
-            $fireZayiLinePayload = [
-                'ItemCode' => $itemCode, // Kalem kodu
-                'Quantity'  => $kusurluQty, // Kusurlu miktar
-                'WarehouseCode' => $targetFireZayiWarehouse // Fire & Zayi deposu (200-KT-2)
-            ];
-            
-            // Fire & Zayi satırı için UDF'ler
-            $fireZayiLinePayload['U_ASB2B_Damaged'] = 'K'; // Kusurlu
-            
-            // Fire & Zayi satırı Comments'i
-            $fireZayiCommentsParts = [];
-            if (!empty($not)) {
-                $fireZayiCommentsParts[] = $not;
-            }
-            $fireZayiCommentsParts[] = "Kusurlu: {$kusurluQty} adet";
-            $fireZayiCommentsParts[] = 'Fire & Zayi';
-            
-            $fireZayiLinePayload['U_ASB2B_Comments'] = implode(' | ', $fireZayiCommentsParts);
-            
-            $ordersData[$orderNoKey]['DocumentLines'][] = $fireZayiLinePayload;
+            $stockTransferLines[] = $linePayload;
         }
     }
 
-    // Her sipariş için ayrı POST yap
-    $successCount  = 0;
-    $errorMessages = [];
-
+    // PurchaseDeliveryNotes oluştur
     foreach ($ordersData as $orderNoKey => $orderData) {
         if (empty($orderData['DocumentLines'])) {
             continue;
@@ -382,6 +462,95 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $successCount++;
         } else {
             $errorMessages[] = "Sipariş {$orderNoKey}: " . json_encode($result['response'] ?? 'Bilinmeyen hata');
+        }
+    }
+
+    // Transferler-TeslimAl.php'deki gibi: Eğer StockTransfers için satırlar varsa oluştur
+    if (!empty($stockTransferLines) && $successCount > 0) {
+        // StockTransfers için satırlar varsa, tek bir StockTransfers belgesi oluştur (Transferler-TeslimAl.php mantığı)
+        $docDate = date('Y-m-d');
+        $headerComments = "Dış Tedarik Teslim Al - Eksik ve Kusurlu Transfer";
+        
+        // ToWarehouse'u belirle: Eğer sevkiyat deposu varsa onu kullan, yoksa fire/zayi deposunu kullan
+        $toWarehouse = !empty($sevkiyatDepo) ? $sevkiyatDepo : $fireZayiWarehouse;
+        if (empty($toWarehouse)) {
+            $toWarehouse = $mainWarehouse; // Fallback: Ana depo (ama bu durumda transfer mantıklı değil)
+        }
+        
+        // PurchaseRequest DocEntry ve DocNum'u kullan (U_ASB2B_QutMaster ve DocumentReferences için)
+        $qutMaster = $purchaseRequestDocEntry ?? intval($requestNo);
+        $qutMasterDocNum = $purchaseRequestDocNum ?? intval($requestNo);
+        
+        $stockTransferPayload = [
+            'FromWarehouse' => $mainWarehouse, // Ana depo
+            'ToWarehouse' => $toWarehouse, // Hedef depo (sevkiyat veya fire/zayi)
+            'DocDate' => $docDate,
+            'Comments' => $headerComments,
+            'U_ASB2B_BRAN' => $branch,
+            'U_AS_OWNR' => $uAsOwnr,
+            'U_ASB2B_STATUS' => '4', // Tamamlandı
+            'U_ASB2B_TYPE' => 'TRANSFER',
+            'U_ASB2B_User' => $_SESSION["UserName"] ?? '',
+            'U_ASB2B_QutMaster' => (int)$qutMaster, // PurchaseRequest DocEntry (Transferler-Onayla.php'deki gibi)
+            'DocumentReferences' => [
+                [
+                    'RefDocEntr' => (int)$qutMaster,
+                    'RefDocNum' => (int)$qutMasterDocNum,
+                    'RefObjType' => 'rot_PurchaseRequest' // PurchaseRequest referansı
+                ]
+            ],
+            'StockTransferLines' => $stockTransferLines
+        ];
+        
+        // Transferler-TeslimAl.php'deki gibi direkt POST yap
+        $stockTransferResult = $sap->post('StockTransfers', $stockTransferPayload);
+        
+        // Transferler-TeslimAl.php'deki gibi sonuç kontrolü
+        if (($stockTransferResult['status'] ?? 0) == 200 || ($stockTransferResult['status'] ?? 0) == 201) {
+            // StockTransfer başarıyla oluşturuldu (Transferler-TeslimAl.php'deki gibi)
+            $stockTransferResponse = $stockTransferResult['response'] ?? [];
+            // Başarılı, devam et
+        } else {
+            // Hata durumu (Transferler-TeslimAl.php'deki gibi)
+            $errorMsg = 'StockTransfers oluşturulamadı! HTTP ' . ($stockTransferResult['status'] ?? 'NO STATUS');
+            
+            // Detaylı hata mesajı oluştur
+            if (isset($stockTransferResult['response']['error'])) {
+                $error = $stockTransferResult['response']['error'];
+                if (isset($error['message'])) {
+                    $errorMsg .= ' - ' . ($error['message']['value'] ?? $error['message']);
+                } else {
+                    $errorMsg .= ' - ' . json_encode($error);
+                }
+                
+                // Code ve details varsa ekle
+                if (isset($error['code'])) {
+                    $errorMsg .= ' (Kod: ' . $error['code'] . ')';
+                }
+                if (isset($error['details'])) {
+                    $detailMsgs = [];
+                    $details = $error['details'];
+                    if (is_array($details) && !empty($details)) {
+                        foreach ($details as $detail) {
+                            if (is_array($detail) && isset($detail['message'])) {
+                                $detailMsgs[] = $detail['message'];
+                            } elseif (is_string($detail)) {
+                                $detailMsgs[] = $detail;
+                            }
+                        }
+                    } elseif (is_string($details)) {
+                        $detailMsgs[] = $details;
+                    }
+                    if (!empty($detailMsgs)) {
+                        $errorMsg .= ' - Detaylar: ' . implode(', ', $detailMsgs);
+                    }
+                }
+            } else {
+                // Response'un kendisini ekle
+                $errorMsg .= ' - Response: ' . json_encode($stockTransferResult['response'] ?? []);
+            }
+            
+            $errorMessages[] = $errorMsg;
         }
     }
 
@@ -751,6 +920,53 @@ body {
 <body>
     <?php include 'navbar.php'; ?>
 
+    <!-- DEBUG PANEL: Fire/Zayi Deposu Bilgileri (Sayfa Yüklendiğinde) -->
+    <div class="card" style="background: #f0f9ff; border: 2px solid #0ea5e9; margin: 1.5rem auto; max-width: 1400px;">
+        <h3 style="margin-bottom: 1rem; color: #0c4a6e;">🔍 DEBUG: Fire/Zayi Deposu Bilgileri</h3>
+        
+        <div style="margin-bottom: 1rem;">
+            <strong>Fire/Zayi Deposu Sorgu Bilgileri:</strong>
+            <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
+                <li><strong>fireZayiWarehouse:</strong> <?= htmlspecialchars($fireZayiWarehouse ?? 'BOŞ') ?></li>
+                <li><strong>mainWarehouse:</strong> <?= htmlspecialchars($mainWarehouse ?? 'BOŞ') ?></li>
+                <li><strong>sevkiyatDepo:</strong> <?= htmlspecialchars($sevkiyatDepo ?? 'BOŞ') ?></li>
+                <li><strong>uAsOwnr:</strong> <?= htmlspecialchars($uAsOwnr ?? 'BOŞ') ?></li>
+                <li><strong>branch:</strong> <?= htmlspecialchars($branch ?? 'BOŞ') ?></li>
+            </ul>
+        </div>
+        
+        <div style="margin-bottom: 1rem;">
+            <strong>Fire/Zayi Deposu Sorgu Sonucu (U_ASB2B_MAIN='3'):</strong>
+            <pre style="background: #fff; padding: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem;"><?= htmlspecialchars(json_encode($fireZayiWarehouses ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
+        </div>
+        
+        <div style="margin-bottom: 1rem;">
+            <strong>Fire/Zayi Deposu Sorgu Sonucu (U_ASB2B_FIREZAYI='Y'):</strong>
+            <?php if (empty($fireZayiWarehouse)): ?>
+                <?php
+                $fireZayiWarehouseFilter2 = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_FIREZAYI eq 'Y'";
+                $fireZayiWarehouseQuery2 = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter2);
+                $fireZayiWarehouseData2 = $sap->get($fireZayiWarehouseQuery2);
+                $fireZayiWarehouses2 = $fireZayiWarehouseData2['response']['value'] ?? [];
+                ?>
+                <pre style="background: #fff; padding: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem;"><?= htmlspecialchars(json_encode($fireZayiWarehouses2 ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
+            <?php else: ?>
+                <p style="color: #6b7280;">İlk sorgu başarılı, bu sorgu yapılmadı.</p>
+            <?php endif; ?>
+        </div>
+        
+        <div style="margin-bottom: 1rem;">
+            <strong>Tüm Depolar (Son karakter '2' kontrolü için):</strong>
+            <?php
+            $allWarehousesFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}'";
+            $allWarehousesQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_MAIN&\$filter=" . urlencode($allWarehousesFilter);
+            $allWarehousesData = $sap->get($allWarehousesQuery);
+            $allWarehouses = $allWarehousesData['response']['value'] ?? [];
+            ?>
+            <pre style="background: #fff; padding: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem; max-height: 200px; overflow-y: auto;"><?= htmlspecialchars(json_encode($allWarehouses ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
+        </div>
+    </div>
+
     <main class="main-content">
         <header class="page-header">
         <h2>Teslim Al - Talep No: <?= htmlspecialchars($requestNo) ?> | Sipariş No: <?= htmlspecialchars($orderNoHeaderText) ?></h2>
@@ -767,6 +983,73 @@ body {
         <div class="card" style="background: #fee2e2; border: 2px solid #dc2626; margin-bottom: 1.5rem;">
             <p style="color: #991b1b; font-weight: 600; margin: 0;"><?= htmlspecialchars($errorMsg) ?></p>
                     </div>
+    <?php endif; ?>
+
+    <!-- DEBUG PANEL: Fire/Zayi Deposu ve Kusurlu Miktar -->
+    <?php if (isset($debugInfo)): ?>
+        <div class="card" style="background: #f0f9ff; border: 2px solid #0ea5e9; margin-bottom: 1.5rem;">
+            <h3 style="margin-bottom: 1rem; color: #0c4a6e;">🔍 DEBUG: Fire/Zayi Deposu ve Kusurlu Miktar</h3>
+            
+            <div style="margin-bottom: 1rem;">
+                <strong>Fire/Zayi Deposu Bilgileri:</strong>
+                <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
+                    <li><strong>fireZayiWarehouse:</strong> <?= htmlspecialchars($debugInfo['fireZayiWarehouse'] ?? 'BOŞ') ?></li>
+                    <li><strong>mainWarehouse:</strong> <?= htmlspecialchars($debugInfo['mainWarehouse'] ?? 'BOŞ') ?></li>
+                    <li><strong>sevkiyatDepo:</strong> <?= htmlspecialchars($debugInfo['sevkiyatDepo'] ?? 'BOŞ') ?></li>
+                    <li><strong>uAsOwnr:</strong> <?= htmlspecialchars($debugInfo['uAsOwnr'] ?? 'BOŞ') ?></li>
+                    <li><strong>branch:</strong> <?= htmlspecialchars($debugInfo['branch'] ?? 'BOŞ') ?></li>
+                </ul>
+            </div>
+            
+            <div style="margin-bottom: 1rem;">
+                <strong>Fire/Zayi Deposu Sorgu Sonucu:</strong>
+                <pre style="background: #fff; padding: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem;"><?= htmlspecialchars(json_encode($debugInfo['fireZayiWarehouses'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
+            </div>
+            
+            <div style="margin-bottom: 1rem;">
+                <strong>Kusurlu Miktar Kontrolleri:</strong>
+                <table style="width: 100%; border-collapse: collapse; margin-top: 0.5rem;">
+                    <thead>
+                        <tr style="background: #e0f2fe;">
+                            <th style="padding: 0.5rem; border: 1px solid #bae6fd; text-align: left;">Index</th>
+                            <th style="padding: 0.5rem; border: 1px solid #bae6fd; text-align: left;">ItemCode</th>
+                            <th style="padding: 0.5rem; border: 1px solid #bae6fd; text-align: left;">Kusurlu Qty</th>
+                            <th style="padding: 0.5rem; border: 1px solid #bae6fd; text-align: left;">Fire/Zayi Depo</th>
+                            <th style="padding: 0.5rem; border: 1px solid #bae6fd; text-align: left;">Durum</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($debugInfo['kusurluMiktarlar'] ?? [] as $kusurluInfo): ?>
+                            <tr>
+                                <td style="padding: 0.5rem; border: 1px solid #bae6fd;"><?= htmlspecialchars($kusurluInfo['index'] ?? '') ?></td>
+                                <td style="padding: 0.5rem; border: 1px solid #bae6fd;"><?= htmlspecialchars($kusurluInfo['itemCode'] ?? '') ?></td>
+                                <td style="padding: 0.5rem; border: 1px solid #bae6fd;"><?= htmlspecialchars($kusurluInfo['kusurluQty'] ?? '0') ?></td>
+                                <td style="padding: 0.5rem; border: 1px solid #bae6fd;"><?= htmlspecialchars($kusurluInfo['fireZayiWarehouse'] ?? 'BOŞ') ?></td>
+                                <td style="padding: 0.5rem; border: 1px solid #bae6fd;">
+                                    <span style="color: <?= ($kusurluInfo['condition'] ?? 'FAIL') === 'PASS' ? '#16a34a' : '#dc2626' ?>; font-weight: 600;">
+                                        <?= htmlspecialchars($kusurluInfo['condition'] ?? 'FAIL') ?>
+                                    </span>
+                                    <br>
+                                    <small style="color: #6b7280;">
+                                        kusurluQty > 0: <?= ($kusurluInfo['conditionDetails']['kusurluQty > 0'] ?? false) ? '✓' : '✗' ?><br>
+                                        !empty(fireZayiWarehouse): <?= ($kusurluInfo['conditionDetails']['!empty(fireZayiWarehouse)'] ?? false) ? '✓' : '✗' ?>
+                                    </small>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            
+            <div style="margin-bottom: 1rem;">
+                <strong>StockTransferLines Array:</strong>
+                <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
+                    <li><strong>Toplam Satır Sayısı:</strong> <?= htmlspecialchars($debugInfo['stockTransferLinesCount'] ?? 0) ?></li>
+                    <li><strong>Success Count:</strong> <?= htmlspecialchars($debugInfo['successCount'] ?? 0) ?></li>
+                </ul>
+                <pre style="background: #fff; padding: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem; max-height: 300px; overflow-y: auto;"><?= htmlspecialchars(json_encode($debugInfo['stockTransferLines'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
+            </div>
+        </div>
     <?php endif; ?>
 
     <?php if (empty($lines)): ?>

@@ -67,6 +67,10 @@ if ($isPurchaseOrder) {
         $errorMsg = "Sipariş detayları alınamadı!";
     }
 } else {
+    // View'den tüm kayıtları çek (OrderNo olan ve olmayan)
+    $itemsWithOrderNo = []; // OrderNo'ya sahip ItemCode'lar [OrderNo => [ItemCode1, ItemCode2, ...]]
+    $allOrderNos = []; // Tüm OrderNo'lar (sipariş numaraları)
+    
     if (!empty($uAsOwnr) && !empty($branch)) {
         $requestNoInt = intval($requestNo);
         $viewFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and RequestNo eq {$requestNoInt}";
@@ -75,23 +79,64 @@ if ($isPurchaseOrder) {
         $viewRows = $viewData['response']['value'] ?? [];
         
         foreach ($viewRows as $row) {
+            $status = $row['U_ASB2B_STATUS'] ?? null;
+            // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
+            if (empty($status) || $status === 'null' || $status === '') {
+                $status = '1';
+            }
+            
             $orderNoFromView = $row['U_ASB2B_ORNO'] ?? null;
+            $statusText = getStatusText($status);
+            $canReceive = isReceivableStatus($status);
+            
+            // OrderNo varsa listeye ekle
             if (!empty($orderNoFromView) && $orderNoFromView !== null && $orderNoFromView !== '' && $orderNoFromView !== '-') {
-                $status = $row['U_ASB2B_STATUS'] ?? null;
-                // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
-                if (empty($status) || $status === 'null' || $status === '') {
-                    $status = '1';
+                $orderNoInt = intval($orderNoFromView);
+                if (!in_array($orderNoInt, $allOrderNos)) {
+                    $allOrderNos[] = $orderNoInt;
                 }
-                $statusText = getStatusText($status);
-                $canReceive = isReceivableStatus($status);
-                
-                $allOrdersForRequest[] = [
-                    'OrderNo' => $orderNoFromView,
-                    'OrderDate' => $row['U_ASB2B_ORDT'] ?? null,
-                    'Status' => $status,
-                    'StatusText' => $statusText,
-                    'CanReceive' => $canReceive
-                ];
+            }
+            
+            // Status "Onay bekleniyor" (1) ise OrderNo boş gösterilmeli
+            // Tüm kayıtları ekle, ama status "1" ise OrderNo'yu boş bırak
+            $allOrdersForRequest[] = [
+                'OrderNo' => ($status === '1') ? null : ($orderNoFromView ?? null), // Status "1" ise OrderNo null
+                'OrderDate' => $row['U_ASB2B_ORDT'] ?? null,
+                'Status' => $status,
+                'StatusText' => $statusText,
+                'CanReceive' => $canReceive
+            ];
+        }
+    }
+    
+    // PurchaseOrders'ten OrderNo'ya sahip ItemCode'ları çek
+    foreach ($allOrderNos as $orderNoInt) {
+        $orderQuery = 'PurchaseOrders(' . $orderNoInt . ')';
+        $orderData = $sap->get($orderQuery);
+        if (($orderData['status'] ?? 0) == 200 && isset($orderData['response'])) {
+            $orderDocEntry = $orderData['response']['DocEntry'] ?? $orderNoInt;
+            $orderLinesQuery = "PurchaseOrders({$orderDocEntry})/DocumentLines";
+            $orderLinesData = $sap->get($orderLinesQuery);
+            if (($orderLinesData['status'] ?? 0) == 200 && isset($orderLinesData['response'])) {
+                $orderResp = $orderLinesData['response'];
+                $orderLines = [];
+                if (isset($orderResp['value']) && is_array($orderResp['value'])) {
+                    $orderLines = $orderResp['value'];
+                } elseif (isset($orderResp['DocumentLines']) && is_array($orderResp['DocumentLines'])) {
+                    $orderLines = $orderResp['DocumentLines'];
+                }
+                // Bu OrderNo'ya ait ItemCode'ları topla
+                foreach ($orderLines as $orderLine) {
+                    $itemCode = $orderLine['ItemCode'] ?? '';
+                    if (!empty($itemCode)) {
+                        if (!isset($itemsWithOrderNo[$orderNoInt])) {
+                            $itemsWithOrderNo[$orderNoInt] = [];
+                        }
+                        if (!in_array($itemCode, $itemsWithOrderNo[$orderNoInt])) {
+                            $itemsWithOrderNo[$orderNoInt][] = $itemCode;
+                        }
+                    }
+                }
             }
         }
     }
@@ -108,10 +153,43 @@ if ($isPurchaseOrder) {
         
         if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
             $resp = $linesData['response'];
+            $allLines = [];
             if (isset($resp['value']) && is_array($resp['value'])) {
-                $lines = $resp['value'];
+                $allLines = $resp['value'];
             } elseif (isset($resp['DocumentLines']) && is_array($resp['DocumentLines'])) {
-                $lines = $resp['DocumentLines'];
+                $allLines = $resp['DocumentLines'];
+            }
+            
+            // OrderNo parametresi yoksa, sadece OrderNo'ya sahip olmayan kalemleri göster
+            // OrderNo parametresi varsa, o OrderNo'ya ait kalemleri göster
+            if (empty($orderNo)) {
+                // OrderNo yok → Sadece OrderNo'ya sahip olmayan kalemleri göster
+                // Tüm OrderNo'lara ait ItemCode'ları topla
+                $allItemsWithOrderNo = [];
+                foreach ($itemsWithOrderNo as $orderItemCodes) {
+                    $allItemsWithOrderNo = array_merge($allItemsWithOrderNo, $orderItemCodes);
+                }
+                $allItemsWithOrderNo = array_unique($allItemsWithOrderNo);
+                
+                // PurchaseRequests'ten sadece OrderNo'ya sahip olmayan kalemleri filtrele
+                $lines = [];
+                foreach ($allLines as $line) {
+                    $itemCode = $line['ItemCode'] ?? '';
+                    if (!empty($itemCode) && !in_array($itemCode, $allItemsWithOrderNo)) {
+                        $lines[] = $line;
+                    }
+                }
+            } else {
+                // OrderNo var → O OrderNo'ya ait kalemleri göster
+                $orderNoInt = intval($orderNo);
+                $orderItemCodes = $itemsWithOrderNo[$orderNoInt] ?? [];
+                $lines = [];
+                foreach ($allLines as $line) {
+                    $itemCode = $line['ItemCode'] ?? '';
+                    if (!empty($itemCode) && in_array($itemCode, $orderItemCodes)) {
+                        $lines[] = $line;
+                    }
+                }
             }
         }
     } else {
@@ -574,11 +652,15 @@ body {
                                     <?php
                                     $siparisNoDisplay = '-';
                                     if ($isPurchaseOrder) {
+                                        // OrderNo parametresi varsa (Sevk edildi satırına tıklanmış)
                                         $siparisNoDisplay = htmlspecialchars($orderDocEntry ?? $orderNo ?? '-');
+                                    } elseif (empty($orderNo)) {
+                                        // OrderNo parametresi yoksa (Onay bekleniyor satırına tıklanmış) → Tedarik No boş
+                                        $siparisNoDisplay = '-';
                                     } elseif (!empty($allOrdersForRequest)) {
-                                        // İlk sipariş numarasını göster
-                                        $firstOrder = $allOrdersForRequest[0];
-                                        $siparisNoDisplay = htmlspecialchars($firstOrder['OrderNo'] ?? '-');
+                                        // OrderNo parametresi varsa ama $isPurchaseOrder false ise (nadir durum)
+                                        // Belirtilen OrderNo'yu göster
+                                        $siparisNoDisplay = htmlspecialchars($orderNo);
                                     }
                                     echo $siparisNoDisplay;
                                     ?>

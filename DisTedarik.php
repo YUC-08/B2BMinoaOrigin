@@ -138,38 +138,36 @@ if (!empty($requestsToUpdate)) {
 
 $displayRows = [];
 
-if (!empty($groupedRows)) {
-    uksort($groupedRows, function($a, $b) {
-        return intval($b) <=> intval($a);
-    });
+// View'den gelen tüm satırları ayrı ayrı göster (gruplama yapmadan)
+// Böylece aynı talep numarasına sahip farklı durumdaki kayıtların hepsi görünür
+foreach ($allRows as $row) {
+    $requestNo = $row['RequestNo'] ?? '';
+    if (empty($requestNo)) continue;
     
-    foreach ($groupedRows as $requestNo => $group) {
-        if (!empty($group['Orders'])) {
-            uksort($group['Orders'], function($a, $b) {
-                return intval($a) <=> intval($b);
-            });
-            
-            foreach ($group['Orders'] as $orderData) {
-                $displayRows[] = [
-                    'RequestNo' => $requestNo,
-                    'OrderNo' => $orderData['OrderNo'],
-                    'DocDate' => $orderData['DocDate'] ?? $group['DocDate'] ?? '',
-                    'OrderDate' => $orderData['OrderDate'] ?? '',
-                    'Status' => !empty($orderData['Status']) ? $orderData['Status'] : '1',
-                    'HasOrder' => true
-                ];
-            }
-        } else {
-            $displayRows[] = [
-                'RequestNo' => $requestNo,
-                'OrderNo' => '-',
-                'DocDate' => $group['DocDate'] ?? '',
-                'OrderDate' => '',
-                'Status' => !empty($group['StatusValue']) ? $group['StatusValue'] : '1',
-                'HasOrder' => false
-            ];
-        }
+    $status = isset($row['U_ASB2B_STATUS']) ? (string)$row['U_ASB2B_STATUS'] : null;
+    // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
+    if (empty($status) || $status === 'null' || $status === '') {
+        $status = '1';
     }
+    
+    $orderNo = trim($row['U_ASB2B_ORNO'] ?? '');
+    $orderDateValue = $row['U_ASB2B_ORDT'] ?? '';
+    $docDateValue = extractDocDateFromRow($row);
+    
+    // Sipariş no varsa ama status hala '1' (Onay bekleniyor) ise, status'u '3' (Sevk edildi) olarak güncelle
+    if ($orderNo !== '' && $orderNo !== '-' && ($status === '1' || empty($status))) {
+        $status = '3'; // Sevk edildi
+    }
+    
+    // Her satırı ayrı bir displayRows satırı olarak ekle
+    $displayRows[] = [
+        'RequestNo' => $requestNo,
+        'OrderNo' => ($orderNo !== '' && $orderNo !== '-') ? $orderNo : '-',
+        'DocDate' => $docDateValue,
+        'OrderDate' => $orderDateValue,
+        'Status' => $status,
+        'HasOrder' => ($orderNo !== '' && $orderNo !== '-')
+    ];
 }
 
 if (!empty($filterStartDate) || !empty($filterEndDate)) {
