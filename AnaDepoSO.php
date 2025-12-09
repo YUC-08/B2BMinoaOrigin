@@ -66,16 +66,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $baseQty = floatval($item['baseQty'] ?? 1.0); // Default 1.0
             $sapQuantity = $userQuantity * $baseQty;
             
+            $itemCode = $item['itemCode'] ?? '';
+            
             // Not: U_ASB2B_OrdUom alanı StockTransferLine'da geçerli değil, bu yüzden kaldırıldı
             // BaseQty mantığı ile Quantity hesaplaması yeterli
-            $stockTransferLines[] = [
-                'ItemCode' => $item['itemCode'] ?? '',
+            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
+            $lineData = [
+                'ItemCode' => $itemCode,
                 'Quantity' => $sapQuantity, // SAP'ye giden miktar = kullanıcı miktarı × BaseQty
                 'FromWarehouseCode' => $fromWarehouse,
                 'WarehouseCode' => $toWarehouse
             ];
+            
+            $stockTransferLines[] = $lineData;
         }
     }
+    
+    // Debug log
+    error_log('[ANADEPOSO POST] User: ' . $userName . ', Branch: ' . $branch);
+    error_log('[ANADEPOSO POST] FromWarehouse: ' . $fromWarehouse . ', ToWarehouse: ' . $toWarehouse);
+    error_log('[ANADEPOSO POST] Selected Items Count: ' . count($selectedItems));
+    error_log('[ANADEPOSO POST] StockTransferLines Count: ' . count($stockTransferLines));
     
     if (empty($stockTransferLines)) {
         echo json_encode(['success' => false, 'message' => 'Miktarı girilen kalem bulunamadı!']);
@@ -963,6 +974,104 @@ body {
         </header>
 
         <div class="content-wrapper">
+            <!-- DEBUG PANEL - Her Zaman Gösteriliyor -->
+            <div class="alert alert-info" style="font-family: monospace; font-size: 11px; background-color: #f0f9ff; border: 2px solid #0ea5e9; padding: 20px; margin-bottom: 20px; border-radius: 8px;">
+                <strong style="color: #0c4a6e; font-size: 14px; display: block; margin-bottom: 15px;">🔍 DEBUG BİLGİLERİ - AnaDepoSO.php</strong>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+                    <div style="background: white; padding: 15px; border-radius: 6px; border: 1px solid #0ea5e9;">
+                        <strong style="color: #0c4a6e; display: block; margin-bottom: 10px;">👤 Kullanıcı Bilgileri:</strong>
+                        <div style="line-height: 1.8;">
+                            <strong>UserName:</strong> <span style="color: #059669; font-weight: bold;"><?= htmlspecialchars($userName ?: 'BOŞ') ?></span><br>
+                            <strong>Branch (WhsCode):</strong> <span style="color: #059669; font-weight: bold;"><?= htmlspecialchars($branch ?: 'BOŞ') ?></span><br>
+                            <strong>U_AS_OWNR:</strong> <span style="color: #059669; font-weight: bold;"><?= htmlspecialchars($uAsOwnr ?: 'BOŞ') ?></span><br>
+                            <strong>Branch2 Code:</strong> <span style="color: #6b7280;"><?= htmlspecialchars($_SESSION["Branch2"]["Code"] ?? 'AYARLANMAMIŞ') ?></span><br>
+                            <strong>Branch2 Name:</strong> <span style="color: #6b7280;"><?= htmlspecialchars($_SESSION["Branch2"]["Name"] ?? 'AYARLANMAMIŞ') ?></span><br>
+                        </div>
+                    </div>
+                    
+                    <div style="background: white; padding: 15px; border-radius: 6px; border: 1px solid #0ea5e9;">
+                        <strong style="color: #0c4a6e; display: block; margin-bottom: 10px;">🏭 Warehouse Bilgileri:</strong>
+                        <div style="line-height: 1.8;">
+                            <strong>FromWarehouse:</strong> <span style="color: <?= $fromWarehouse ? '#059669' : '#dc2626' ?>; font-weight: bold;"><?= htmlspecialchars($fromWarehouse ?? 'BULUNAMADI') ?></span><br>
+                            <strong>FromWarehouse Name:</strong> <span style="color: #059669;"><?= htmlspecialchars($fromWhsName ?? 'BULUNAMADI') ?></span><br>
+                            <strong>ToWarehouse:</strong> <span style="color: <?= $toWarehouse ? '#059669' : '#dc2626' ?>; font-weight: bold;"><?= htmlspecialchars($toWarehouse ?? 'BULUNAMADI') ?></span><br>
+                            <strong>FromWarehouse Query Status:</strong> <span style="color: <?= ($fromWarehouseData['status'] ?? 0) == 200 ? '#059669' : '#dc2626' ?>;"><?= isset($fromWarehouseData['status']) ? $fromWarehouseData['status'] : 'YOK' ?></span><br>
+                            <strong>ToWarehouse Query Status:</strong> <span style="color: <?= ($toWarehouseData['status'] ?? 0) == 200 ? '#059669' : '#dc2626' ?>;"><?= isset($toWarehouseData['status']) ? $toWarehouseData['status'] : 'YOK' ?></span><br>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="background: white; padding: 15px; border-radius: 6px; border: 1px solid #0ea5e9; margin-bottom: 20px;">
+                    <strong style="color: #0c4a6e; display: block; margin-bottom: 10px;">📊 Warehouse Sorguları:</strong>
+                    <div style="line-height: 1.8;">
+                        <strong>FromWarehouse Filter:</strong><br>
+                        <code style="font-size: 10px; word-break: break-all; background: #f3f4f6; padding: 5px; border: 1px solid #ddd; display: block; margin: 5px 0;"><?= htmlspecialchars($fromWarehouseFilter) ?></code><br>
+                        <strong>ToWarehouse Filter:</strong><br>
+                        <code style="font-size: 10px; word-break: break-all; background: #f3f4f6; padding: 5px; border: 1px solid #ddd; display: block; margin: 5px 0;"><?= htmlspecialchars($toWarehouseFilter) ?></code>
+                    </div>
+                </div>
+                
+                <div style="background: white; padding: 15px; border-radius: 6px; border: 1px solid #0ea5e9; margin-bottom: 20px;">
+                    <strong style="color: #0c4a6e; display: block; margin-bottom: 10px;">📋 Grid'e Gelen Veriler (İlk 5 Item - View'den):</strong>
+                    <div style="line-height: 1.8; margin-bottom: 10px;">
+                        <strong>View Query:</strong> <code style="font-size: 10px; word-break: break-all; background: #f3f4f6; padding: 5px; border: 1px solid #ddd; display: block; margin: 5px 0;">view.svc/ASB2B_MainWhsItem_B1SLQuery?$filter=FromWhsName eq '<?= htmlspecialchars($fromWhsName ?? 'BULUNAMADI') ?>'</code><br>
+                        <strong style="color: #dc2626;">⚠ ÖNEMLİ:</strong> Bu view <span style="color: #dc2626; font-weight: bold;">ANA DEPO</span> verilerini gösterir. <strong>MainQty</strong> = Ana depo miktarı, <strong>BranQty</strong> = Şube miktarı. <span style="color: #dc2626; font-weight: bold;">Hepsi aynı FromWhsName'i kullandığı için Turgay, Deniz ve Ekinci AYNI verileri görür!</span>
+                    </div>
+                    <?php if (!empty($debugGridItems)): ?>
+                    <table style="width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 10px;">
+                        <thead>
+                            <tr style="background: #e0f2fe;">
+                                <th style="padding: 6px; border: 1px solid #0ea5e9; text-align: left;">ItemCode</th>
+                                <th style="padding: 6px; border: 1px solid #0ea5e9; text-align: left;">ItemName</th>
+                                <th style="padding: 6px; border: 1px solid #0ea5e9; text-align: center;">MainQty<br>(Ana Depo)</th>
+                                <th style="padding: 6px; border: 1px solid #0ea5e9; text-align: center;">BranQty<br>(Şube)</th>
+                                <th style="padding: 6px; border: 1px solid #0ea5e9; text-align: left;">FromWhsName</th>
+                                <th style="padding: 6px; border: 1px solid #0ea5e9; text-align: left;">WhsCode</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($debugGridItems as $gridItem): ?>
+                            <tr>
+                                <td style="padding: 6px; border: 1px solid #ddd; font-weight: bold;"><?= htmlspecialchars($gridItem['ItemCode']) ?></td>
+                                <td style="padding: 6px; border: 1px solid #ddd;"><?= htmlspecialchars($gridItem['ItemName']) ?></td>
+                                <td style="padding: 6px; border: 1px solid #ddd; text-align: center; color: <?= $gridItem['MainQty'] > 0 ? '#059669' : '#dc2626' ?>; font-weight: bold;"><?= number_format($gridItem['MainQty'], 0, ',', '.') ?></td>
+                                <td style="padding: 6px; border: 1px solid #ddd; text-align: center; color: <?= $gridItem['BranQty'] > 0 ? '#059669' : '#dc2626' ?>; font-weight: bold;"><?= number_format($gridItem['BranQty'], 0, ',', '.') ?></td>
+                                <td style="padding: 6px; border: 1px solid #ddd;"><?= htmlspecialchars($gridItem['FromWhsName']) ?></td>
+                                <td style="padding: 6px; border: 1px solid #ddd;"><?= htmlspecialchars($gridItem['WhsCode']) ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <?php else: ?>
+                    <div style="color: #dc2626; font-weight: bold; padding: 10px;">Grid verileri alınamadı! FromWhsName veya FromWarehouse boş olabilir.</div>
+                    <?php endif; ?>
+                </div>
+                
+                <div style="background: #fff3cd; padding: 15px; border-radius: 6px; border: 2px solid #ffc107; margin-bottom: 20px;">
+                    <strong style="color: #856404; display: block; margin-bottom: 10px;">🔍 ÖNEMLİ AÇIKLAMALAR:</strong>
+                    <div style="line-height: 1.8; font-size: 11px; color: #856404;">
+                        <strong>1. Grid Verileri (ASB2B_MainWhsItem_B1SLQuery):</strong><br>
+                        &nbsp;&nbsp;• Bu view <span style="color: #dc2626; font-weight: bold;">ANA DEPO</span> verilerini gösterir (FromWhsName = "Kitapevi ana depo")<br>
+                        &nbsp;&nbsp;• <strong>MainQty</strong> = Ana depodaki miktar<br>
+                        &nbsp;&nbsp;• <strong>BranQty</strong> = Şubedeki miktar (kullanıcının şubesine göre)<br>
+                        &nbsp;&nbsp;• <span style="color: #dc2626; font-weight: bold;">Turgay, Deniz ve Ekinci hepsi aynı FromWhsName'i kullandığı için AYNI verileri görür!</span><br><br>
+                        
+                        <strong>2. Item Cost Sorgusu:</strong><br>
+                        &nbsp;&nbsp;• <strong>AnaDepoSO.php'de:</strong> <span style="color: #059669; font-weight: bold;">FromWarehouse (<?= htmlspecialchars($fromWarehouse ?? 'BULUNAMADI') ?>)</span> kullanılır ✓<br>
+                        &nbsp;&nbsp;• <strong>anadepo_teslim_al.php'de:</strong> <span style="color: #dc2626; font-weight: bold;">ToWarehouse (<?= htmlspecialchars($toWarehouse ?? 'BULUNAMADI') ?>)</span> kullanılır ✗<br>
+                        &nbsp;&nbsp;• <span style="color: #dc2626; font-weight: bold;">Ekinci'de sorun varsa, anadepo_teslim_al.php'de ToWarehouse (150-KT-1) için item cost bulunamıyor olabilir!</span><br><br>
+                        
+                        <strong>3. Turgay vs Deniz vs Ekinci Farkı:</strong><br>
+                        &nbsp;&nbsp;• <strong>Turgay:</strong> Branch=100, ToWarehouse=100-KT-1<br>
+                        &nbsp;&nbsp;• <strong>Deniz:</strong> Branch=300, ToWarehouse=200-KT-1<br>
+                        &nbsp;&nbsp;• <strong>Ekinci:</strong> Branch=200, ToWarehouse=150-KT-1<br>
+                        &nbsp;&nbsp;• Hepsi aynı FromWarehouse'u (KT-00) kullanır, farklı ToWarehouse'ları vardır<br>
+                        &nbsp;&nbsp;• <span style="color: #dc2626; font-weight: bold;">Sorun muhtemelen anadepo_teslim_al.php'de ToWarehouse'dan cost alınırken oluşuyor!</span>
+                    </div>
+                </div>
+            </div>
+            
             <?php if (empty($fromWarehouse) || empty($toWarehouse)): ?>
                 <div class="alert alert-warning">
                     <strong>Uyarı:</strong> Depo bilgileri bulunamadı!
@@ -1061,11 +1170,12 @@ body {
                             <th>Kalem Kodu</th>
                             <th>Kalem Tanımı</th>
                             <th>Kalem Grubu</th>
+                            <th>Şube Miktarı</th>
                             <th style="display: none;">Şube Stok Durumu</th>
                             <th style="display: none;">Ana Depo Stok Durumu</th>
                             <th style="display: none;">Anadepo</th>
-                            <th>Anadepo Miktar</th>
                             <th>Minimum</th>
+                            <th>Anadepo</th>
                             <th>Talep Miktarı</th>
                             <th>Ölçü Birimi</th>
                             <th>Dönüşüm</th>
@@ -1073,7 +1183,7 @@ body {
                     </thead>
                     <tbody id="itemsTableBody">
                         <tr>
-                            <td colspan="11" style="text-align:center;color:#888;padding:20px;">
+                            <td colspan="12" style="text-align:center;color:#888;padding:20px;">
                                 Filtre seçerek veya arama yaparak kalemleri görüntüleyin.
                             </td>
                         </tr>
@@ -1650,11 +1760,12 @@ function renderItems(items) {
                 <td>${itemCode}</td>
                 <td>${itemName}</td>
                 <td>${itemGroup}</td>
+                <td style="text-align: center;">${formatQuantity(branQty)}</td>
                 <td style="display: none;">${branStockStatus}</td>
                 <td style="display: none;">${mainStockStatus}</td>
                 <td style="display: none; text-align: center;"><span class="stock-badge ${hasStock ? 'stock-yes' : 'stock-no'}">${hasStock ? 'Var' : 'Yok'}</span></td>
-                <td style="text-align: center;">${formatQuantity(stockQty)}</td>
                 <td style="text-align: center;">${formatQuantity(minQty)}</td>
+                <td style="text-align: center;">${formatQuantity(stockQty)}</td>
                 <td>
                     <div class="quantity-controls">
                         <button type="button" class="qty-btn" onclick="changeQuantity('${itemCode}', -1)">-</button>

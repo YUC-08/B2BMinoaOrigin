@@ -184,35 +184,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // Normal transfer miktarı > 0 ise StockTransfer için hazırla (0 ise sadece Comments'e eklendi, StockTransfer oluşturulmayacak)
         if ($normalTransferMiktar > 0) {
-            $itemCost = 0;
-            try {
-                $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$toWarehouse}'";
-                $itemWhResult = $sap->get($itemWhQuery);
-                $itemWhData = $itemWhResult['response'] ?? null;
-                
-                if ($itemWhData && isset($itemWhData['value']) && !empty($itemWhData['value'])) {
-                    $whInfo = $itemWhData['value'][0];
-                    $itemCost = floatval($whInfo['AveragePrice'] ?? $whInfo['LastPrice'] ?? 0);
-                }
-                
-                if ($itemCost == 0) {
-                    $itemQuery = "Items('{$itemCode}')?\$select=ItemCode,StandardPrice,LastPurchasePrice,AvgPrice";
-                    $itemResult = $sap->get($itemQuery);
-                    $itemData = $itemResult['response'] ?? null;
-                    
-                    if ($itemData) {
-                        $itemCost = floatval($itemData['AvgPrice'] ?? $itemData['StandardPrice'] ?? $itemData['LastPurchasePrice'] ?? 0);
-                    }
-                }
-                
-                if ($itemCost == 0) {
-                    $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
-                }
-            } catch (Exception $e) {
-                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
-            }
-            
             // Normal transfer satırı (Fiziksel - Kusurlu miktar)
+            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $lineData = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $normalTransferMiktar, // Normal transfer = Fiziksel - Kusurlu
@@ -269,35 +242,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $errorMsg = "Kusurlu miktar var ancak Fire & Zayi deposu bulunamadı! Lütfen sistem yöneticisine başvurun.";
                 break; 
             }
-            $itemCost = 0;
-            try {
-                $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$toWarehouse}'";
-                $itemWhResult = $sap->get($itemWhQuery);
-                $itemWhData = $itemWhResult['response'] ?? null;
-                
-                if ($itemWhData && isset($itemWhData['value']) && !empty($itemWhData['value'])) {
-                    $whInfo = $itemWhData['value'][0];
-                    $itemCost = floatval($whInfo['AveragePrice'] ?? $whInfo['LastPrice'] ?? 0);
-                }
-                
-                if ($itemCost == 0) {
-                    $itemQuery = "Items('{$itemCode}')?\$select=ItemCode,StandardPrice,LastPurchasePrice,AvgPrice";
-                    $itemResult = $sap->get($itemQuery);
-                    $itemData = $itemResult['response'] ?? null;
-                    
-                    if ($itemData) {
-                        $itemCost = floatval($itemData['AvgPrice'] ?? $itemData['StandardPrice'] ?? $itemData['LastPurchasePrice'] ?? 0);
-                    }
-                }
-                
-                if ($itemCost == 0) {
-                    $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
-                }
-            } catch (Exception $e) {
-                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
-            }
             
             // Fire & Zayi deposuna transfer satırı
+            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $fireZayiLineData = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $damagedQty, // Kusurlu miktar

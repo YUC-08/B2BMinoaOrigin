@@ -39,7 +39,7 @@ $fireZayiWarehouse = !empty($fireZayiWarehouses) ? $fireZayiWarehouses[0]['Wareh
 // Eğer U_ASB2B_MAIN='3' ile bulunamazsa, U_ASB2B_FIREZAYI='Y' ile ara
 if (empty($fireZayiWarehouse)) {
     $fireZayiWarehouseFilter2 = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_FIREZAYI eq 'Y'";
-    $fireZayiWarehouseQuery2 = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter2);
+    $fireZayiWarehouseQuery2 = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fireZayiWarehouseFilter2);
     $fireZayiWarehouseData2 = $sap->get($fireZayiWarehouseQuery2);
     $fireZayiWarehouses2 = $fireZayiWarehouseData2['response']['value'] ?? [];
     $fireZayiWarehouse = !empty($fireZayiWarehouses2) ? $fireZayiWarehouses2[0]['WarehouseCode'] : null;
@@ -50,7 +50,7 @@ if (empty($fireZayiWarehouse)) {
 if (empty($fireZayiWarehouse)) {
     // Tüm depoları çek ve son karakteri '2' olanları bul
     $allWarehousesFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}'";
-    $allWarehousesQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($allWarehousesFilter);
+    $allWarehousesQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_MAIN&\$filter=" . urlencode($allWarehousesFilter);
     $allWarehousesData = $sap->get($allWarehousesQuery);
     $allWarehouses = $allWarehousesData['response']['value'] ?? [];
     
@@ -945,7 +945,7 @@ body {
             <?php if (empty($fireZayiWarehouse)): ?>
                 <?php
                 $fireZayiWarehouseFilter2 = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_FIREZAYI eq 'Y'";
-                $fireZayiWarehouseQuery2 = "Warehouses?\$filter=" . urlencode($fireZayiWarehouseFilter2);
+                $fireZayiWarehouseQuery2 = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fireZayiWarehouseFilter2);
                 $fireZayiWarehouseData2 = $sap->get($fireZayiWarehouseQuery2);
                 $fireZayiWarehouses2 = $fireZayiWarehouseData2['response']['value'] ?? [];
                 ?>
@@ -953,6 +953,14 @@ body {
             <?php else: ?>
                 <p style="color: #6b7280;">İlk sorgu başarılı, bu sorgu yapılmadı.</p>
             <?php endif; ?>
+        </div>
+        
+        <div style="margin-bottom: 1rem;">
+            <strong>⚠️ ÖNEMLİ: Fire/Zayi Deposu Bulunamadı!</strong>
+            <p style="color: #dc2626; font-weight: 600; margin: 0.5rem 0;">
+                Tüm depolar listesinde son karakteri '2' olan bir depo görünmüyor. 
+                Lütfen SAP'de 100-KT-2 deposunun var olduğundan ve doğru U_AS_OWNR/U_ASB2B_BRAN değerlerine sahip olduğundan emin olun.
+            </p>
         </div>
         
         <div style="margin-bottom: 1rem;">
