@@ -83,14 +83,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    $stockTransferLines = [];
+    // Sepetteki ürünleri FromWarehouse'a göre grupla
+    $itemsByFromWarehouse = [];
     foreach ($selectedItems as $item) {
         $userQuantity = floatval($item['quantity'] ?? 0);
         if ($userQuantity > 0) {
             $itemFromWarehouse = $item['fromWhsCode'] ?? $fromWarehouse;
             if (empty($itemFromWarehouse)) continue;
             
-            $stockTransferLines[] = [
+            if (!isset($itemsByFromWarehouse[$itemFromWarehouse])) {
+                $itemsByFromWarehouse[$itemFromWarehouse] = [];
+            }
+            
+            $itemsByFromWarehouse[$itemFromWarehouse][] = [
                 'ItemCode' => $item['itemCode'] ?? '',
                 'Quantity' => $userQuantity * floatval($item['baseQty'] ?? 1.0),
                 'FromWarehouseCode' => $itemFromWarehouse,
@@ -99,36 +104,88 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
     
-    if (empty($stockTransferLines)) {
+    if (empty($itemsByFromWarehouse)) {
         echo json_encode(['success' => false, 'message' => 'Miktarı girilen kalem bulunamadı!']);
         exit;
     }
     
-    $firstItemFromWarehouse = $stockTransferLines[0]['FromWarehouseCode'] ?? $fromWarehouse;
+    // Her FromWarehouse için ayrı InventoryTransferRequest oluştur
+    $results = [];
+    $successCount = 0;
+    $errorCount = 0;
+    $errorMessages = [];
     
-    $payload = [
-        'DocDate' => date('Y-m-d'),
-        'FromWarehouse' => $firstItemFromWarehouse,
-        'ToWarehouse' => $toWarehouse,
-        'Comments' => 'Transfer nakil talebi',
-        'U_ASB2B_BRAN' => $branch,
-        'U_AS_OWNR' => $uAsOwnr,
-        'U_ASB2B_STATUS' => '1', // Onay Bekliyor (string olarak '1')
-        'U_ASB2B_TYPE' => 'TRANSFER',
-        'U_ASB2B_User' => $userName,
-        'StockTransferLines' => $stockTransferLines // AnaDepoSO.php'deki gibi StockTransferLines kullan
-    ];
-    
-    $result = $sap->post('InventoryTransferRequests', $payload);
-    
-    if ($result['status'] == 200 || $result['status'] == 201) {
-        echo json_encode(['success' => true, 'message' => 'Transfer talebi başarıyla oluşturuldu!', 'data' => $result]);
-    } else {
-        $errorMsg = 'Talep oluşturulamadı: HTTP ' . ($result['status'] ?? 'NO STATUS');
-        if (isset($result['response']['error'])) {
-            $errorMsg .= ' - ' . json_encode($result['response']['error']);
+    foreach ($itemsByFromWarehouse as $fromWhs => $stockTransferLines) {
+        $payload = [
+            'DocDate' => date('Y-m-d'),
+            'FromWarehouse' => $fromWhs,
+            'ToWarehouse' => $toWarehouse,
+            'Comments' => 'Transfer nakil talebi',
+            'U_ASB2B_BRAN' => $branch,
+            'U_AS_OWNR' => $uAsOwnr,
+            'U_ASB2B_STATUS' => '1', // Onay Bekliyor (string olarak '1')
+            'U_ASB2B_TYPE' => 'TRANSFER',
+            'U_ASB2B_User' => $userName,
+            'StockTransferLines' => $stockTransferLines
+        ];
+        
+        $result = $sap->post('InventoryTransferRequests', $payload);
+        
+        if ($result['status'] == 200 || $result['status'] == 201) {
+            $successCount++;
+            $results[] = [
+                'fromWarehouse' => $fromWhs,
+                'success' => true,
+                'data' => $result
+            ];
+        } else {
+            $errorCount++;
+            $errorMsg = 'FromWarehouse: ' . $fromWhs . ' - HTTP ' . ($result['status'] ?? 'NO STATUS');
+            if (isset($result['response']['error'])) {
+                $errorMsg .= ' - ' . json_encode($result['response']['error']);
+            }
+            $errorMessages[] = $errorMsg;
+            $results[] = [
+                'fromWarehouse' => $fromWhs,
+                'success' => false,
+                'error' => $errorMsg,
+                'response' => $result
+            ];
         }
-        echo json_encode(['success' => false, 'message' => $errorMsg, 'response' => $result]);
+    }
+    
+    // Sonuçları döndür
+    if ($errorCount == 0) {
+        // Tüm belgeler başarılı
+        $message = $successCount > 1 
+            ? "{$successCount} adet transfer talebi başarıyla oluşturuldu!" 
+            : 'Transfer talebi başarıyla oluşturuldu!';
+        echo json_encode([
+            'success' => true, 
+            'message' => $message, 
+            'count' => $successCount,
+            'results' => $results
+        ]);
+    } elseif ($successCount > 0) {
+        // Bazı belgeler başarılı, bazıları başarısız
+        $message = "{$successCount} adet transfer talebi oluşturuldu, {$errorCount} adet başarısız oldu. ";
+        $message .= "Hatalar: " . implode('; ', $errorMessages);
+        echo json_encode([
+            'success' => false, 
+            'message' => $message,
+            'successCount' => $successCount,
+            'errorCount' => $errorCount,
+            'results' => $results
+        ]);
+    } else {
+        // Tüm belgeler başarısız
+        $errorMsg = 'Transfer talepleri oluşturulamadı! ';
+        $errorMsg .= implode('; ', $errorMessages);
+        echo json_encode([
+            'success' => false, 
+            'message' => $errorMsg,
+            'results' => $results
+        ]);
     }
     exit;
 }
@@ -545,8 +602,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
                         <th>Şube Adı</th>
                         <th class="stock-column" style="display: none;">Stokta</th>
                         <th class="stock-column" style="display: none;">Stoktaki Miktar</th>
-                        <th>Minimum</th>
-                        <th>Sipariş Miktarı</th>
+                        <th>Şube Miktarı</th>
+                        <th>Talep Miktarı</th>
                         <th>Ölçü Birimi</th>
                         <th>Dönüşüm</th>
                     </tr>
@@ -896,7 +953,7 @@ function renderItems(items) {
         const fromWhsName = item.FromWhsName || '-';
         const hasStock = item._hasStock || false;
         const stockQty = item.MainQty || item._stock || 0;
-        const minQty = item.MinQty || 0;
+        const otherBranQty = item.OtherBranQty || 0;
         const uomCode = item.UomCode || item.UoMCode || '-';
         const baseQty = parseFloat(item.BaseQty || 1.0);
         const isInSepet = selectedItems.hasOwnProperty(itemKey);
@@ -930,7 +987,7 @@ function renderItems(items) {
                 <td>${fromWhsName}</td>
                 <td class="stock-column" style="display: none;"><span class="stock-badge ${hasStock ? 'stock-yes' : 'stock-no'}">${hasStock ? 'Var' : 'Yok'}</span></td>
                 <td class="stock-column" style="display: none;">${formatQuantity(stockQty)}</td>
-                <td>${formatQuantity(minQty)}</td>
+                <td>${formatQuantity(otherBranQty)}</td>
                 <td>
                     <div class="quantity-controls">
                         <button type="button" class="qty-btn" onclick="changeQuantity('${itemKey}', -1)">-</button>

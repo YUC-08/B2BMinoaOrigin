@@ -30,7 +30,7 @@ if (empty($docEntry) || empty($action)) {
 // Action'a göre status belirle
 $newStatus = '';
 if ($action === 'approve') {
-    $newStatus = '2'; // HAZIRLANIYOR
+    $newStatus = '3'; // SEVK EDİLDİ
 } elseif ($action === 'reject') {
     $newStatus = '5'; // İPTAL EDİLDİ
 } else {
@@ -43,8 +43,8 @@ $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
 $branch = $_SESSION["Branch2"]["Name"] ?? $_SESSION["WhsCode"] ?? '';
 $userName = $_SESSION["UserName"] ?? '';
 
-// Onaylama işlemi ise (STATUS = 2), ilk StockTransfer oluştur (gönderici depo -> sevkiyat depo)
-if ($action === 'approve' && $newStatus === '2') {
+// Onaylama işlemi ise (STATUS = 3), ilk StockTransfer oluştur (gönderici depo -> sevkiyat depo)
+if ($action === 'approve' && $newStatus === '3') {
     // InventoryTransferRequest bilgilerini çek
     // Önce header bilgilerini çek (FromWarehouse, ToWarehouse için)
     $headerQuery = "InventoryTransferRequests({$docEntry})?\$select=FromWarehouse,ToWarehouse,DocDate,DocNum,U_ASB2B_BRAN";
@@ -250,7 +250,7 @@ if ($action === 'approve' && $newStatus === '2') {
         'Comments' => "Transfer talebi onaylandı - Sevkiyat deposuna transfer",
         'U_ASB2B_BRAN' => $branch,
         'U_AS_OWNR' => $uAsOwnr,
-        'U_ASB2B_STATUS' => '2', // Hazırlanıyor
+        'U_ASB2B_STATUS' => '3', // Sevk edildi
         'U_ASB2B_TYPE' => 'TRANSFER',
         'U_ASB2B_User' => $userName,
         'U_ASB2B_QutMaster' => (int)$docEntry,

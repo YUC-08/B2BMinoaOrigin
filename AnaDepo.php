@@ -84,6 +84,7 @@ if (empty($toWarehouse)) {
 $filterStatus = $_GET['status'] ?? '';
 $filterStartDate = $_GET['start_date'] ?? '';
 $filterEndDate = $_GET['end_date'] ?? '';
+$entriesPerPage = intval($_GET['entries'] ?? 25);
 
 // InventoryTransferRequests sorgusu (herkes için aynı: FromWarehouse + ToWarehouse)
 $data = ['response' => ['value' => []]];
@@ -608,10 +609,60 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     padding: 24px;
     font-size: 14px;
     color: #6b7280;
+    flex-wrap: wrap;
+}
+
+.pagination-info {
+    margin: 0 16px;
+    font-weight: 500;
+}
+
+.pagination-numbers {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.pagination-number {
+    min-width: 36px;
+    height: 36px;
+    padding: 0 8px;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    background: white;
+    color: #3b82f6;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+.pagination-number:hover:not(.active):not(.disabled) {
+    border-color: #3b82f6;
+    background: #f0f9ff;
+}
+
+.pagination-number.active {
+    background: #3b82f6;
+    color: white;
+    border-color: #3b82f6;
+}
+
+.pagination-number.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.pagination-ellipsis {
+    padding: 0 4px;
+    color: #9ca3af;
 }
 
 /* Responsive */
@@ -757,9 +808,9 @@ body {
                     <div class="show-entries">
                         Sayfada 
                         <select class="entries-select" id="entriesPerPage" onchange="applyFilters()">
-                            <option value="25" selected>25</option>
-                            <option value="50">50</option>
-                            <option value="75">75</option>
+                            <option value="25" <?= $entriesPerPage == 25 ? 'selected' : '' ?>>25</option>
+                            <option value="50" <?= $entriesPerPage == 50 ? 'selected' : '' ?>>50</option>
+                            <option value="75" <?= $entriesPerPage == 75 ? 'selected' : '' ?>>75</option>
                         </select>
                         kayıt göster
                     </div>
@@ -784,7 +835,6 @@ body {
                     <tbody>
                      <?php
 // Sayfalama
-$entriesPerPage = intval($_GET['entries'] ?? 25);
 $currentPage = intval($_GET['page'] ?? 1);
 $totalRows = count($allRows);
 $totalPages = ceil($totalRows / $entriesPerPage);
@@ -855,8 +905,50 @@ if (!empty($rows)) {
                 <?php if ($totalPages > 1): ?>
                     <div class="pagination">
                         <button class="btn btn-secondary" onclick="changePage(<?= $currentPage - 1 ?>)" <?= $currentPage <= 1 ? 'disabled' : '' ?>>← Önceki</button>
-                        <span>Sayfa <?= $currentPage ?> / <?= $totalPages ?> (Toplam <?= $totalRows ?> kayıt)</span>
+                        
+                        <div class="pagination-numbers">
+                            <?php
+                            // Sayfa numaralarını hesapla
+                            $maxVisiblePages = 7; // Maksimum görünen sayfa sayısı
+                            $startPage = max(1, $currentPage - floor($maxVisiblePages / 2));
+                            $endPage = min($totalPages, $startPage + $maxVisiblePages - 1);
+                            
+                            // Eğer başta veya sonda boşluk varsa ayarla
+                            if ($endPage - $startPage < $maxVisiblePages - 1) {
+                                if ($startPage == 1) {
+                                    $endPage = min($totalPages, $startPage + $maxVisiblePages - 1);
+                                } else {
+                                    $startPage = max(1, $endPage - $maxVisiblePages + 1);
+                                }
+                            }
+                            
+                            // İlk sayfa
+                            if ($startPage > 1) {
+                                echo '<button class="pagination-number" onclick="changePage(1)">1</button>';
+                                if ($startPage > 2) {
+                                    echo '<span class="pagination-ellipsis">...</span>';
+                                }
+                            }
+                            
+                            // Sayfa numaraları
+                            for ($i = $startPage; $i <= $endPage; $i++) {
+                                $activeClass = ($i == $currentPage) ? 'active' : '';
+                                echo '<button class="pagination-number ' . $activeClass . '" onclick="changePage(' . $i . ')">' . $i . '</button>';
+                            }
+                            
+                            // Son sayfa
+                            if ($endPage < $totalPages) {
+                                if ($endPage < $totalPages - 1) {
+                                    echo '<span class="pagination-ellipsis">...</span>';
+                                }
+                                echo '<button class="pagination-number" onclick="changePage(' . $totalPages . ')">' . $totalPages . '</button>';
+                            }
+                            ?>
+                        </div>
+                        
                         <button class="btn btn-secondary" onclick="changePage(<?= $currentPage + 1 ?>)" <?= $currentPage >= $totalPages ? 'disabled' : '' ?>>Sonraki →</button>
+                        
+                        <span class="pagination-info">Sayfa <?= $currentPage ?> / <?= $totalPages ?> (Toplam <?= $totalRows ?> kayıt)</span>
                     </div>
                 <?php endif; ?>
             </section>

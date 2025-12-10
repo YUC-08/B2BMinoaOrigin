@@ -33,16 +33,26 @@ if (!$requestData) {
     exit;
 }
 
+
+error_log("[TESLIM AL] DocEntry: {$doc}");
+error_log("[TESLIM AL] RequestData keys: " . implode(', ', array_keys($requestData ?? [])));
+error_log("[TESLIM AL] Has StockTransferLines key: " . (isset($requestData['StockTransferLines']) ? 'YES' : 'NO'));
+
 $lines = $requestData['StockTransferLines'] ?? [];
 
+
+error_log("[TESLIM AL] Lines count: " . count($lines));
 if (empty($lines)) {
+    error_log("[TESLIM AL] Lines is empty! Full requestData structure: " . print_r($requestData, true));
     $linesQuery = "InventoryTransferRequests({$doc})/StockTransferLines";
     $linesData = $sap->get($linesQuery);
     $linesResponse = $linesData['response'] ?? null;
     if ($linesResponse && isset($linesResponse['value'])) {
         $lines = $linesResponse['value'];
+        error_log("[TESLIM AL] Lines found via direct query, count: " . count($lines));
     } elseif ($linesResponse && is_array($linesResponse)) {
         $lines = $linesResponse;
+        error_log("[TESLIM AL] Lines found via direct query (array), count: " . count($lines));
     }
 }
 $fromWarehouse = $requestData['FromWarehouse'] ?? '';
@@ -159,17 +169,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $itemCode = $line['ItemCode'] ?? '';
         $itemName = $line['ItemDescription'] ?? $itemCode;
+        $commentParts = [];
         
-        // NOT: Fire/Zayi belgesinin açıklamasında sadece kusurlu miktarlar görünecek
-        // Eksik/Fazla miktarlar sevkiyat deposuna gidiyor, bu yüzden burada görünmemeli
+        // Eksik/Fazla miktar (cebirsel gösterim)
+        if ($eksikFazlaQty != 0) {
+            $eksikFazlaStr = $eksikFazlaQty > 0 ? "+{$eksikFazlaQty}" : (string)$eksikFazlaQty;
+            $commentParts[] = "Eksik/Fazla: {$eksikFazlaStr}";
+        }
+        
+        // Kusurlu miktar
         if ($damagedQty > 0) {
-            $commentParts = [];
             $commentParts[] = "Kusurlu: {$damagedQty}";
-            
-            if (!empty($notes)) {
-                $commentParts[] = "Not: {$notes}";
-            }
-            
+        }
+        
+        // Fiziksel miktar
+        $commentParts[] = "Fiziksel: {$fizikselMiktar}";
+        
+        if (!empty($notes)) {
+            $commentParts[] = "Not: {$notes}";
+        }
+        
+        if (!empty($commentParts)) {
             $headerComments[] = "{$itemCode} ({$itemName}): " . implode(", ", $commentParts);
         }
         
@@ -181,8 +201,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // Normal transfer miktarı > 0 ise StockTransfer için hazırla (0 ise sadece Comments'e eklendi, StockTransfer oluşturulmayacak)
         if ($normalTransferMiktar > 0) {
+            $itemCost = 0;
+            try {
+                $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$toWarehouse}'";
+                $itemWhResult = $sap->get($itemWhQuery);
+                $itemWhData = $itemWhResult['response'] ?? null;
+                
+                if ($itemWhData && isset($itemWhData['value']) && !empty($itemWhData['value'])) {
+                    $whInfo = $itemWhData['value'][0];
+                    $itemCost = floatval($whInfo['AveragePrice'] ?? $whInfo['LastPrice'] ?? 0);
+                }
+                
+                if ($itemCost == 0) {
+                    $itemQuery = "Items('{$itemCode}')?\$select=ItemCode,StandardPrice,LastPurchasePrice,AvgPrice";
+                    $itemResult = $sap->get($itemQuery);
+                    $itemData = $itemResult['response'] ?? null;
+                    
+                    if ($itemData) {
+                        $itemCost = floatval($itemData['AvgPrice'] ?? $itemData['StandardPrice'] ?? $itemData['LastPurchasePrice'] ?? 0);
+                    }
+                }
+                
+                if ($itemCost == 0) {
+                    $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
+                }
+            } catch (Exception $e) {
+                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
+            }
+            
             // Normal transfer satırı (Fiziksel - Kusurlu miktar)
-            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $lineData = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $normalTransferMiktar, // Normal transfer = Fiziksel - Kusurlu
@@ -191,11 +238,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'U_ASB2B_QutMaster' => (int)$doc // InventoryTransferRequest DocEntry
             ];
             
+            // 1. line'da (normal transfer) sadece eksik varsa 'E', kusurlu varsa 'K' yazma
+            // Kusurlu miktar sadece 2. line'da (Fire & Zayi deposuna) yazılacak
+            if ($eksikFazlaQty < 0) {
+                $lineData['U_ASB2B_Damaged'] = 'E';
+            } else {
+                $lineData['U_ASB2B_Damaged'] = '-';
+            }
+            
+            // U_ASB2B_LOST: Enum değerleri ('0', '1', '2')
+            // Eksik/Fazla miktar negatif ise (eksik varsa) → '2' (Zayi)
+            // Eksik/Fazla miktar pozitif ise (fazla varsa) → '1' (Fire)
+            // Eksik/Fazla miktar 0 ise → kaydetme
+            $commentsParts = [];
+            if (!empty($notes)) {
+                $commentsParts[] = $notes;
+            }
+            
+            // Kusurlu miktarı Comments'e ekle
+            if ($damagedQty > 0) {
+                $commentsParts[] = "Kusurlu: {$damagedQty} adet";
+            }
+            
+            if ($eksikFazlaQty < 0) {
+                // Eksik varsa → Zayi
+                $lineData['U_ASB2B_LOST'] = '2';
+                $zayiMiktar = abs($eksikFazlaQty); // Mutlak değer
+                $commentsParts[] = "Zayi: {$zayiMiktar} adet";
+            } elseif ($eksikFazlaQty > 0) {
+                // Fazla varsa → Fire
+                $lineData['U_ASB2B_LOST'] = '1';
+            }
+            // 0 ise kaydetme
+            
+            // Comments'i birleştir
+            if (!empty($commentsParts)) {
+                $lineData['U_ASB2B_Comments'] = implode(' | ', $commentsParts);
+            }
+            
             $transferLines[] = $lineData;
         }
         
         // Eksik/Fazla miktar varsa → Sevkiyat deposuna
-        if ($eksikFazlaQty != 0) {
+        // NOT: Eksik miktar için line oluşturulmayacak (sadece sevkiyat deposunda kalacak)
+        /* Sadece fazla miktar için line oluşturulacak
+        if ($eksikFazlaQty > 0) { // Sadece fazla miktar (pozitif)
             if (empty($sevkiyatDepo)) {
                 $errorMsg = "Eksik/Fazla miktar var ancak sevkiyat deposu bulunamadı! Lütfen sistem yöneticisine başvurun.";
                 break;
@@ -210,30 +297,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'U_ASB2B_QutMaster' => (int)$doc // InventoryTransferRequest DocEntry
             ];
             
-            // Eksik ise (negatif) → Zayi
-            if ($eksikFazlaQty < 0) {
-                $eksikFazlaLine['U_ASB2B_LOST'] = '2'; // Zayi
-                $eksikFazlaLine['U_ASB2B_Damaged'] = 'E'; // Eksik
-            } else {
-                // Fazla ise (pozitif) → Fire
-                $eksikFazlaLine['U_ASB2B_LOST'] = '1'; // Fire
-            }
+            // Eksik miktar için line oluşturulmayacak (yorum satırına alındı)
+            // Eksik ise (negatif) → Line oluşturma, zaten sevkiyat deposunda kalmış
+            // if ($eksikFazlaQty < 0) {
+            //     $eksikFazlaLine['U_ASB2B_LOST'] = '2'; // Zayi
+            //     $eksikFazlaLine['U_ASB2B_Damaged'] = 'E'; // Eksik
+            // } else {
+            //     // Fazla ise (pozitif) → Fire
+            //     $eksikFazlaLine['U_ASB2B_LOST'] = '1'; // Fire
+            // }
+            
+            // Sadece fazla miktar için (pozitif)
+            $eksikFazlaLine['U_ASB2B_LOST'] = '1'; // Fire
             
             $eksikFazlaComments = [];
             if (!empty($notes)) {
                 $eksikFazlaComments[] = $notes;
             }
-            if ($eksikFazlaQty < 0) {
-                $eksikFazlaComments[] = "Eksik: {$eksikFazlaMiktar} adet";
-            } else {
-                $eksikFazlaComments[] = "Fazla: {$eksikFazlaMiktar} adet";
-            }
+            $eksikFazlaComments[] = "Fazla: {$eksikFazlaMiktar} adet";
             $eksikFazlaComments[] = 'Sevkiyat Deposu';
             $eksikFazlaLine['U_ASB2B_Comments'] = implode(' | ', $eksikFazlaComments);
             
             $transferLines[] = $eksikFazlaLine;
         }
-        
+        */
         // Kusurlu miktar varsa → Fire & Zayi deposuna
         if ($damagedQty > 0) {
             if (empty($fireZayiWarehouse)) {
@@ -241,13 +328,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $errorMsg = "Kusurlu miktar var ancak Fire & Zayi deposu bulunamadı! Lütfen sistem yöneticisine başvurun.";
                 break; 
             }
+            $itemCost = 0;
+            try {
+                $itemWhQuery = "Items('{$itemCode}')/ItemWarehouseInfoCollection?\$filter=WarehouseCode eq '{$toWarehouse}'";
+                $itemWhResult = $sap->get($itemWhQuery);
+                $itemWhData = $itemWhResult['response'] ?? null;
+                
+                if ($itemWhData && isset($itemWhData['value']) && !empty($itemWhData['value'])) {
+                    $whInfo = $itemWhData['value'][0];
+                    $itemCost = floatval($whInfo['AveragePrice'] ?? $whInfo['LastPrice'] ?? 0);
+                }
+                
+                if ($itemCost == 0) {
+                    $itemQuery = "Items('{$itemCode}')?\$select=ItemCode,StandardPrice,LastPurchasePrice,AvgPrice";
+                    $itemResult = $sap->get($itemQuery);
+                    $itemData = $itemResult['response'] ?? null;
+                    
+                    if ($itemData) {
+                        $itemCost = floatval($itemData['AvgPrice'] ?? $itemData['StandardPrice'] ?? $itemData['LastPurchasePrice'] ?? 0);
+                    }
+                }
+                
+                if ($itemCost == 0) {
+                    $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
+                }
+            } catch (Exception $e) {
+                $itemCost = floatval($line['Price'] ?? $line['UnitPrice'] ?? 0);
+            }
             
             // Fire & Zayi deposuna transfer satırı
-            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $fireZayiLineData = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $damagedQty, // Kusurlu miktar
-                'FromWarehouseCode' => $targetWarehouse, // Ana depodan Fire & Zayi deposuna
+                'FromWarehouseCode' => $toWarehouse,
                 'WarehouseCode' => $fireZayiWarehouse, // Fire & Zayi deposu
                 'U_ASB2B_QutMaster' => (int)$doc // InventoryTransferRequest DocEntry
             ];
@@ -302,29 +415,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // FromWarehouse: teslim al transferde kullanılacak olan "ToWarehouse" (requestData'dan gelen)
         // ToWarehouse: teslim al transferde kullanılacak gideceği depo (targetWarehouse)
-        $docNum = $requestData['DocNum'] ?? $doc;
-        
-        // Header'da U_ASB2B_LOST set etmek için: Eğer herhangi bir satırda Fire/Zayi varsa
-        $headerLost = null; // null = normal transfer, '1' = Fire, '2' = Zayi
-        foreach ($transferLines as $line) {
-            $lost = $line['U_ASB2B_LOST'] ?? null;
-            $damaged = $line['U_ASB2B_Damaged'] ?? null;
-            
-            // Eğer satırda Fire/Zayi varsa, header'a da set et
-            if ($lost == '1' || $lost == '2') {
-                // Eğer daha önce Zayi bulunduysa ve şimdi Fire bulunuyorsa, Fire öncelikli
-                // Eğer daha önce Fire bulunduysa ve şimdi Zayi bulunuyorsa, Fire kalır
-                if ($headerLost === null || $headerLost == '2') {
-                    $headerLost = $lost;
-                }
-            } elseif ($damaged == 'K' || $damaged == 'E') {
-                // Kusurlu veya Eksik varsa ama U_ASB2B_LOST yoksa, Zayi olarak işaretle
-                if ($headerLost === null) {
-                    $headerLost = '2'; // Zayi
-                }
-            }
-        }
-        
         $stockTransferPayload = [
             'FromWarehouse' => $toWarehouse, // requestData'dan gelen ToWarehouse
             'ToWarehouse' => $targetWarehouse, // U_ASB2B_MAIN=1 olan depo
@@ -336,34 +426,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'U_ASB2B_TYPE' => 'MAIN',
             'U_ASB2B_User' => $_SESSION["UserName"] ?? '',
             'U_ASB2B_QutMaster' => (int)$doc, // InventoryTransferRequest DocEntry
-            'DocumentReferences' => [
-                [
-                    'RefDocEntr' => (int)$doc,
-                    'RefDocNum' => (int)$docNum,
-                    'RefObjType' => 'rot_InventoryTransferRequest'
-                ]
-            ],
             'StockTransferLines' => $transferLines
         ];
-        
-        // Eğer Fire/Zayi varsa header'a da ekle
-        if ($headerLost !== null) {
-            $stockTransferPayload['U_ASB2B_LOST'] = $headerLost;
-        }
 
         
         $result = $sap->post('StockTransfers', $stockTransferPayload);
         
+        // Debug: POST sonucunu logla
+        error_log("[TESLIM AL] StockTransfer POST RESULT: " . json_encode($result));
+        
         if ($result['status'] == 200 || $result['status'] == 201) {
+            // StockTransfer oluşturulduktan sonra DocEntry'yi al ve kontrol et
+            $stockTransferDocEntry = $result['response']['DocEntry'] ?? null;
+            if ($stockTransferDocEntry) {
+                $test = $sap->get("StockTransfers({$stockTransferDocEntry})");
+                error_log("[DEBUG] StockTransfers({$stockTransferDocEntry}): " . json_encode($test));
+                if (isset($test['response']['U_ASB2B_QutMaster'])) {
+                    error_log("[DEBUG] U_ASB2B_QutMaster değeri: " . $test['response']['U_ASB2B_QutMaster']);
+                } else {
+                    error_log("[DEBUG] U_ASB2B_QutMaster bulunamadı!");
+                }
+            }
+            // StockTransfer oluşturulduktan sonra DocEntry'yi al
+            $stockTransferDocEntry = $result['response']['DocEntry'] ?? null;
+            
+            // InventoryTransferRequest'i güncelle: Status ve Teslimat DocEntry'si
             $updatePayload = [
                 'U_ASB2B_STATUS' => '4'
             ];
+            
             
             $updateResult = $sap->patch("InventoryTransferRequests({$doc})", $updatePayload);
             
             if ($updateResult['status'] == 200 || $updateResult['status'] == 204) {
                 header("Location: AnaDepo.php?msg=ok");
             } else {
+                error_log("[TESLIM AL] StockTransfer başarılı ama status güncellenemedi: " . ($updateResult['status'] ?? 'NO STATUS'));
+                if (isset($updateResult['response']['error'])) {
+                    error_log("[TESLIM AL] Update Error: " . json_encode($updateResult['response']['error']));
+                }
                 header("Location: AnaDepo.php?msg=ok");
             }
             exit;

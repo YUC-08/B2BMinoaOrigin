@@ -30,7 +30,7 @@ if (($fromWarehouseData['status'] ?? 0) == 200) {
 }
 
 // Gideceği Depo listesi (U_ASB2B_MAIN eq '1')
-$toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1'";
+$toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '2'";
 $toWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($toWarehouseFilter) . "&\$orderby=WarehouseCode";
 $toWarehouseData = $sap->get($toWarehouseQuery);
 $toWarehouses = [];
@@ -217,8 +217,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         'Comments' => !empty($comments) ? $comments : 'Tek taraflı sevkiyat',
         'U_ASB2B_BRAN' => $branch,
         'U_AS_OWNR' => $uAsOwnr,
-        'U_ASB2B_STATUS' => '3', // Direkt "Sevk edildi" - onay beklenmez
-        'U_ASB2B_TYPE' => 'TRANSFER',
+        'U_ASB2B_STATUS' => '2', // Direkt "Sevk edildi" - onay beklenmez
+        'U_ASB2B_TYPE' => 'SEVKIYAT',
         'U_ASB2B_User' => $_SESSION["UserName"] ?? '',
         'StockTransferLines' => $stockTransferLines
     ];
@@ -250,8 +250,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         'Comments' => !empty($comments) ? $comments : 'Tek taraflı sevkiyat',
         'U_ASB2B_BRAN' => $branch,
         'U_AS_OWNR' => $uAsOwnr,
-        'U_ASB2B_STATUS' => '3', // Sevk edildi
-        'U_ASB2B_TYPE' => 'TRANSFER',
+        'U_ASB2B_STATUS' => '2', // Sevk edildi
+        'U_ASB2B_TYPE' => 'SEVKIYAT',
         'U_ASB2B_User' => $_SESSION["UserName"] ?? '',
         'U_ASB2B_QutMaster' => (int)$requestDocEntry, // InventoryTransferRequest ile ilişki
         'DocumentReferences' => [

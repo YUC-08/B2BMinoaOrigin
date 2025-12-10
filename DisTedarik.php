@@ -19,7 +19,7 @@ $filterStatus = $_GET['status'] ?? '';
 $filterStartDate = $_GET['start_date'] ?? '';
 $filterEndDate = $_GET['end_date'] ?? '';
 
-// View'den veri çek
+// View'den veri çek (PurchaseRequests)
 $filter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}'";
 if (!empty($filterStatus)) {
     $filter .= " and U_ASB2B_STATUS eq '{$filterStatus}'";
@@ -28,6 +28,65 @@ if (!empty($filterStatus)) {
 $query = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=' . urlencode($filter) . '&$orderby=' . urlencode('RequestNo desc') . '&$top=1000';
 $data = $sap->get($query);
 $allRows = $data['response']['value'] ?? [];
+
+// PurchaseDeliveryNotes'ları çek (U_AS2B2_NORE = 1 olanlar - kayıt dışı mal)
+$deliveryNotesFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_AS2B2_NORE eq '1'";
+$deliveryNotesQuery = "PurchaseDeliveryNotes?\$select=DocEntry,DocNum,DocDate,U_ASB2B_NumAtCard,U_ASB2B_BRAN,U_AS_OWNR,U_AS2B2_NORE&\$filter=" . urlencode($deliveryNotesFilter) . "&\$orderby=DocEntry desc&\$top=1000";
+$deliveryNotesData = $sap->get($deliveryNotesQuery);
+$deliveryNotesRows = $deliveryNotesData['response']['value'] ?? [];
+
+// PurchaseDeliveryNotes'ları PurchaseRequest formatına dönüştür
+foreach ($deliveryNotesRows as $dnRow) {
+    $dnDocEntry = $dnRow['DocEntry'] ?? '';
+    $dnDocNum = $dnRow['DocNum'] ?? '';
+    $dnDocDate = $dnRow['DocDate'] ?? '';
+    $dnNumAtCard = $dnRow['U_ASB2B_NumAtCard'] ?? '';
+    
+    // PurchaseDeliveryNotes için sahte bir RequestNo oluştur (DN- prefix ile)
+    $fakeRequestNo = 'DN-' . $dnDocEntry; // DN = Delivery Note
+    
+    // PurchaseRequest formatında satır oluştur
+    $allRows[] = [
+        'RequestNo' => $fakeRequestNo,
+        'DocDate' => $dnDocDate,
+        'U_ASB2B_STATUS' => '4', // Tamamlandı (kayıt dışı mal için)
+        'U_ASB2B_ORNO' => $dnDocNum, // PurchaseDeliveryNotes DocNum
+        'U_ASB2B_ORDT' => $dnDocDate,
+        'U_AS2B2_NORE' => '1', // Kayıt dışı işareti
+        'U_ASB2B_NumAtCard' => $dnNumAtCard, // İrsaliye No
+        'IsDeliveryNote' => true, // PurchaseDeliveryNotes olduğunu işaretle
+        'DocEntry' => $dnDocEntry // PurchaseDeliveryNotes DocEntry
+    ];
+}
+
+// PurchaseDeliveryNotes'ları çek (U_AS2B2_NORE = 1 olanlar - kayıt dışı mal)
+$deliveryNotesFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_AS2B2_NORE eq '1'";
+$deliveryNotesQuery = "PurchaseDeliveryNotes?\$select=DocEntry,DocNum,DocDate,U_ASB2B_NumAtCard,U_ASB2B_BRAN,U_AS_OWNR,U_AS2B2_NORE&\$filter=" . urlencode($deliveryNotesFilter) . "&\$orderby=DocEntry desc&\$top=1000";
+$deliveryNotesData = $sap->get($deliveryNotesQuery);
+$deliveryNotesRows = $deliveryNotesData['response']['value'] ?? [];
+
+// PurchaseDeliveryNotes'ları PurchaseRequest formatına dönüştür
+foreach ($deliveryNotesRows as $dnRow) {
+    $dnDocEntry = $dnRow['DocEntry'] ?? '';
+    $dnDocNum = $dnRow['DocNum'] ?? '';
+    $dnDocDate = $dnRow['DocDate'] ?? '';
+    $dnNumAtCard = $dnRow['U_ASB2B_NumAtCard'] ?? '';
+    
+    // PurchaseDeliveryNotes için sahte bir RequestNo oluştur (DocEntry kullan)
+    $fakeRequestNo = 'DN-' . $dnDocEntry; // DN = Delivery Note
+    
+    // PurchaseRequest formatında satır oluştur
+    $allRows[] = [
+        'RequestNo' => $fakeRequestNo,
+        'DocDate' => $dnDocDate,
+        'U_ASB2B_STATUS' => '4', // Tamamlandı (kayıt dışı mal için)
+        'U_ASB2B_ORNO' => $dnDocNum, // PurchaseDeliveryNotes DocNum
+        'U_ASB2B_ORDT' => $dnDocDate,
+        'U_AS2B2_NORE' => '1', // Kayıt dışı işareti 
+        'U_ASB2B_NumAtCard' => $dnNumAtCard, // İrsaliye No
+        'IsDeliveryNote' => true // PurchaseDeliveryNotes olduğunu işaretle
+    ];
+}
 
 $statusPriorityMap = [
     '4' => 5,
@@ -144,10 +203,17 @@ foreach ($allRows as $row) {
     $requestNo = $row['RequestNo'] ?? '';
     if (empty($requestNo)) continue;
     
+    $isDeliveryNote = isset($row['IsDeliveryNote']) && $row['IsDeliveryNote'] === true;
+    
     $status = isset($row['U_ASB2B_STATUS']) ? (string)$row['U_ASB2B_STATUS'] : null;
     // Status null veya boş ise default olarak '1' (Onay bekleniyor) yap
     if (empty($status) || $status === 'null' || $status === '') {
         $status = '1';
+    }
+    
+    // PurchaseDeliveryNotes (U_AS2B2_NORE = 1) için status '4' (Tamamlandı)
+    if ($isDeliveryNote || (isset($row['U_AS2B2_NORE']) && $row['U_AS2B2_NORE'] === '1')) {
+        $status = '4'; // Tamamlandı
     }
     
     $orderNo = trim($row['U_ASB2B_ORNO'] ?? '');
@@ -155,7 +221,8 @@ foreach ($allRows as $row) {
     $docDateValue = extractDocDateFromRow($row);
     
     // Sipariş no varsa ama status hala '1' (Onay bekleniyor) ise, status'u '3' (Sevk edildi) olarak güncelle
-    if ($orderNo !== '' && $orderNo !== '-' && ($status === '1' || empty($status))) {
+    // Ancak PurchaseDeliveryNotes için bu kontrol yapılmamalı (zaten '4' olarak ayarlandı)
+    if (!$isDeliveryNote && $orderNo !== '' && $orderNo !== '-' && ($status === '1' || empty($status))) {
         $status = '3'; // Sevk edildi
     }
     
@@ -166,7 +233,11 @@ foreach ($allRows as $row) {
         'DocDate' => $docDateValue,
         'OrderDate' => $orderDateValue,
         'Status' => $status,
-        'HasOrder' => ($orderNo !== '' && $orderNo !== '-')
+        'HasOrder' => ($orderNo !== '' && $orderNo !== '-'),
+        'IsDeliveryNote' => $isDeliveryNote,
+        'U_AS2B2_NORE' => $row['U_AS2B2_NORE'] ?? null,
+        'U_ASB2B_NumAtCard' => $row['U_ASB2B_NumAtCard'] ?? null,
+        'DocEntry' => $row['DocEntry'] ?? null
     ];
 }
 
@@ -864,9 +935,18 @@ body {
                                     $hasOrder = !empty($rowData['HasOrder']);
                                     $docDate = !empty($docDateValue) ? formatDate($docDateValue) : '-';
                                     $orderDate = !empty($orderDateValue) ? formatDate($orderDateValue) : '-';
-                                    $detailUrl = 'DisTedarik-Detay.php?requestNo=' . urlencode($requestNo);
-                                    if ($hasOrder && $orderNoDisplay !== '-' && $orderNoDisplay !== '') {
-                                        $detailUrl .= '&orderNo=' . urlencode($orderNoDisplay);
+                                    // PurchaseDeliveryNotes için özel URL (DN- prefix ile)
+                                    $isDeliveryNote = isset($rowData['IsDeliveryNote']) && $rowData['IsDeliveryNote'] === true;
+                                    $docEntry = $rowData['DocEntry'] ?? null;
+                                    
+                                    if ($isDeliveryNote && !empty($docEntry)) {
+                                        // PurchaseDeliveryNotes detay sayfasına yönlendir
+                                        $detailUrl = 'DisTedarik-Detay.php?deliveryNote=' . urlencode($docEntry);
+                                    } else {
+                                        $detailUrl = 'DisTedarik-Detay.php?requestNo=' . urlencode($requestNo);
+                                        if ($hasOrder && $orderNoDisplay !== '-' && $orderNoDisplay !== '') {
+                                            $detailUrl .= '&orderNo=' . urlencode($orderNoDisplay);
+                                        }
                                     }
                                 ?>
                                 <?php

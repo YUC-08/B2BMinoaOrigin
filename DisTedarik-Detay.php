@@ -9,9 +9,102 @@ $sap = new SAPConnect();
 
 $requestNo = $_GET['requestNo'] ?? '';
 $orderNo = $_GET['orderNo'] ?? null;
+$deliveryNoteDocEntry = $_GET['deliveryNote'] ?? null;
 
-if (empty($requestNo)) {
-    header("Location: DisTedarik.php");
+
+// POST: PurchaseOrders oluştur
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create_order') {
+    header('Content-Type: application/json');
+    
+    $purchaseRequestDocEntry = intval($_POST['requestDocEntry'] ?? 0);
+    $cardCode = trim($_POST['cardCode'] ?? '');
+    $teslimatNo = trim($_POST['teslimatNo'] ?? '');
+    $lines = json_decode($_POST['lines'] ?? '[]', true);
+    
+    if (empty($purchaseRequestDocEntry) || empty($cardCode) || empty($lines)) {
+        echo json_encode(['success' => false, 'message' => 'Eksik bilgi: Request DocEntry, CardCode ve en az bir kalem gereklidir']);
+        exit;
+    }
+    
+    // PurchaseRequest'i çek (CardCode ve DocumentLines için)
+    $requestQuery = "PurchaseRequests({$purchaseRequestDocEntry})?\$expand=DocumentLines";
+    $requestData = $sap->get($requestQuery);
+    
+    if (($requestData['status'] ?? 0) != 200) {
+        echo json_encode(['success' => false, 'message' => 'PurchaseRequest bulunamadı!']);
+        exit;
+    }
+    
+    $requestResponse = $requestData['response'] ?? [];
+    
+    // CardCode'u PurchaseRequest'ten al (eğer POST'ta gönderilmemişse)
+    if (empty($cardCode)) {
+        $cardCode = $requestResponse['CardCode'] ?? '';
+    }
+    
+    if (empty($cardCode)) {
+        echo json_encode(['success' => false, 'message' => 'CardCode bulunamadı! PurchaseRequest\'te CardCode tanımlı olmalıdır.']);
+        exit;
+    }
+    
+    $requestLines = $requestResponse['DocumentLines'] ?? [];
+    
+    // DocumentLines oluştur
+    $documentLines = [];
+    foreach ($lines as $line) {
+        $lineNum = intval($line['lineNum'] ?? 0);
+        $quantity = floatval($line['quantity'] ?? 0);
+        
+        if ($quantity > 0 && $lineNum >= 0) {
+            $documentLines[] = [
+                'BaseType' => 1470000113, // PurchaseRequest için
+                'BaseEntry' => $purchaseRequestDocEntry, // PurchaseRequest.DocEntry
+                'BaseLine' => $lineNum, // PurchaseRequestLine.LineNum
+                'Quantity' => $quantity // Kullanıcının girdiği PO miktarı
+            ];
+        }
+    }
+    
+    if (empty($documentLines)) {
+        echo json_encode(['success' => false, 'message' => 'Miktarı girilen kalem bulunamadı!']);
+        exit;
+    }
+    
+    // PurchaseOrders payload
+    $payload = [
+        'CardCode' => $cardCode, // PurchaseRequest'ten alınan CardCode
+        'U_ASB2B_NumAtCard' => $teslimatNo, // Teslimat numarası
+        'DocumentLines' => $documentLines
+    ];
+    
+    $result = $sap->post('PurchaseOrders', $payload);
+    
+    if ($result['status'] == 200 || $result['status'] == 201) {
+        $orderDocEntry = $result['response']['DocEntry'] ?? null;
+        $orderDocNum = $result['response']['DocNum'] ?? null;
+        
+        // PurchaseRequest'i güncelle: U_ASB2B_ORNO ve U_ASB2B_STATUS
+        if ($orderDocNum) {
+            $updatePayload = [
+                'U_ASB2B_ORNO' => (string)$orderDocNum,
+                'U_ASB2B_STATUS' => '3' // Sevk edildi
+            ];
+            $updateResult = $sap->patch("PurchaseRequests({$purchaseRequestDocEntry})", $updatePayload);
+        }
+        
+        echo json_encode([
+            'success' => true, 
+            'message' => 'Sipariş başarıyla oluşturuldu!', 
+            'orderDocEntry' => $orderDocEntry,
+            'orderDocNum' => $orderDocNum
+        ]);
+    } else {
+        $errorMsg = 'Sipariş oluşturulamadı: HTTP ' . ($result['status'] ?? 'NO STATUS');
+        if (isset($result['response']['error'])) {
+            $errorMsg .= ' - ' . json_encode($result['response']['error']);
+        }
+        echo json_encode(['success' => false, 'message' => $errorMsg, 'response' => $result]);
+    }
     exit;
 }
 
@@ -24,7 +117,77 @@ $allOrdersForRequest = [];
 $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
 $branch = $_SESSION["Branch2"]["Name"] ?? $_SESSION["WhsCode"] ?? '';
 
-if ($isPurchaseOrder) {
+// DEBUG: PurchaseDeliveryNotes detayı için
+$debugInfo = [];
+
+// PurchaseDeliveryNotes detayı (U_AS2B2_NORE = 1)
+if ($isDeliveryNote && !empty($deliveryNoteDocEntry)) {
+    $debugInfo['step'] = 'PurchaseDeliveryNotes Detay';
+    $debugInfo['deliveryNoteDocEntry'] = $deliveryNoteDocEntry;
+    $debugInfo['isDeliveryNote'] = $isDeliveryNote;
+    
+    // PurchaseDeliveryNotes detayını çek
+    $dnQuery = "PurchaseDeliveryNotes({$deliveryNoteDocEntry})?\$select=DocEntry,DocNum,DocDate,U_ASB2B_NumAtCard,U_ASB2B_BRAN,U_AS_OWNR,U_AS2B2_NORE,U_ASB2B_STATUS,CardCode";
+    $debugInfo['query'] = $dnQuery;
+    $dnData = $sap->get($dnQuery);
+    
+    $debugInfo['response_status'] = $dnData['status'] ?? 'NO STATUS';
+    $debugInfo['has_response'] = isset($dnData['response']);
+    $debugInfo['response_keys'] = isset($dnData['response']) ? array_keys($dnData['response']) : [];
+    
+    if (($dnData['status'] ?? 0) == 200 && isset($dnData['response'])) {
+        $detailData = $dnData['response'];
+        $dnU_AS2B2_NORE = $detailData['U_AS2B2_NORE'] ?? null;
+        $debugInfo['U_AS2B2_NORE'] = $dnU_AS2B2_NORE;
+        $debugInfo['detailData_keys'] = array_keys($detailData);
+        
+        // U_AS2B2_NORE = 1 ise kayıt dışı mal (veya direkt PurchaseDeliveryNotes ise)
+        // PurchaseDeliveryNotes detayına tıklandığında her durumda göster
+        if ($dnU_AS2B2_NORE === '1' || $dnU_AS2B2_NORE === 1 || empty($dnU_AS2B2_NORE)) { // U_AS2B2_NORE = 1 veya boş ise göster
+            // DocumentLines çek
+            $dnLinesQuery = "PurchaseDeliveryNotes({$deliveryNoteDocEntry})/DocumentLines";
+            $debugInfo['lines_query'] = $dnLinesQuery;
+            $dnLinesData = $sap->get($dnLinesQuery);
+            
+            $debugInfo['lines_response_status'] = $dnLinesData['status'] ?? 'NO STATUS';
+            $debugInfo['lines_has_response'] = isset($dnLinesData['response']);
+            
+            if (($dnLinesData['status'] ?? 0) == 200 && isset($dnLinesData['response'])) {
+                $dnResp = $dnLinesData['response'];
+                $debugInfo['lines_response_keys'] = array_keys($dnResp);
+                
+                if (isset($dnResp['value']) && is_array($dnResp['value'])) {
+                    $lines = $dnResp['value'];
+                    $debugInfo['lines_source'] = 'value';
+                    $debugInfo['lines_count'] = count($lines);
+                } elseif (isset($dnResp['DocumentLines']) && is_array($dnResp['DocumentLines'])) {
+                    $lines = $dnResp['DocumentLines'];
+                    $debugInfo['lines_source'] = 'DocumentLines';
+                    $debugInfo['lines_count'] = count($lines);
+                } else {
+                    $debugInfo['lines_error'] = 'Lines formatı beklenmiyor';
+                }
+            } else {
+                $debugInfo['lines_error'] = 'Lines çekilemedi: HTTP ' . ($dnLinesData['status'] ?? 'NO STATUS');
+                if (isset($dnLinesData['response']['error'])) {
+                    $debugInfo['lines_error_detail'] = $dnLinesData['response']['error'];
+                }
+            }
+        } else {
+            $errorMsg = "Bu belge kayıt dışı mal değil!";
+            $debugInfo['error'] = 'U_AS2B2_NORE kontrolü başarısız: ' . var_export($dnU_AS2B2_NORE, true);
+        }
+    } else {
+        $errorMsg = "İrsaliye detayları alınamadı! HTTP " . ($dnData['status'] ?? 'NO STATUS');
+        if (isset($dnData['response']['error'])) {
+            $errorMsg .= ' - ' . json_encode($dnData['response']['error']);
+            $debugInfo['error_detail'] = $dnData['response']['error'];
+        }
+        $debugInfo['error'] = 'PurchaseDeliveryNotes detayı çekilemedi';
+    }
+} elseif ($isPurchaseOrder) {
+    $debugInfo['step'] = 'PurchaseOrder Detay';
+    $debugInfo['orderNo'] = $orderNo;
     // Sipariş detayı
     $orderQuery = 'PurchaseOrders(' . intval($orderNo) . ')';
     $orderData = $sap->get($orderQuery);
@@ -67,12 +230,14 @@ if ($isPurchaseOrder) {
         $errorMsg = "Sipariş detayları alınamadı!";
     }
 } else {
-    // View'den tüm kayıtları çek (OrderNo olan ve olmayan)
-    $itemsWithOrderNo = []; // OrderNo'ya sahip ItemCode'lar [OrderNo => [ItemCode1, ItemCode2, ...]]
-    $allOrderNos = []; // Tüm OrderNo'lar (sipariş numaraları)
-    
-    if (!empty($uAsOwnr) && !empty($branch)) {
-        $requestNoInt = intval($requestNo);
+    // PurchaseRequest detayı
+    if (!empty($requestNo)) {
+        // View'den tüm kayıtları çek (OrderNo olan ve olmayan)
+        $itemsWithOrderNo = []; // OrderNo'ya sahip ItemCode'lar [OrderNo => [ItemCode1, ItemCode2, ...]]
+        $allOrderNos = []; // Tüm OrderNo'lar (sipariş numaraları)
+        
+        if (!empty($uAsOwnr) && !empty($branch)) {
+            $requestNoInt = intval($requestNo);
         $viewFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and RequestNo eq {$requestNoInt}";
         $viewQuery = 'view.svc/ASB2B_PurchaseRequestList_B1SLQuery?$filter=' . urlencode($viewFilter) . '&$orderby=' . urlencode('U_ASB2B_ORNO desc');
         $viewData = $sap->get($viewQuery);
@@ -142,14 +307,70 @@ if ($isPurchaseOrder) {
     }
     
     $requestQuery = 'PurchaseRequests(' . intval($requestNo) . ')';
+    $debugInfo['request_query'] = $requestQuery;
     $requestData = $sap->get($requestQuery);
     
-    if (($requestData['status'] ?? 0) == 200 && isset($requestData['response'])) {
+    $debugInfo['request_response_status'] = $requestData['status'] ?? 'NO STATUS';
+    $debugInfo['request_has_response'] = isset($requestData['response']);
+    
+    // Eğer PurchaseRequest bulunamadıysa (404), PurchaseDeliveryNotes'a bak (U_AS2B2_NORE = 1 olanlar)
+    if (($requestData['status'] ?? 0) == 404) {
+        $debugInfo['step'] = 'PurchaseRequest bulunamadı (404), PurchaseDeliveryNotes kontrol ediliyor';
+        $deliveryNoteDocEntry = intval($requestNo);
+        $dnQuery = "PurchaseDeliveryNotes({$deliveryNoteDocEntry})?\$select=DocEntry,DocNum,DocDate,U_ASB2B_NumAtCard,U_ASB2B_BRAN,U_AS_OWNR,U_AS2B2_NORE,U_ASB2B_STATUS,CardCode";
+        $debugInfo['delivery_note_query'] = $dnQuery;
+        $dnData = $sap->get($dnQuery);
+        
+        $debugInfo['delivery_note_response_status'] = $dnData['status'] ?? 'NO STATUS';
+        $debugInfo['delivery_note_has_response'] = isset($dnData['response']);
+        
+        if (($dnData['status'] ?? 0) == 200 && isset($dnData['response'])) {
+            $detailData = $dnData['response'];
+            $dnU_AS2B2_NORE = $detailData['U_AS2B2_NORE'] ?? null;
+            $debugInfo['U_AS2B2_NORE'] = $dnU_AS2B2_NORE;
+            
+            // U_AS2B2_NORE = 1 ise kayıt dışı mal
+            if ($dnU_AS2B2_NORE === '1' || $dnU_AS2B2_NORE === 1) {
+                // DocumentLines çek
+                $dnLinesQuery = "PurchaseDeliveryNotes({$deliveryNoteDocEntry})/DocumentLines";
+                $debugInfo['lines_query'] = $dnLinesQuery;
+                $dnLinesData = $sap->get($dnLinesQuery);
+                
+                $debugInfo['lines_response_status'] = $dnLinesData['status'] ?? 'NO STATUS';
+                $debugInfo['lines_has_response'] = isset($dnLinesData['response']);
+                
+                if (($dnLinesData['status'] ?? 0) == 200 && isset($dnLinesData['response'])) {
+                    $dnResp = $dnLinesData['response'];
+                    if (isset($dnResp['value']) && is_array($dnResp['value'])) {
+                        $lines = $dnResp['value'];
+                        $debugInfo['lines_source'] = 'value';
+                        $debugInfo['lines_count'] = count($lines);
+                    } elseif (isset($dnResp['DocumentLines']) && is_array($dnResp['DocumentLines'])) {
+                        $lines = $dnResp['DocumentLines'];
+                        $debugInfo['lines_source'] = 'DocumentLines';
+                        $debugInfo['lines_count'] = count($lines);
+                    }
+                }
+            } else {
+                $errorMsg = "Bu belge kayıt dışı mal değil (U_AS2B2_NORE != 1)!";
+                $debugInfo['error'] = 'U_AS2B2_NORE kontrolü başarısız: ' . var_export($dnU_AS2B2_NORE, true);
+            }
+        } else {
+            $errorMsg = "PurchaseRequest ve PurchaseDeliveryNotes bulunamadı!";
+            $debugInfo['error'] = 'PurchaseDeliveryNotes da bulunamadı: HTTP ' . ($dnData['status'] ?? 'NO STATUS');
+        }
+    } elseif (($requestData['status'] ?? 0) == 200 && isset($requestData['response'])) {
         $detailData = $requestData['response'];
         $requestDocEntry = $detailData['DocEntry'] ?? intval($requestNo);
+        $debugInfo['requestDocEntry'] = $requestDocEntry;
+        $debugInfo['detailData_keys'] = array_keys($detailData);
         
         $linesQuery = "PurchaseRequests({$requestDocEntry})/DocumentLines";
+        $debugInfo['lines_query'] = $linesQuery;
         $linesData = $sap->get($linesQuery);
+        
+        $debugInfo['lines_response_status'] = $linesData['status'] ?? 'NO STATUS';
+        $debugInfo['lines_has_response'] = isset($linesData['response']);
         
         if (($linesData['status'] ?? 0) == 200 && isset($linesData['response'])) {
             $resp = $linesData['response'];
@@ -194,6 +415,7 @@ if ($isPurchaseOrder) {
         }
     } else {
         $errorMsg = "Talep detayları alınamadı!";
+    }
     }
 }
 
@@ -608,6 +830,32 @@ body {
             <?php if ($errorMsg || !$detailData): ?>
                 <div class="card" style="background: #fee2e2; border: 2px solid #ef4444;">
                     <p style="color: #991b1b; font-weight: 600;"><?= htmlspecialchars($errorMsg ?: 'Detay bilgileri alınamadı!') ?></p>
+                </div>
+            <?php endif; ?>
+            
+            <?php if (!empty($debugInfo)): ?>
+                <div class="card" style="background: #f0f9ff; border: 2px solid #0ea5e9; margin-bottom: 1.5rem;">
+                    <h3 style="color: #0369a1; margin-bottom: 1rem; font-size: 1.1rem; padding: 0.5rem;">🔍 DEBUG BİLGİLERİ</h3>
+                    <div style="background: white; padding: 1rem; border-radius: 0.5rem; font-family: 'Courier New', monospace; font-size: 0.85rem; margin: 0 0.5rem 0.5rem 0.5rem;">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tbody>
+                                <?php foreach ($debugInfo as $key => $value): ?>
+                                    <tr style="border-bottom: 1px solid #e5e7eb;">
+                                        <td style="padding: 0.5rem; font-weight: 600; color: #0369a1; width: 200px; vertical-align: top;">
+                                            <?= htmlspecialchars($key) ?>:
+                                        </td>
+                                        <td style="padding: 0.5rem; color: #1f2937; word-break: break-all;">
+                                            <?php if (is_array($value) || is_object($value)): ?>
+                                                <pre style="margin: 0; white-space: pre-wrap; background: #f9fafb; padding: 0.5rem; border-radius: 0.25rem; max-height: 300px; overflow-y: auto;"><?= htmlspecialchars(json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) ?></pre>
+                                            <?php else: ?>
+                                                <?= htmlspecialchars(var_export($value, true)) ?>
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             <?php endif; ?>
             

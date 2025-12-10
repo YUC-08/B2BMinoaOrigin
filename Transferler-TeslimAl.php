@@ -170,27 +170,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $outgoingStockTransferInfo = $sevkList[0] ?? null;
     
     if ($outgoingStockTransferInfo) {
-        $stLines = $outgoingStockTransferInfo['StockTransferLines'] ?? [];
+        $stDocEntry = $outgoingStockTransferInfo['DocEntry'] ?? null;
         
-        foreach ($stLines as $stLine) {
-            $itemCode = $stLine['ItemCode'] ?? '';
-            $qty = (float)($stLine['Quantity'] ?? 0);
+        if ($stDocEntry) {
+            // StockTransferLines'ı ayrı query ile çek
+            $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
+            $stLinesData = $sap->get($stLinesQuery);
             
-            if ($itemCode === '' || $qty <= 0) {
-                continue;
+            if (($stLinesData['status'] ?? 0) == 200) {
+                $stLinesResponse = $stLinesData['response'] ?? null;
+                $stLines = [];
+                
+                if (isset($stLinesResponse['value']) && is_array($stLinesResponse['value'])) {
+                    $stLines = $stLinesResponse['value'];
+                } elseif (is_array($stLinesResponse) && !isset($stLinesResponse['value'])) {
+                    $stLines = $stLinesResponse;
+                }
+                
+                foreach ($stLines as $stLine) {
+                    $itemCode = $stLine['ItemCode'] ?? '';
+                    $qty = (float)($stLine['Quantity'] ?? 0);
+                    
+                    if ($itemCode === '' || $qty <= 0) {
+                        continue;
+                    }
+                    
+                    // Fire/Zayi'yi filtrele
+                    $lost = trim($stLine['U_ASB2B_LOST'] ?? '');
+                    $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
+                    if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
+                        continue;
+                    }
+                    
+                    if (!isset($sevkMiktarMap[$itemCode])) {
+                        $sevkMiktarMap[$itemCode] = 0;
+                    }
+                    $sevkMiktarMap[$itemCode] += $qty;
+                }
             }
-            
-            // Fire/Zayi'yi filtrele
-            $lost = trim($stLine['U_ASB2B_LOST'] ?? '');
-            $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
-            if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
-                continue;
-            }
-            
-            if (!isset($sevkMiktarMap[$itemCode])) {
-                $sevkMiktarMap[$itemCode] = 0;
-            }
-            $sevkMiktarMap[$itemCode] += $qty;
+        }
+    }
+    
+    // Eğer sevk miktarı bulunamazsa, talep miktarını kullan (eksik/fazla = 0 olacak)
+    foreach ($lines as $line) {
+        $itemCode = $line['ItemCode'] ?? '';
+        if ($itemCode === '') continue;
+        
+        if (!isset($sevkMiktarMap[$itemCode]) || $sevkMiktarMap[$itemCode] == 0) {
+            // Sevk miktarı bulunamadı, talep miktarını kullan
+            $quantity = floatval($line['Quantity'] ?? 0);
+            $sevkMiktarMap[$itemCode] = $quantity;
         }
     }
 
@@ -467,27 +496,44 @@ $sevkList = $sevkData['response']['value'] ?? [];
 $outgoingStockTransferInfo = $sevkList[0] ?? null;
 
 if ($outgoingStockTransferInfo) {
-    $stLines = $outgoingStockTransferInfo['StockTransferLines'] ?? [];
+    $stDocEntry = $outgoingStockTransferInfo['DocEntry'] ?? null;
     
-    foreach ($stLines as $stLine) {
-        $itemCode = $stLine['ItemCode'] ?? '';
-        $qty = (float)($stLine['Quantity'] ?? 0);
+    if ($stDocEntry) {
+        // StockTransferLines'ı ayrı query ile çek
+        $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
+        $stLinesData = $sap->get($stLinesQuery);
         
-        if ($itemCode === '' || $qty <= 0) {
-            continue;
+        if (($stLinesData['status'] ?? 0) == 200) {
+            $stLinesResponse = $stLinesData['response'] ?? null;
+            $stLines = [];
+            
+            if (isset($stLinesResponse['value']) && is_array($stLinesResponse['value'])) {
+                $stLines = $stLinesResponse['value'];
+            } elseif (is_array($stLinesResponse) && !isset($stLinesResponse['value'])) {
+                $stLines = $stLinesResponse;
+            }
+            
+            foreach ($stLines as $stLine) {
+                $itemCode = $stLine['ItemCode'] ?? '';
+                $qty = (float)($stLine['Quantity'] ?? 0);
+                
+                if ($itemCode === '' || $qty <= 0) {
+                    continue;
+                }
+                
+                // Fire/Zayi'yi filtrele
+                $lost = trim($stLine['U_ASB2B_LOST'] ?? '');
+                $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
+                if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
+                    continue;
+                }
+                
+                if (!isset($sevkMiktarMap[$itemCode])) {
+                    $sevkMiktarMap[$itemCode] = 0;
+                }
+                $sevkMiktarMap[$itemCode] += $qty;
+            }
         }
-        
-        // Fire/Zayi'yi filtrele
-        $lost = trim($stLine['U_ASB2B_LOST'] ?? '');
-        $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
-        if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
-            continue;
-        }
-        
-        if (!isset($sevkMiktarMap[$itemCode])) {
-            $sevkMiktarMap[$itemCode] = 0;
-        }
-        $sevkMiktarMap[$itemCode] += $qty;
     }
 }
 
@@ -501,7 +547,13 @@ foreach ($lines as &$line) {
     $line['_RequestedQty'] = $baseQty > 0 ? ($quantity / $baseQty) : $quantity;
     
     // Sevk miktarını normalize et (BaseQty'ye böl)
-    $sevkQty = $sevkMiktarMap[$itemCode] ?? 0;
+    // Eğer sevk miktarı bulunamazsa (StockTransfer belgesi yoksa veya SAP tarafından manuel onaylandıysa),
+    // sevk miktarı = talep miktarı olarak varsayılır (eksik/fazla = 0)
+    $sevkQty = $sevkMiktarMap[$itemCode] ?? null;
+    if ($sevkQty === null || $sevkQty == 0) {
+        // Sevk miktarı bulunamadı, talep miktarını kullan (eksik/fazla = 0 olacak)
+        $sevkQty = $quantity;
+    }
     $line['_SevkQty'] = $baseQty > 0 ? ($sevkQty / $baseQty) : $sevkQty;
 }
 unset($line);

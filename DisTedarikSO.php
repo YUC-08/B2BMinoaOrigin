@@ -75,6 +75,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     
     // SAP'de PurchaseRequests için DocumentLines kullanılmalı (StockTransferLines değil!)
     // Insomnia_Requests.md'de örnek: DocumentLines kullanılıyor
+    
+    // Kayıt dışı mod için seçilen vendor
+    $selectedVendor = '';
+    if (isset($_POST['is_unregistered']) && $_POST['is_unregistered'] === '1') {
+        $selectedVendor = trim($_POST['vendor_code'] ?? '');
+    }
+    
     $documentLines = [];
     foreach ($selectedItems as $item) {
         $userQuantity = floatval($item['quantity'] ?? 0);
@@ -82,12 +89,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         
         // Miktar > 0 ve ItemCode boş değil olmalı
         if ($userQuantity > 0 && !empty($itemCode)) {
+            // Kayıt dışı modda seçilen vendor'ı kullan, yoksa defaultVendor'ı kullan
+            $vendorNum = '';
+            if (!empty($selectedVendor)) {
+                $vendorNum = $selectedVendor; // Kayıt dışı modda seçilen vendor
+            } else {
+                $vendorNum = $item['defaultVendor'] ?? ''; // DefaultVendor (view'den)
+            }
+            
             $documentLines[] = [
                 'ItemCode' => $itemCode, // Seçilen kalem
                 'Quantity' => $userQuantity, // İstenen miktar
                 'UoMCode' => $item['uomCode'] ?? '', // Birim
                 'WarehouseCode' => $toWarehouse, // Gideceği depo (talep eden depo)
-                'VendorNum' => $item['defaultVendor'] ?? '' // DefaultVendor (view'den)
+                'VendorNum' => $vendorNum // Kayıt dışı modda seçilen vendor veya defaultVendor
             ];
         }
     }
@@ -120,10 +135,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $vendorCode = trim($_POST['vendor_code'] ?? '');
         $irsaliyeNo = trim($_POST['irsaliye_no'] ?? '');
         
+        // Kayıt dışı malda: PurchaseRequest oluşturulmayacak, direkt PurchaseDeliveryNotes oluşturulacak
+        if (!empty($vendorCode) && !empty($irsaliyeNo)) {
+            // Kayıt dışı mal için ana depo (U_ASB2B_MAIN eq '1') kullanılacak
+            // $fromWarehouse zaten ana depo (U_ASB2B_MAIN eq '1')
+            if (empty($fromWarehouse)) {
+                echo json_encode(['success' => false, 'message' => 'Ana depo (U_ASB2B_MAIN=1) bulunamadı!']);
+                exit;
+            }
+            
+            // PurchaseDeliveryNotes için DocumentLines oluştur
+            $deliveryLines = [];
+            foreach ($documentLines as $line) {
+                $deliveryLines[] = [
+                    'ItemCode' => $line['ItemCode'],
+                    'Quantity' => $line['Quantity'],
+                    'WarehouseCode' => $fromWarehouse, // Kayıt dışı mal için ana depo (U_ASB2B_MAIN='1')
+                    'UoMCode' => $line['UoMCode'] ?? ''
+                ];
+            }
+            
+            // PurchaseDeliveryNotes payload
+            $deliveryPayload = [
+                'CardCode' => $vendorCode, // Tedarikçi/Muhatap
+                'U_ASB2B_NumAtCard' => $irsaliyeNo, // Teslimat numarası (İrsaliye No)
+                'U_ASB2B_BRAN' => $branch, // Login'deki şube
+                'U_AS_OWNR' => $uAsOwnr, // Login'deki AS_OWNR
+                'U_AS2B2_NORE' => '1', // Kayıt dışı için
+                'U_ASB2B_STATUS' => '4', // Tamamlandı (kayıt dışı mal için)
+                'U_ASB2B_User' => $userName, // Login'deki kullanıcı adı
+                'DocumentLines' => $deliveryLines
+            ];
+            
+            // PurchaseDeliveryNotes oluştur
+            $result = $sap->post('PurchaseDeliveryNotes', $deliveryPayload);
+            
+            if ($result['status'] == 200 || $result['status'] == 201) {
+                echo json_encode(['success' => true, 'message' => 'Kayıt dışı mal girişi başarıyla oluşturuldu!', 'data' => $result]);
+            } else {
+                $errorMsg = 'Mal girişi oluşturulamadı: HTTP ' . ($result['status'] ?? 'NO STATUS');
+                if (isset($result['response']['error'])) {
+                    $errorMsg .= ' - ' . json_encode($result['response']['error']);
+                }
+                echo json_encode(['success' => false, 'message' => $errorMsg, 'response' => $result]);
+            }
+            exit;
+        }
+        
+        // Eğer vendorCode veya irsaliyeNo eksikse, normal PurchaseRequest oluştur
         // CardCode ekle (Tedarikçi/Muhatap)
         if (!empty($vendorCode)) {
             $payload['CardCode'] = $vendorCode;
         }
+        
+        // Kayıt dışı için U_AS2B2_NORE = 1
+        $payload['U_AS2B2_NORE'] = '1';
         
         // İrsaliye No'yu Comments'e ekle
         $unregisteredInfo = [];
@@ -976,7 +1042,7 @@ body {
             <h2>Dış Tedarik Talebi Oluştur</h2>
             <div style="display: flex; gap: 12px; align-items: center;">
                 <?php if (!$isUnregisteredMode): ?>
-                <button class="btn btn-secondary" onclick="navigateToUnregistered()" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; border: none; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">📦 Kayıt Dışı Gelen Mal</button>
+                <button class="btn btn-secondary" onclick="navigateToUnregistered()" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; border: none; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">📦 Talebi Olmayan Ürün Girişi</button>
                 <?php else: ?>
                 <button class="btn btn-secondary" onclick="navigateToNormal()" style="background: #3b82f6; color: white; border: none;">📝 Talep Oluştur</button>
                 <?php endif; ?>

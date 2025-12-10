@@ -1034,8 +1034,8 @@ input[type="checkbox"]:focus {
                                 $status = $transfer['U_ASB2B_STATUS'] ?? '0';
                                 $statusText = getStatusText($status);
                                 $statusClass = getStatusClass($status);
-                                // Gelen transferlerde: Hazırlanıyor (2) veya Sevk Edildi (3) durumunda Teslim Al butonu göster
-                                $canReceive = in_array($status, ['2', '3']); // Hazırlanıyor veya Sevk Edildi
+                                // Gelen transferlerde: Sadece Sevk Edildi (3) durumunda Teslim Al butonu göster
+                                $canReceive = ($status === '3'); // Sadece Sevk Edildi
                                 $fromWhsCode = $transfer['FromWarehouse'] ?? '';
                                 $fromWhsName = $warehouseNamesMap[$fromWhsCode] ?? '';
                                 $fromWhsDisplay = $fromWhsCode;

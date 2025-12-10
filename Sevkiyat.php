@@ -66,25 +66,12 @@ function getStatusClass($status) {
 }
 
 // InventoryTransferRequests verilerini çek
-// Tek taraflı sevkiyat: Sadece gönderen (FromWarehouse) veya alan (ToWarehouse) şube görebilir
-// U_ASB2B_TYPE = 'TRANSFER' ve U_ASB2B_STATUS = '3' (Sevk edildi) veya '4' (Tamamlandı) olanlar
+// Tek taraflı sevkiyat: U_ASB2B_TYPE = 'SEVKIYAT' ve U_ASB2B_BRAN = kullanıcının branch'i
 $select = "DocEntry,FromWarehouse,ToWarehouse,DocDate,DueDate,U_ASB2B_NumAtCard,U_ASB2B_STATUS";
 $orderBy = "DocEntry desc";
 
-// Filtreleme: FromWarehouse veya ToWarehouse kullanıcının şubesine ait depolardan biri olmalı
-// U_ASB2B_TYPE = 'TRANSFER' olanlar (sevkiyat kayıtları)
-if (!empty($userWarehouses)) {
-    // OData filter: FromWarehouse veya ToWarehouse kullanıcının depolarından biri olmalı
-    $warehouseFilterParts = [];
-    foreach ($userWarehouses as $whsCode) {
-        $warehouseFilterParts[] = "FromWarehouse eq '{$whsCode}' or ToWarehouse eq '{$whsCode}'";
-    }
-    $warehouseFilterStr = '(' . implode(' or ', $warehouseFilterParts) . ')';
-    $filter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_TYPE eq 'TRANSFER' and {$warehouseFilterStr}";
-} else {
-    // Fallback: Sadece U_ASB2B_BRAN ve TYPE ile filtrele
-    $filter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_TYPE eq 'TRANSFER'";
-}
+// Filtreleme: U_AS_OWNR, U_ASB2B_TYPE = 'SEVKIYAT', U_ASB2B_BRAN = kullanıcının branch'i
+$filter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_TYPE eq 'SEVKIYAT' and U_ASB2B_BRAN eq '{$branch}'";
 
 $query = "InventoryTransferRequests?\$select=" . urlencode($select) . "&\$filter=" . urlencode($filter) . "&\$orderby=" . urlencode($orderBy);
 
@@ -99,19 +86,7 @@ if (($transfersData['status'] ?? 0) == 200) {
     }
 }
 
-// PHP tarafında da filtreleme yap (ekstra güvenlik için)
-if (!empty($userWarehouses) && !empty($transfers)) {
-    $filteredTransfers = [];
-    foreach ($transfers as $transfer) {
-        $fromWhs = $transfer['FromWarehouse'] ?? '';
-        $toWhs = $transfer['ToWarehouse'] ?? '';
-        // FromWarehouse veya ToWarehouse kullanıcının depolarından biri olmalı
-        if (in_array($fromWhs, $userWarehouses) || in_array($toWhs, $userWarehouses)) {
-            $filteredTransfers[] = $transfer;
-        }
-    }
-    $transfers = $filteredTransfers;
-}
+// PHP tarafında ek filtreleme gerekmiyor - sorgu zaten doğru filtreliyor
 ?>
 <!DOCTYPE html>
 <html lang="tr">
