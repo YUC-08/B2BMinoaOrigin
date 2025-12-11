@@ -169,9 +169,8 @@ if ($action === 'approve' && $newStatus === '3') {
                 'Quantity' => $quantity, // Sepetteki "Gönderilecek" miktar × baseQty
                 'FromWarehouseCode' => $fromWarehouse,
                 'WarehouseCode' => $sevkiyatDepo,
-                'BaseType' => 1250000001, // Statik - InventoryTransferRequest için
-                'BaseEntry' => (int)$docEntry, // Talep doc entry
-                'BaseLine' => $baseLine // Talebin LineNum'ı
+                // BaseType/BaseEntry/BaseLine kaldırıldı (kapanmayı engellemek için)
+                'OriginalLineNum' => $baseLine // Satır güncellemesi için saklanıyor
             ];
             
             $stockTransferLines[] = $lineData;
@@ -192,9 +191,8 @@ if ($action === 'approve' && $newStatus === '3') {
                 'Quantity' => $quantity, // Talep edilen miktar (fallback)
                 'FromWarehouseCode' => $fromWarehouse,
                 'WarehouseCode' => $sevkiyatDepo,
-                'BaseType' => 1250000001, // Statik - InventoryTransferRequest için
-                'BaseEntry' => (int)$docEntry, // Talep doc entry
-                'BaseLine' => $lineNum // Talebin LineNum'ı
+                // BaseType/BaseEntry/BaseLine kaldırıldı (kapanmayı engellemek için)
+                'OriginalLineNum' => $lineNum // Satır güncellemesi için saklanıyor
             ];
             
             $stockTransferLines[] = $lineData;
@@ -206,10 +204,7 @@ if ($action === 'approve' && $newStatus === '3') {
         $errorMsg = 'Transfer satırları bulunamadı veya geçersiz!';
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Content-Type: application/json');
-            echo json_encode([
-                'success' => false, 
-                'message' => $errorMsg
-            ]);
+            echo json_encode(['success' => false, 'message' => $errorMsg]);
             exit;
         } else {
             header("Location: Transferler.php?view=outgoing&error=" . urlencode($errorMsg));
@@ -217,6 +212,17 @@ if ($action === 'approve' && $newStatus === '3') {
         }
     }
     
+    // --- DÜZELTME BAŞLANGICI ---
+    // SAP'ye gönderilecek "Temiz" listeyi hazırla.
+    // 'OriginalLineNum' alanını SAP kabul etmez (Hata -1000 sebebi).
+    // Bu yüzden SAP'ye gönderirken bu alanı siliyoruz.
+    $cleanStockTransferLines = array_map(function($line) {
+        if (isset($line['OriginalLineNum'])) {
+            unset($line['OriginalLineNum']); 
+        }
+        return $line;
+    }, $stockTransferLines);
+
     $stockTransferPayload = [
         'FromWarehouse' => $fromWarehouse,
         'ToWarehouse' => $sevkiyatDepo,
@@ -228,10 +234,17 @@ if ($action === 'approve' && $newStatus === '3') {
         'U_ASB2B_TYPE' => 'TRANSFER',
         'U_ASB2B_User' => $userName,
         'U_ASB2B_QutMaster' => (int)$docEntry,
-        'StockTransferLines' => $stockTransferLines
+        'StockTransferLines' => $cleanStockTransferLines // DİKKAT: Temizlenmiş liste kullanılıyor
     ];
+    // --- DÜZELTME BİTİŞİ ---
+    
+    // DEBUG: Payload'ı logla
+    error_log("[TRANSFER-ONAYLA] StockTransfer Payload: " . json_encode($stockTransferPayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
     
     $stockTransferResult = $sap->post('StockTransfers', $stockTransferPayload);
+    
+    // DEBUG: StockTransfer sonucu
+    error_log("[TRANSFER-ONAYLA] StockTransfer Result - Status: " . ($stockTransferResult['status'] ?? 'NO STATUS') . ", Response: " . json_encode($stockTransferResult['response'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
     
     // StockTransfer oluşturma hatası varsa logla ve hata mesajı göster
     if ($stockTransferResult['status'] != 200 && $stockTransferResult['status'] != 201) {
@@ -289,19 +302,79 @@ if ($action === 'approve' && $newStatus === '3') {
     }
     
     // StockTransfer başarıyla oluşturuldu
-    // Status'u '3' (Sevk Edildi) olarak güncelle
-    $newStatus = '3';
     
-    // PATCH request ile status güncelle (StockTransfer başarılı olduktan sonra)
-    $updatePayload = [
-        'U_ASB2B_STATUS' => $newStatus
+    // 1. Önce Başlığı Güncelle
+    $headerUpdatePayload = [
+        'U_ASB2B_STATUS' => '3'
     ];
     
-    $result = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
+    // DEBUG: Header update payload
+    error_log("[TRANSFER-ONAYLA] Header Update Payload: " . json_encode($headerUpdatePayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
     
-    // Status güncelleme başarısız olursa logla ama işlemi durdurma
-    if ($result['status'] != 200 && $result['status'] != 204) {
-        error_log("[TRANSFER-ONAYLA] Status güncellenemedi. DocEntry: {$docEntry}, Status: " . ($result['status'] ?? 'NO STATUS') . ", Error: " . json_encode($result['response']['error'] ?? []));
+    $headerResult = $sap->patch("InventoryTransferRequests({$docEntry})", $headerUpdatePayload);
+    
+    // DEBUG: Header update sonucu
+    error_log("[TRANSFER-ONAYLA] Header Update Result - Status: " . ($headerResult['status'] ?? 'NO STATUS') . ", Response: " . json_encode($headerResult['response'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    
+    // 2. Satırları Güncellemek İçin Veriyi Hazırla
+    $requestLinesToUpdate = [];
+    
+    if (!empty($stockTransferLines)) {
+        foreach ($stockTransferLines as $stLine) {
+            // OriginalLineNum kullan (BaseLine yorum satırında olduğu için)
+            if (isset($stLine['OriginalLineNum'])) {
+                $lineNum = (int)$stLine['OriginalLineNum'];
+                $requestLinesToUpdate[] = [
+                    'LineNum' => $lineNum,
+                    'U_ASB2B_STATUS' => '3' // SATIR DURUMU: Sevk Edildi
+                ];
+            } elseif (isset($stLine['BaseLine'])) {
+                // Fallback: Eğer BaseLine varsa (eski mantık)
+                $requestLinesToUpdate[] = [
+                    'LineNum' => (int)$stLine['BaseLine'],
+                    'U_ASB2B_STATUS' => '3'
+                ];
+            }
+        }
+    }
+    
+    // 3. Satırları Güncelle (Doğru Key İle: StockTransferLines)
+    $result = $headerResult; // Varsayılan olarak header sonucunu kullan
+    
+    if (!empty($requestLinesToUpdate)) {
+        $linesUpdatePayload = [
+            'StockTransferLines' => $requestLinesToUpdate // DÜZELTİLEN KISIM: InventoryTransferRequestLines -> StockTransferLines
+        ];
+        
+        // DEBUG: Lines update payload
+        error_log("[TRANSFER-ONAYLA] Lines Update Payload: " . json_encode($linesUpdatePayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+        error_log("[TRANSFER-ONAYLA] RequestLinesToUpdate Count: " . count($requestLinesToUpdate));
+        error_log("[TRANSFER-ONAYLA] StockTransferLines Count: " . count($stockTransferLines));
+        
+        $lineResult = $sap->patch("InventoryTransferRequests({$docEntry})", $linesUpdatePayload);
+        
+        // DEBUG: Lines update sonucu
+        error_log("[TRANSFER-ONAYLA] Lines Update Result - Status: " . ($lineResult['status'] ?? 'NO STATUS') . ", Response: " . json_encode($lineResult['response'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+        
+        // Satır güncellemesi başarısız olursa logla
+        if ($lineResult['status'] != 200 && $lineResult['status'] != 204) {
+            $errorDetails = [
+                'DocEntry' => $docEntry,
+                'HTTP_Status' => $lineResult['status'] ?? 'NO STATUS',
+                'Error' => $lineResult['response']['error'] ?? null,
+                'FullResponse' => $lineResult['response'] ?? null,
+                'LinesUpdatePayload' => $linesUpdatePayload,
+                'RequestLinesToUpdate' => $requestLinesToUpdate
+            ];
+            error_log("[TRANSFER-ONAYLA] Satır güncellenemedi. Detaylar: " . json_encode($errorDetails, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+        }
+        
+        $result = $lineResult; // Satır güncellemesi sonucunu kullan
+    }
+    
+    // Genel sonuç: Header ve satır güncellemelerinden birisi başarısız olursa hata döndür
+    if ($headerResult['status'] != 200 && $headerResult['status'] != 204) {
+        $result = $headerResult; // Header hatası öncelikli
     }
 } else {
     // Reject durumunda status güncelle
@@ -315,14 +388,50 @@ if ($action === 'approve' && $newStatus === '3') {
 // AJAX isteği ise JSON döndür
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
+    
+    // Debug bilgilerini hazırla
+    $debugInfo = [
+        'docEntry' => $docEntry,
+        'action' => $action,
+        'updateStatus' => $result['status'] ?? 'NO STATUS'
+    ];
+    
+    if ($action === 'approve' && isset($stockTransferResult)) {
+        $debugInfo['stockTransferStatus'] = $stockTransferResult['status'] ?? 'N/A';
+        $debugInfo['headerUpdateStatus'] = isset($headerResult) ? ($headerResult['status'] ?? 'N/A') : 'N/A';
+        $debugInfo['linesUpdateStatus'] = isset($lineResult) ? ($lineResult['status'] ?? 'N/A') : 'N/A';
+        $debugInfo['requestLinesToUpdate'] = $requestLinesToUpdate ?? [];
+        $debugInfo['headerUpdatePayload'] = isset($headerUpdatePayload) ? $headerUpdatePayload : null;
+        $debugInfo['linesUpdatePayload'] = isset($linesUpdatePayload) ? $linesUpdatePayload : null;
+        $debugInfo['stockTransferLines'] = isset($stockTransferLines) ? count($stockTransferLines) : 0;
+    }
+    
     if ($result['status'] == 200 || $result['status'] == 204) {
-        echo json_encode(['success' => true, 'message' => $action === 'approve' ? 'Transfer onaylandı' : 'Transfer iptal edildi']);
+        echo json_encode([
+            'success' => true, 
+            'message' => $action === 'approve' ? 'Transfer onaylandı' : 'Transfer iptal edildi',
+            'debug' => $debugInfo
+        ]);
     } else {
         $errorMsg = 'Durum güncellenemedi: HTTP ' . ($result['status'] ?? 'NO STATUS');
         if (isset($result['response']['error'])) {
             $errorMsg .= ' - ' . json_encode($result['response']['error']);
         }
-        echo json_encode(['success' => false, 'message' => $errorMsg]);
+        
+        $debugInfo['updateError'] = $result['response']['error'] ?? null;
+        $debugInfo['updateResponse'] = $result['response'] ?? null;
+        if (isset($headerResult) && ($headerResult['status'] != 200 && $headerResult['status'] != 204)) {
+            $debugInfo['headerUpdateError'] = $headerResult['response']['error'] ?? null;
+        }
+        if (isset($lineResult) && ($lineResult['status'] != 200 && $lineResult['status'] != 204)) {
+            $debugInfo['linesUpdateError'] = $lineResult['response']['error'] ?? null;
+        }
+        
+        echo json_encode([
+            'success' => false, 
+            'message' => $errorMsg,
+            'debug' => $debugInfo
+        ]);
     }
 } else {
     // Normal GET isteği ise redirect yap
