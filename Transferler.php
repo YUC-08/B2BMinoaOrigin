@@ -1069,25 +1069,21 @@ input[type="checkbox"]:focus {
                         <table class="data-table">
                             <thead>
                                 <tr>
-
-                            <th style="width: 40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+                                    <th style="width: 40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
                                     <th>Transfer No</th>
                                     <th>Kalem No</th>
                                     <th>Kalem Tanımı</th>
-                                    <th>Talep</th>
-                                    <th>Sevk</th>
-                                    <th>Teslim</th>
-                                    <th>Kalan</th>
+                                    <th>Tarih<br><small style="font-weight: normal;">Talep / Vade</small></th>
+                                    <th>Alıcı Şube</th>
                                     <th>Durum</th>
                                     <th>İşlemler</th>
-                                    </tr>
-
+                                </tr>
                             </thead>
 
                     <tbody>
                         <?php if (empty($outgoingTransfers)): ?>
                             <tr>
-                                <td colspan="10" style="text-align: center; padding: 40px; color: #9ca3af;">
+                                <td colspan="8" style="text-align: center; padding: 40px; color: #9ca3af;">
                                     Giden transfer bulunamadı.
                                     <?php if (isset($debugInfo) && !empty($debugInfo)): ?>
                                         <details style="margin-top: 1rem; padding: 0; background: #fef3c7; border-radius: 6px; font-size: 0.875rem; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
@@ -1136,13 +1132,6 @@ input[type="checkbox"]:focus {
                                 $itemCode = htmlspecialchars($row['ItemCode'] ?? '-');
                                 $dscription = htmlspecialchars($row['Dscription'] ?? '-');
                                 
-                                // View'den gelen miktarlar
-                                $talepMiktar = (float)($row['Quantity'] ?? 0);
-                                $sevkMiktar = (float)($row['ShippedQty'] ?? 0);
-                                $teslimMiktar = (float)($row['DeliveredQty'] ?? 0);
-                                $kalanMiktar = (float)($row['RemainingOpenQuantity'] ?? ($talepMiktar - $teslimMiktar));
-                                $uomCode = htmlspecialchars($row['UoMCode'] ?? 'AD');
-                                
                                 $searchData = buildSearchData($docEntry, $toWhsDisplay, $docDate, $dueDate, $numAtCard, $statusText);
                                 $lines = $row['InventoryTransferRequestLines'] ?? [];
                                 
@@ -1158,10 +1147,13 @@ input[type="checkbox"]:focus {
                                     <td style="font-weight: 600; color: #1e40af;"><?= $docEntry ?></td>
                                     <td><?= $itemCode ?></td>
                                     <td><?= $dscription ?></td>
-                                    <td style="text-align: center;"><?= number_format($talepMiktar, 2) ?> <?= $uomCode ?></td>
-                                    <td style="text-align: center;"><?= number_format($sevkMiktar, 2) ?> <?= $uomCode ?></td>
-                                    <td style="text-align: center;"><?= number_format($teslimMiktar, 2) ?> <?= $uomCode ?></td>
-                                    <td style="text-align: center;"><?= number_format($kalanMiktar, 2) ?> <?= $uomCode ?></td>
+                                    <td style="text-align: center;">
+                                        <div style="display: flex; flex-direction: column; gap: 2px;">
+                                            <span><?= $docDate ?></span>
+                                            <span style="font-size: 0.875rem; color: #6b7280;"><?= $dueDate ?></span>
+                                        </div>
+                                    </td>
+                                    <td><?= htmlspecialchars($toWhsDisplay) ?></td>
                                     <td>
                                         <span class="status-badge <?= $statusClass ?>"><?= htmlspecialchars($statusText) ?></span>
                                     </td>
