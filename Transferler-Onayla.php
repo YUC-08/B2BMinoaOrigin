@@ -187,6 +187,7 @@ if ($action === 'approve' && $newStatus === '3') {
         // Sepetteki lines'ı kullan (Quantity zaten sentQty * baseQty olarak hesaplanmış)
         foreach ($cartLines as $cartLine) {
             $itemCode = $cartLine['ItemCode'] ?? '';
+            $cartLineNum = $cartLine['LineNum'] ?? null;
             // Quantity değeri zaten sentQty * baseQty olarak hesaplanmış (Transferler.php'den geliyor)
             $quantity = floatval($cartLine['Quantity'] ?? 0);
             
@@ -194,12 +195,44 @@ if ($action === 'approve' && $newStatus === '3') {
                 continue;
             }
             
+            // RequestLines'dan eşleşen line'ı bul (LineNum için)
+            $matchedRequestLine = null;
+            if ($cartLineNum !== null) {
+                $matchedRequestLine = null;
+                foreach ($requestLines as $reqLine) {
+                    if (($reqLine['LineNum'] ?? null) == $cartLineNum && ($reqLine['ItemCode'] ?? '') === $itemCode) {
+                        $matchedRequestLine = $reqLine;
+                        break;
+                    }
+                }
+            }
+            // LineNum ile bulunamazsa ItemCode ile bul
+            if (!$matchedRequestLine) {
+                foreach ($requestLines as $reqLine) {
+                    if (($reqLine['ItemCode'] ?? '') === $itemCode) {
+                        $matchedRequestLine = $reqLine;
+                        break;
+                    }
+                }
+            }
+            
+            // BaseLine: Talebin LineNum'ı (0 ise 0, yoksa LineNum değeri)
+            $baseLine = 0;
+            if ($matchedRequestLine && isset($matchedRequestLine['LineNum'])) {
+                $baseLine = (int)$matchedRequestLine['LineNum'];
+            } elseif ($cartLineNum !== null) {
+                $baseLine = (int)$cartLineNum;
+            }
+            
             // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $lineData = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $quantity, // Sepetteki "Gönderilecek" miktar × baseQty (kullanıcının seçtiği miktar)
                 'FromWarehouseCode' => $fromWarehouse,
-                'WarehouseCode' => $sevkiyatDepo
+                'WarehouseCode' => $sevkiyatDepo,
+                'BaseType' => 1250000001, // Statik - InventoryTransferRequest için
+                'BaseEntry' => (int)$docEntry, // Talep doc entry
+                'BaseLine' => $baseLine // Talebin LineNum'ı
             ];
             
             $stockTransferLines[] = $lineData;
@@ -210,6 +243,7 @@ if ($action === 'approve' && $newStatus === '3') {
         foreach ($requestLines as $line) {
             $itemCode = $line['ItemCode'] ?? '';
             $quantity = floatval($line['Quantity'] ?? 0);
+            $lineNum = isset($line['LineNum']) ? (int)$line['LineNum'] : 0;
             
             if (empty($itemCode) || $quantity <= 0) {
                 continue;
@@ -220,7 +254,10 @@ if ($action === 'approve' && $newStatus === '3') {
                 'ItemCode' => $itemCode,
                 'Quantity' => $quantity, // Talep edilen miktar (fallback - normalde kullanılmamalı)
                 'FromWarehouseCode' => $fromWarehouse,
-                'WarehouseCode' => $sevkiyatDepo
+                'WarehouseCode' => $sevkiyatDepo,
+                'BaseType' => 1250000001, // Statik - InventoryTransferRequest için
+                'BaseEntry' => (int)$docEntry, // Talep doc entry
+                'BaseLine' => $lineNum // Talebin LineNum'ı
             ];
             
             $stockTransferLines[] = $lineData;
@@ -254,13 +291,6 @@ if ($action === 'approve' && $newStatus === '3') {
         'U_ASB2B_TYPE' => 'TRANSFER',
         'U_ASB2B_User' => $userName,
         'U_ASB2B_QutMaster' => (int)$docEntry,
-        'DocumentReferences' => [
-            [
-                'RefDocEntr' => (int)$docEntry,
-                'RefDocNum' => (int)$docNum,
-                'RefObjType' => 'rot_InventoryTransferRequest'
-            ]
-        ],
         'StockTransferLines' => $stockTransferLines
         ];
     
@@ -283,7 +313,7 @@ if ($action === 'approve' && $newStatus === '3') {
             if (isset($error['code'])) {
                 $errorMsg .= ' (Kod: ' . $error['code'] . ')';
             }
-            if (isset($error['details'])) {
+            if (is_array($error) && isset($error['details'])) {
                 $detailMsgs = [];
                 if (is_array($error['details']) && !empty($error['details'])) {
                     foreach ($error['details'] as $detail) {

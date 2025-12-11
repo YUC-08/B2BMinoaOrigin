@@ -16,6 +16,9 @@ if (empty($uAsOwnr) || empty($branch)) {
 }
 
 $docEntry = $_GET['docEntry'] ?? '';
+$filterItemCode = $_GET['itemCode'] ?? '';
+$filterLineNum = $_GET['lineNum'] ?? '';
+$isFiltered = (!empty($filterItemCode) || $filterLineNum !== '');
 
 if (empty($docEntry)) {
     header("Location: Transferler.php?view=incoming");
@@ -98,6 +101,17 @@ if (empty($lines)) {
     }
 }
 
+// Eğer itemCode veya lineNum parametresi geldiyse sadece o satırı göster
+if ((!empty($filterItemCode) || $filterLineNum !== '') && !empty($lines)) {
+    $lines = array_values(array_filter($lines, function($line) use ($filterItemCode, $filterLineNum) {
+        $itemCode = $line['ItemCode'] ?? '';
+        $lineNum = isset($line['LineNum']) ? (string)$line['LineNum'] : '';
+        $matchItem = !empty($filterItemCode) ? ($itemCode === $filterItemCode) : true;
+        $matchLine = ($filterLineNum !== '') ? ($lineNum === (string)$filterLineNum) : true;
+        return $matchItem && $matchLine;
+    }));
+}
+
 $fromWarehouse = $requestData['FromWarehouse'] ?? '';
 $toWarehouse = $requestData['ToWarehouse'] ?? ''; // Bu sevkiyat deposu
 
@@ -159,55 +173,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
     
-    // POST işleminde sevk miktarını tekrar çek
+    // POST işleminde sevk miktarını tekrar çek - TÜM StockTransfer belgelerini dolaş
     $sevkMiktarMap = [];
     $docEntryInt = (int)$docEntry;
     $sevkQuery = "StockTransfers?\$filter=U_ASB2B_QutMaster%20eq%20{$docEntryInt}"
-               . "&\$orderby=DocEntry%20asc"
-               . "&\$top=1";
+               . "&\$orderby=DocEntry%20asc"; // $top=1 kaldırıldı - tüm belgeleri oku
     $sevkData = $sap->get($sevkQuery);
     $sevkList = $sevkData['response']['value'] ?? [];
-    $outgoingStockTransferInfo = $sevkList[0] ?? null;
     
-    if ($outgoingStockTransferInfo) {
+    // Tüm StockTransfer belgelerini dolaş
+    foreach ($sevkList as $outgoingStockTransferInfo) {
         $stDocEntry = $outgoingStockTransferInfo['DocEntry'] ?? null;
+        if (!$stDocEntry) {
+            continue;
+        }
         
-        if ($stDocEntry) {
-            // StockTransferLines'ı ayrı query ile çek
-            $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
-            $stLinesData = $sap->get($stLinesQuery);
+        // Her stok nakil belgesinin satırlarını çek
+        $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
+        $stLinesData = $sap->get($stLinesQuery);
+        
+        if (($stLinesData['status'] ?? 0) != 200) {
+            continue;
+        }
+        
+        $stLinesResponse = $stLinesData['response'] ?? null;
+        $stLines = [];
+        
+        if (isset($stLinesResponse['value']) && is_array($stLinesResponse['value'])) {
+            $stLines = $stLinesResponse['value'];
+        } elseif (is_array($stLinesResponse) && !isset($stLinesResponse['value'])) {
+            $stLines = $stLinesResponse;
+        }
+        
+        foreach ($stLines as $stLine) {
+            $itemCode = $stLine['ItemCode'] ?? '';
+            $qty = (float)($stLine['Quantity'] ?? 0);
             
-            if (($stLinesData['status'] ?? 0) == 200) {
-                $stLinesResponse = $stLinesData['response'] ?? null;
-                $stLines = [];
-                
-                if (isset($stLinesResponse['value']) && is_array($stLinesResponse['value'])) {
-                    $stLines = $stLinesResponse['value'];
-                } elseif (is_array($stLinesResponse) && !isset($stLinesResponse['value'])) {
-                    $stLines = $stLinesResponse;
-                }
-                
-                foreach ($stLines as $stLine) {
-                    $itemCode = $stLine['ItemCode'] ?? '';
-                    $qty = (float)($stLine['Quantity'] ?? 0);
-                    
-                    if ($itemCode === '' || $qty <= 0) {
-                        continue;
-                    }
-                    
-                    // Fire/Zayi'yi filtrele
-                    $lost = trim($stLine['U_ASB2B_LOST'] ?? '');
-                    $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
-                    if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
-                        continue;
-                    }
-                    
-                    if (!isset($sevkMiktarMap[$itemCode])) {
-                        $sevkMiktarMap[$itemCode] = 0;
-                    }
-                    $sevkMiktarMap[$itemCode] += $qty;
-                }
+            if ($itemCode === '' || $qty <= 0) {
+                continue;
             }
+            
+            // Fire/Zayi'yi filtrele
+            $lost = trim($stLine['U_ASB2B_LOST'] ?? '');
+            $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
+            if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
+                continue;
+            }
+            
+            if (!isset($sevkMiktarMap[$itemCode])) {
+                $sevkMiktarMap[$itemCode] = 0;
+            }
+            $sevkMiktarMap[$itemCode] += $qty;
         }
     }
     
@@ -289,6 +305,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 'Quantity' => $normalTransferMiktar * $baseQty, // BaseQty ile çarp (Sevk miktarı)
                 'FromWarehouseCode' => $sevkiyatDepo, // Sevkiyat deposu (ikinci transfer: sevkiyat -> ana depo)
                 'WarehouseCode' => $targetWarehouse // Ana depo (U_ASB2B_MAIN=1)
+                // 2. stok naklinde BaseType/BaseEntry/BaseLine YOK
             ];
         }
         
@@ -296,12 +313,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         if ($eksikFazlaQty != 0) {
             $eksikFazlaMiktar = abs($eksikFazlaQty);
             $baseQty = floatval($line['BaseQty'] ?? 1.0);
-            
             $eksikFazlaLine = [
                 'ItemCode' => $itemCode,
                 'Quantity' => $eksikFazlaMiktar * $baseQty,
                 'FromWarehouseCode' => $targetWarehouse, // Ana depodan sevkiyat deposuna
-                'WarehouseCode' => $sevkiyatDepo, // Sevkiyat deposu (U_ASB2B_MAIN='2')
+                'WarehouseCode' => $sevkiyatDepo // Sevkiyat deposu (U_ASB2B_MAIN='2')
+                // BaseType/BaseEntry/BaseLine YOK
             ];
             
             // Eksik ise (negatif) → Zayi
@@ -342,6 +359,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 'FromWarehouseCode' => $targetWarehouse, // Ana depodan Fire & Zayi deposuna
                 'WarehouseCode' => $fireZayiWarehouse, // Fire & Zayi deposu (U_ASB2B_MAIN='3')
                 'U_ASB2B_Damaged' => 'K' // Kusurlu
+                // BaseType/BaseEntry/BaseLine YOK
             ];
             
             $fireZayiComments = [];
@@ -370,7 +388,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     // NOT: İlişki U_ASB2B_QutMaster ve depo yönü ile kuruluyor:
     // - İlk ST: U_ASB2B_QutMaster = requestDocEntry, ToWarehouse = sevkiyatDepo
     // - İkinci ST: U_ASB2B_QutMaster = requestDocEntry, FromWarehouse = sevkiyatDepo, ToWarehouse = anaDepo
-    // Her iki StockTransfer de aynı InventoryTransferRequest'i DocumentReferences ile referans gösterir
+    
     $docNum = $requestData['DocNum'] ?? $docEntry;
     
     // Header'da U_ASB2B_LOST set etmek için: Eğer herhangi bir satırda Fire/Zayi varsa
@@ -405,13 +423,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         'U_ASB2B_TYPE' => 'TRANSFER',
         'U_ASB2B_User' => $_SESSION["UserName"] ?? '',
         'U_ASB2B_QutMaster' => (int)$docEntry, // InventoryTransferRequest DocEntry (ilişki bu alan ile kuruluyor)
-        'DocumentReferences' => [
-            [
-                'RefDocEntr' => (int)$docEntry,
-                'RefDocNum' => (int)$docNum,
-                'RefObjType' => 'rot_InventoryTransferRequest'
-            ]
-        ],
         'StockTransferLines' => $transferLines
     ];
     
@@ -426,16 +437,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // StockTransfer başarıyla oluşturuldu
         $stockTransferResponse = $result['response'] ?? [];
         
-        // InventoryTransferRequest'i Close et
-        $closeResult = $sap->post("InventoryTransferRequests({$docEntry})/Close", []);
+        // Eğer tüm satırlar tek seferde teslim alındıysa kapat; filtreli kısmi teslimde kapatma
+        if (!$isFiltered) {
+            // InventoryTransferRequest'i Close et
+            $closeResult = $sap->post("InventoryTransferRequests({$docEntry})/Close", []);
+            
+            // STATUS'u her zaman 4'e güncelle (Close başarılı olsa bile)
+            $updatePayload = [
+                'U_ASB2B_STATUS' => '4'
+            ];
+            $updateResult = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
+        }
         
-        // STATUS'u her zaman 4'e güncelle (Close başarılı olsa bile)
-        $updatePayload = [
-            'U_ASB2B_STATUS' => '4'
-        ];
-        $updateResult = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
-        
-        // Close başarısız olsa bile STATUS güncellendi, devam et
         $_SESSION['success_message'] = "Transfer başarıyla teslim alındı!";
         header('Location: Transferler.php?view=incoming');
         exit;
@@ -485,55 +498,57 @@ $dueDate = formatDate($requestData['DueDate'] ?? '');
 $numAtCard = htmlspecialchars($requestData['U_ASB2B_NumAtCard'] ?? '-');
 $status = $requestData['U_ASB2B_STATUS'] ?? '';
 
-// Sevk miktarını çek (İlk StockTransfer'den)
+// Sevk miktarını çek - TÜM StockTransfer belgelerini dolaş
 $sevkMiktarMap = [];
 $docEntryInt = (int)$docEntry;
 $sevkQuery = "StockTransfers?\$filter=U_ASB2B_QutMaster%20eq%20{$docEntryInt}"
-           . "&\$orderby=DocEntry%20asc"
-           . "&\$top=1";
+           . "&\$orderby=DocEntry%20asc"; // $top=1 kaldırıldı - tüm belgeleri oku
 $sevkData = $sap->get($sevkQuery);
 $sevkList = $sevkData['response']['value'] ?? [];
-$outgoingStockTransferInfo = $sevkList[0] ?? null;
 
-if ($outgoingStockTransferInfo) {
+// Tüm StockTransfer belgelerini dolaş
+foreach ($sevkList as $outgoingStockTransferInfo) {
     $stDocEntry = $outgoingStockTransferInfo['DocEntry'] ?? null;
+    if (!$stDocEntry) {
+        continue;
+    }
     
-    if ($stDocEntry) {
-        // StockTransferLines'ı ayrı query ile çek
-        $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
-        $stLinesData = $sap->get($stLinesQuery);
+    // Her stok nakil belgesinin satırlarını çek
+    $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
+    $stLinesData = $sap->get($stLinesQuery);
+    
+    if (($stLinesData['status'] ?? 0) != 200) {
+        continue;
+    }
+    
+    $stLinesResponse = $stLinesData['response'] ?? null;
+    $stLines = [];
+    
+    if (isset($stLinesResponse['value']) && is_array($stLinesResponse['value'])) {
+        $stLines = $stLinesResponse['value'];
+    } elseif (is_array($stLinesResponse) && !isset($stLinesResponse['value'])) {
+        $stLines = $stLinesResponse;
+    }
+    
+    foreach ($stLines as $stLine) {
+        $itemCode = $stLine['ItemCode'] ?? '';
+        $qty = (float)($stLine['Quantity'] ?? 0);
         
-        if (($stLinesData['status'] ?? 0) == 200) {
-            $stLinesResponse = $stLinesData['response'] ?? null;
-            $stLines = [];
-            
-            if (isset($stLinesResponse['value']) && is_array($stLinesResponse['value'])) {
-                $stLines = $stLinesResponse['value'];
-            } elseif (is_array($stLinesResponse) && !isset($stLinesResponse['value'])) {
-                $stLines = $stLinesResponse;
-            }
-            
-            foreach ($stLines as $stLine) {
-                $itemCode = $stLine['ItemCode'] ?? '';
-                $qty = (float)($stLine['Quantity'] ?? 0);
-                
-                if ($itemCode === '' || $qty <= 0) {
-                    continue;
-                }
-                
-                // Fire/Zayi'yi filtrele
-                $lost = trim($stLine['U_ASB2B_LOST'] ?? '');
-                $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
-                if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
-                    continue;
-                }
-                
-                if (!isset($sevkMiktarMap[$itemCode])) {
-                    $sevkMiktarMap[$itemCode] = 0;
-                }
-                $sevkMiktarMap[$itemCode] += $qty;
-            }
+        if ($itemCode === '' || $qty <= 0) {
+            continue;
         }
+        
+        // Fire/Zayi'yi filtrele
+        $lost = trim($stLine['U_ASB2B_LOST'] ?? '');
+        $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
+        if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
+            continue;
+        }
+        
+        if (!isset($sevkMiktarMap[$itemCode])) {
+            $sevkMiktarMap[$itemCode] = 0;
+        }
+        $sevkMiktarMap[$itemCode] += $qty;
     }
 }
 

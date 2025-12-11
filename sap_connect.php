@@ -237,6 +237,90 @@ class SAPConnect {
 
 
 
+    // Search Filter
+public function applySearchFilter(string $baseFilter, ?string $search, array $fields): string
+{
+    $search = trim((string)$search);
+    if ($search === '') {
+        return $baseFilter;
+    }
+
+    // Tek tırnakları kaçır
+    $searchEsc = str_replace("'", "''", $search);
+
+    $parts = [];
+    foreach ($fields as $field) {
+        // Tüm alanlar string alanlar, substringof kullan
+        $parts[] = "substringof('{$searchEsc}', {$field})";
+    }
+
+    // Eğer hiçbir koşul eklenmediyse, orijinal filtreyi döndür
+    if (empty($parts)) {
+        return $baseFilter;
+    }
+
+    $orBlock = implode(' or ', $parts);
+
+    return $baseFilter . " and ({$orBlock})";
+}
+
+
+public function viewWithPagination(
+    string $viewName,
+    string $filter,
+    int $page,
+    int $perPage,
+    string $orderBy = 'DocEntry desc',
+    bool $groupByDocEntry = true
+): array {
+    $page    = max(1, $page);
+    $perPage = max(1, $perPage);
+
+    // 1) Count için tüm kayıtları çek (sadece DocEntry)
+// İstersen burada $top ile sınırlama da koyabilirsin; şimdilik sade dursun
+    $countEndpoint = "view.svc/{$viewName}?\$select=DocEntry&\$filter=" . urlencode($filter);
+    $countResult   = $this->get($countEndpoint);
+    $rows          = $countResult['response']['value'] ?? [];
+
+    if ($groupByDocEntry) {
+        $unique = [];
+        foreach ($rows as $row) {
+            $doc = $row['DocEntry'] ?? null;
+            if ($doc !== null) {
+                $unique[$doc] = true;
+            }
+        }
+        $totalItems = count($unique);
+    } else {
+        $totalItems = count($rows);
+    }
+
+    $totalPages = max(1, (int)ceil($totalItems / $perPage));
+    $page       = min($page, $totalPages);
+    $skip       = ($page - 1) * $perPage;
+
+    // 2) Asıl sayfalı data
+    $dataEndpoint =
+        "view.svc/{$viewName}?" .
+        "\$filter="  . urlencode($filter) .
+        "&\$orderby=" . urlencode($orderBy) .
+        "&\$top={$perPage}&\$skip={$skip}";
+
+    $dataResult = $this->get($dataEndpoint);
+    $dataRows   = $dataResult['response']['value'] ?? [];
+
+    return [
+        'rows' => $dataRows,
+        'pagination' => [
+            'current_page' => $page,
+            'per_page'     => $perPage,
+            'total_items'  => $totalItems,
+            'total_pages'  => $totalPages,
+        ],
+    ];
+}
+
+
 
     public function get($endpoint) { return $this->sendRequest("GET", $endpoint); }
     public function post($endpoint, $payload) { return $this->sendRequest("POST", $endpoint, $payload); }

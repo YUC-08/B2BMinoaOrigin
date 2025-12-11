@@ -110,27 +110,51 @@ $fromWarehouseData = $sap->get($fromWarehouseQuery);
 $fromWarehouses = $fromWarehouseData['response']['value'] ?? [];
 $fromWarehouse = !empty($fromWarehouses) ? $fromWarehouses[0]['WarehouseCode'] : null;
 
-// 1. Gelen transferler (ToWarehouse = '100-KT-1')
+// 1. Gelen transferler - ASB2B_TransferRequestList_B1SLQuery view'ından
 $incomingTransfers = [];
 $incomingDebugInfo = [
     'branch' => $branch,
     'uAsOwnr' => $uAsOwnr,
-    'userName' => $userName,
-    'toWarehouseFilter' => $toWarehouseFilter,
-    'toWarehouseQuery' => $toWarehouseQuery,
-    'toWarehouseHttpStatus' => $toWarehouseData['status'] ?? 0,
-    'toWarehouse' => $toWarehouse,
-    'toWarehousesCount' => count($toWarehouses),
-    'toWarehouseFilterAlt' => isset($toWarehouseFilterAlt) ? $toWarehouseFilterAlt : '',
-    'toWarehouseQueryAlt' => isset($toWarehouseQueryAlt) ? $toWarehouseQueryAlt : '',
-    'toWarehouseHttpStatusAlt' => isset($toWarehouseDataAlt) ? ($toWarehouseDataAlt['status'] ?? 0) : 0,
-    'toWarehousesCountAlt' => isset($toWarehousesAlt) ? count($toWarehousesAlt) : 0,
-    'toWarehouseSource' => !empty($toWarehouses) ? 'MAIN=2' : (isset($toWarehousesAlt) && !empty($toWarehousesAlt) ? 'MAIN=1 (fallback)' : 'BULUNAMADI')
+    'userName' => $userName
 ];
 
-if ($toWarehouse) {
-    $incomingFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_TYPE eq 'TRANSFER' and ToWarehouse eq '{$toWarehouse}'";
+// View expose kontrolü
+$viewCheckQuery = "view.svc/ASB2B_TransferRequestList_B1SLQuery?\$top=1";
+$viewCheck = $sap->get($viewCheckQuery);
+$viewCheckError = $viewCheck['response']['error'] ?? null;
+$isViewExposed = true;
+$exposeAttempted = false;
+$exposeResult = null;
+
+// View expose edilmemişse (806 hatası), expose et
+if (isset($viewCheckError['code']) && $viewCheckError['code'] === '806') {
+    $isViewExposed = false;
+    $exposeAttempted = true;
+    $exposeResult = $sap->post("SQLViews('ASB2B_TransferRequestList_B1SLQuery')/Expose", []);
+    $exposeStatus = $exposeResult['status'] ?? 'NO STATUS';
     
+    // Expose başarılıysa kısa bir bekleme sonrası tekrar kontrol et
+    if ($exposeStatus == 200 || $exposeStatus == 201 || $exposeStatus == 204) {
+        sleep(1);
+        $viewCheck2 = $sap->get($viewCheckQuery);
+        if (isset($viewCheck2['response']['error']['code']) && $viewCheck2['response']['error']['code'] === '806') {
+            $incomingDebugInfo['error'] = 'View expose edildi ancak hala erişilemiyor!';
+        } else {
+            $isViewExposed = true;
+        }
+    }
+}
+
+if ($isViewExposed && $toWarehouse) {
+    // Sayfalama ve arama parametreleri
+    $search = $_GET['search'] ?? '';
+    $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+    $itemsPerPage = isset($_GET['entries']) ? (int)$_GET['entries'] : 25;
+    
+    // Gelen transferler için filtre
+    $incomingFilter = "U_AS_OWNR eq '{$uAsOwnr}' and WhsCode eq '{$toWarehouse}'";
+    
+    // Tarih / status filtresi varsa ekle
     if (!empty($filterStatus)) {
         $incomingFilter .= " and U_ASB2B_STATUS eq '{$filterStatus}'";
     }
@@ -143,29 +167,316 @@ if ($toWarehouse) {
         $incomingFilter .= " and DocDate le '{$endDateFormatted}'";
     }
     
-    $selectValue = "DocEntry,DocDate,DueDate,U_ASB2B_NumAtCard,U_ASB2B_STATUS,FromWarehouse";
-    $filterEncoded = urlencode($incomingFilter);
-    $orderByEncoded = urlencode("DocEntry desc");
-    $incomingQuery = "InventoryTransferRequests?\$select=" . urlencode($selectValue) . "&\$filter=" . $filterEncoded . "&\$orderby=" . $orderByEncoded . "&\$top=25";
+ // Arama kolonları (view içindeki string alanlar)
+$searchFields = [
+    'U_ASB2B_NumAtCard',
+    'FromWhsCode',
+    'WhsCode',
+    'ItemCode',
+    'Dscription'
+];
+
+$search = trim($search);
+
+// 1) Tamamen rakamsa → DocEntry eşitle
+if ($search !== '' && ctype_digit($search)) {
+    $incomingFilter .= " and DocEntry eq {$search}";
+
+} else if ($search !== '') {
+    $searchEsc = str_replace("'", "''", $search);
+
+    // 2) View alanlarında metin araması için OR bloğu hazırla
+    $parts = [];
+    foreach ($searchFields as $field) {
+        $parts[] = "substringof('{$searchEsc}', {$field})";
+    }
+    $viewSearch = '(' . implode(' or ', $parts) . ')';
+
+    // 3) Warehouse kodlarında ve isimlerinde arama yap (PHP tarafında)
+    // Tüm warehouse'ları çek
+    $whsFilter   = "U_AS_OWNR eq '{$uAsOwnr}'";
+    $whsQuery    = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($whsFilter);
+    $whsData     = $sap->get($whsQuery);
+    $whsList     = $whsData['response']['value'] ?? [];
+    $whsParts    = [];
+
+    // PHP tarafında hem kod hem isim üzerinde arama yap
+    $searchLower = mb_strtolower($search, 'UTF-8');
+    foreach ($whsList as $whs) {
+        $code = $whs['WarehouseCode'] ?? '';
+        $name = mb_strtolower($whs['WarehouseName'] ?? '', 'UTF-8');
+        $codeLower = mb_strtolower($code, 'UTF-8');
+        
+        // Hem kod hem isim üzerinde arama yap
+        if ($code !== '' && (strpos($codeLower, $searchLower) !== false || strpos($name, $searchLower) !== false)) {
+            $codeEsc = str_replace("'", "''", $code);
+            // Gelen tarafta isim, FromWhsCode tarafında görünüyor
+            $whsParts[] = "FromWhsCode eq '{$codeEsc}'";
+        }
+    }
+
+    if (!empty($whsParts)) {
+        $whsSearch = '(' . implode(' or ', $whsParts) . ')';
+        // baseFilter AND (viewSearch OR whsSearch)
+        $incomingFilter .= " and ({$viewSearch} or {$whsSearch})";
+    } else {
+        // Sadece view alanlarında ara
+        $incomingFilter .= " and {$viewSearch}";
+    }
+}
+
+    
+    // Tüm veriyi çek (DocEntry bazında sayfalama için)
+    $incomingQuery = "view.svc/ASB2B_TransferRequestList_B1SLQuery?" . 
+                    "\$filter=" . urlencode($incomingFilter) . 
+                    "&\$orderby=" . urlencode("DocEntry desc");
     
     $incomingData = $sap->get($incomingQuery);
     $incomingTransfersRaw = $incomingData['response']['value'] ?? [];
     
+    // View'dan gelen veriler her satır için bir kayıt döndürüyor, her satırı ayrı göster
+    // Sıralama: DocEntry desc, LineNum asc (aynı transferin ürünleri birlikte)
+    usort($incomingTransfersRaw, function($a, $b) {
+        $docEntryA = $a['DocEntry'] ?? 0;
+        $docEntryB = $b['DocEntry'] ?? 0;
+        if ($docEntryB != $docEntryA) {
+            return $docEntryB - $docEntryA; // DocEntry desc
+        }
+        $lineNumA = $a['LineNum'] ?? 0;
+        $lineNumB = $b['LineNum'] ?? 0;
+        return $lineNumA - $lineNumB; // LineNum asc
+    });
+    
+    // Toplam kayıt sayısı (satır sayısı)
+    $totalItems = count($incomingTransfersRaw);
+    $totalPages = ceil($totalItems / $itemsPerPage);
+    $skip = ($page - 1) * $itemsPerPage;
+    
+    // Sayfalama: Sadece ilgili sayfadaki satırları al
+    $incomingTransfers = array_slice($incomingTransfersRaw, $skip, $itemsPerPage);
+    
+    // Pagination bilgilerini sakla
+    $incomingPagination = [
+        'current_page' => $page,
+        'items_per_page' => $itemsPerPage,
+        'total_items' => $totalItems,
+        'total_pages' => $totalPages
+    ];
+    
+    // Debug bilgisi güncelle
+    $incomingDebugInfo['incomingQuery'] = $incomingQuery;
+    $incomingDebugInfo['incomingFilter'] = $incomingFilter;
+    $incomingDebugInfo['incomingHttpStatus'] = $incomingData['status'] ?? 0;
+    $incomingDebugInfo['incomingRawCount'] = count($incomingTransfersRaw);
+    $incomingDebugInfo['incomingFilteredCount'] = count($incomingTransfers);
+    
+    // View'dan gelen ham veri örnekleri (ilk 5 kayıt - tüm alanlar ile)
+    if (!empty($incomingTransfersRaw)) {
+        $rawSamples = [];
+        foreach (array_slice($incomingTransfersRaw, 0, 5) as $idx => $sampleRow) {
+            $rawSample = [
+                'index' => $idx,
+                'DocEntry' => $sampleRow['DocEntry'] ?? 'NULL',
+                'U_ASB2B_STATUS_raw' => $sampleRow['U_ASB2B_STATUS'] ?? 'NULL',
+                'U_ASB2B_STATUS_type' => gettype($sampleRow['U_ASB2B_STATUS'] ?? null),
+                'U_ASB2B_STATUS_string' => (string)($sampleRow['U_ASB2B_STATUS'] ?? '0'),
+                'all_fields' => is_array($sampleRow) ? array_keys($sampleRow) : []
+            ];
+            // Tüm alanları ve değerlerini ekle
+            if (is_array($sampleRow)) {
+                foreach ($sampleRow as $key => $value) {
+                    $rawSample['field_' . $key] = [
+                        'value' => $value,
+                        'type' => gettype($value),
+                        'is_null' => is_null($value),
+                        'is_empty' => empty($value)
+                    ];
+                }
+            }
+            $rawSamples[] = $rawSample;
+        }
+        $incomingDebugInfo['rawSamples'] = $rawSamples;
+    }
+    
+    // Sayfalama sonrası veri örnekleri (ilk 5 kayıt - tüm alanlar ile)
+    if (!empty($incomingTransfers)) {
+        $paginatedSamples = [];
+        foreach (array_slice($incomingTransfers, 0, 5) as $idx => $sampleRow) {
+            $paginatedSample = [
+                'index' => $idx,
+                'DocEntry' => $sampleRow['DocEntry'] ?? 'NULL',
+                'LineNum' => $sampleRow['LineNum'] ?? 'NULL',
+                'ItemCode' => $sampleRow['ItemCode'] ?? 'NULL',
+                'Dscription' => $sampleRow['Dscription'] ?? 'NULL',
+                'U_ASB2B_STATUS' => $sampleRow['U_ASB2B_STATUS'] ?? 'NULL',
+                'U_ASB2B_STATUS_type' => gettype($sampleRow['U_ASB2B_STATUS'] ?? null),
+                'getStatusText_result' => getStatusText($sampleRow['U_ASB2B_STATUS'] ?? '0'),
+                'getStatusClass_result' => getStatusClass($sampleRow['U_ASB2B_STATUS'] ?? '0')
+            ];
+            // Tüm alanları ve değerlerini ekle
+            if (is_array($sampleRow)) {
+                foreach ($sampleRow as $key => $value) {
+                    $paginatedSample['field_' . $key] = [
+                        'value' => $value,
+                        'type' => gettype($value),
+                        'is_null' => is_null($value),
+                        'is_empty' => empty($value)
+                    ];
+                }
+            }
+            $paginatedSamples[] = $paginatedSample;
+        }
+        $incomingDebugInfo['paginatedSamples'] = $paginatedSamples;
+    }
+    
+    // View'dan gelen tüm unique status değerleri
+    $uniqueStatuses = [];
+    foreach ($incomingTransfersRaw as $row) {
+        $status = $row['U_ASB2B_STATUS'] ?? null;
+        $statusKey = var_export($status, true) . ' (' . gettype($status) . ')';
+        if (!isset($uniqueStatuses[$statusKey])) {
+            $uniqueStatuses[$statusKey] = 0;
+        }
+        $uniqueStatuses[$statusKey]++;
+    }
+    $incomingDebugInfo['uniqueStatuses'] = $uniqueStatuses;
+    
+    if (isset($incomingData['response']['error'])) {
+        $incomingDebugInfo['error'] = $incomingData['response']['error'];
+    }
+} else {
+    $incomingDebugInfo['error'] = 'View expose edilemedi!';
+    // View expose edilmemişse de pagination'ı tanımla
+    $incomingPagination = [
+        'current_page' => 1,
+        'items_per_page' => 25,
+        'total_items' => 0,
+        'total_pages' => 0
+    ];
+}
+
+// 2. Giden transferler - ASB2B_TransferRequestList_B1SLQuery view'ından
+$outgoingTransfers = [];
+$debugInfo = [
+    'branch' => $branch,
+    'uAsOwnr' => $uAsOwnr,
+    'userName' => $userName
+];
+
+// View zaten expose edilmiş (gelen transferlerde kontrol edildi)
+if ($isViewExposed && $fromWarehouse) {
+    // Sayfalama ve arama parametreleri
+    $search = $_GET['search'] ?? '';
+    $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+    $itemsPerPage = isset($_GET['entries']) ? (int)$_GET['entries'] : 25;
+    
+    // Giden transferler için filtre
+    $outgoingFilter = "U_AS_OWNR eq '{$uAsOwnr}' and FromWhsCode eq '{$fromWarehouse}'";
+    
+    // Tarih / status filtresi varsa ekle
+    if (!empty($filterStatus)) {
+        $outgoingFilter .= " and U_ASB2B_STATUS eq '{$filterStatus}'";
+    }
+    if (!empty($filterStartDate)) {
+        $startDateFormatted = date('Y-m-d', strtotime($filterStartDate));
+        $outgoingFilter .= " and DocDate ge '{$startDateFormatted}'";
+    }
+    if (!empty($filterEndDate)) {
+        $endDateFormatted = date('Y-m-d', strtotime($filterEndDate));
+        $outgoingFilter .= " and DocDate le '{$endDateFormatted}'";
+    }
+    
+    // Arama kolonları (string alanlar)
+    $searchFields = [
+        'U_ASB2B_NumAtCard',
+        'FromWhsCode',
+        'WhsCode',
+        'ItemCode',
+        'Dscription'
+    ];
+    
+    if ($search !== '' && ctype_digit($search)) {
+        // Sadece rakam girildiyse transfer numarasını (DocEntry) direkt eşitle
+        $outgoingFilter .= " and DocEntry eq {$search}";
+    } else if ($search !== '') {
+        $searchEsc = str_replace("'", "''", $search);
+
+        // View alanlarında metin araması için OR bloğu hazırla
+        $parts = [];
+        foreach ($searchFields as $field) {
+            $parts[] = "substringof('{$searchEsc}', {$field})";
+        }
+        $viewSearch = '(' . implode(' or ', $parts) . ')';
+
+        // Warehouse kodlarında ve isimlerinde arama yap (PHP tarafında)
+        // Tüm warehouse'ları çek
+        $whsFilter   = "U_AS_OWNR eq '{$uAsOwnr}'";
+        $whsQuery    = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($whsFilter);
+        $whsData     = $sap->get($whsQuery);
+        $whsList     = $whsData['response']['value'] ?? [];
+        $whsParts    = [];
+
+        // PHP tarafında hem kod hem isim üzerinde arama yap
+        $searchLower = mb_strtolower($search, 'UTF-8');
+        foreach ($whsList as $whs) {
+            $code = $whs['WarehouseCode'] ?? '';
+            $name = mb_strtolower($whs['WarehouseName'] ?? '', 'UTF-8');
+            $codeLower = mb_strtolower($code, 'UTF-8');
+            
+            // Hem kod hem isim üzerinde arama yap
+            if ($code !== '' && (strpos($codeLower, $searchLower) !== false || strpos($name, $searchLower) !== false)) {
+                $codeEsc = str_replace("'", "''", $code);
+                // Giden tarafta hem FromWhsCode hem WhsCode kontrol et
+                $whsParts[] = "FromWhsCode eq '{$codeEsc}' or WhsCode eq '{$codeEsc}'";
+            }
+        }
+
+        if (!empty($whsParts)) {
+            $whsSearch = '(' . implode(' or ', $whsParts) . ')';
+            // baseFilter AND (viewSearch OR whsSearch)
+            $outgoingFilter .= " and ({$viewSearch} or {$whsSearch})";
+        } else {
+            // Sadece view alanlarında ara
+            $outgoingFilter .= " and {$viewSearch}";
+        }
+    }
+    
+    // Tüm veriyi çek (DocEntry bazında sayfalama için)
+    $outgoingQuery = "view.svc/ASB2B_TransferRequestList_B1SLQuery?" . 
+                    "\$filter=" . urlencode($outgoingFilter) . 
+                    "&\$orderby=" . urlencode("DocEntry desc");
+    
+    $outgoingData = $sap->get($outgoingQuery);
+    $outgoingTransfersRaw = $outgoingData['response']['value'] ?? [];
+    
+    // View'dan gelen veriler her satır için bir kayıt döndürüyor, her satırı ayrı göster
+    // Sıralama: DocEntry desc, LineNum asc (aynı transferin ürünleri birlikte)
+    usort($outgoingTransfersRaw, function($a, $b) {
+        $docEntryA = $a['DocEntry'] ?? 0;
+        $docEntryB = $b['DocEntry'] ?? 0;
+        if ($docEntryB != $docEntryA) {
+            return $docEntryB - $docEntryA; // DocEntry desc
+        }
+        $lineNumA = $a['LineNum'] ?? 0;
+        $lineNumB = $b['LineNum'] ?? 0;
+        return $lineNumA - $lineNumB; // LineNum asc
+    });
+    
     // OPTİMİZASYON: Tüm warehouse kodlarını topla ve tek sorguda çek
-    $uniqueFromWhsCodes = [];
-    foreach ($incomingTransfersRaw as $transfer) {
-        $fromWhsCode = $transfer['FromWarehouse'] ?? '';
-        if (!empty($fromWhsCode) && !in_array($fromWhsCode, $uniqueFromWhsCodes)) {
-            $uniqueFromWhsCodes[] = $fromWhsCode;
+    $uniqueToWhsCodes = [];
+    foreach ($outgoingTransfersRaw as $row) {
+        $toWhsCode = $row['WhsCode'] ?? ''; // Giden transferlerde WhsCode = ToWarehouse
+        if (!empty($toWhsCode) && !in_array($toWhsCode, $uniqueToWhsCodes)) {
+            $uniqueToWhsCodes[] = $toWhsCode;
         }
     }
     
     // Tüm warehouse'ları tek sorguda çek
-    $warehouseAnadepoMapIncoming = [];
-    if (!empty($uniqueFromWhsCodes)) {
+    $warehouseAnadepoMap = [];
+    if (!empty($uniqueToWhsCodes)) {
         // OData $filter ile OR kullanarak tüm warehouse'ları tek sorguda çek
         $whsFilterParts = [];
-        foreach ($uniqueFromWhsCodes as $whsCode) {
+        foreach ($uniqueToWhsCodes as $whsCode) {
             $whsFilterParts[] = "WarehouseCode eq '{$whsCode}'";
         }
         $whsFilter = "(" . implode(" or ", $whsFilterParts) . ")";
@@ -177,171 +488,180 @@ if ($toWarehouse) {
         foreach ($whsList as $whs) {
             $whsCode = $whs['WarehouseCode'] ?? '';
             $isAnadepo = ($whs['U_ASB2B_FATH'] ?? '') === 'Y';
-            $warehouseAnadepoMapIncoming[$whsCode] = $isAnadepo;
+            $warehouseAnadepoMap[$whsCode] = $isAnadepo;
         }
     }
     
     // Ana depo warehouse'larını filtrele
-    foreach ($incomingTransfersRaw as $transfer) {
-        $fromWhsCode = $transfer['FromWarehouse'] ?? '';
-        if (!empty($fromWhsCode)) {
+    $outgoingTransfersFiltered = [];
+    $processedDocEntries = []; // Lines çekmek için DocEntry'leri takip et
+    foreach ($outgoingTransfersRaw as $row) {
+        $toWhsCode = $row['WhsCode'] ?? '';
+        if (!empty($toWhsCode)) {
             // Map'ten kontrol et (tek sorgu ile çekilmiş)
-            $isAnadepo = $warehouseAnadepoMapIncoming[$fromWhsCode] ?? false;
+            $isAnadepo = $warehouseAnadepoMap[$toWhsCode] ?? false;
             if (!$isAnadepo) {
-                $incomingTransfers[] = $transfer;
+                $outgoingTransfersFiltered[] = $row;
+                // Lines çekmek için DocEntry'yi işaretle (sadece onay bekleyen transferler için)
+                $docEntry = $row['DocEntry'] ?? '';
+                $status = (string)($row['U_ASB2B_STATUS'] ?? '0');
+                if (!empty($docEntry) && ($status == '0' || $status == '1') && !isset($processedDocEntries[$docEntry])) {
+                    $processedDocEntries[$docEntry] = true;
+                }
             }
         } else {
-            $incomingTransfers[] = $transfer;
+            // ToWarehouse boşsa da ekle (güvenlik için)
+            $outgoingTransfersFiltered[] = $row;
         }
     }
+    
+    // Lines'ları sadece onay bekleyen transferler için çek (sepet için gerekli)
+    $linesByDocEntry = [];
+    foreach (array_keys($processedDocEntries) as $docEntry) {
+        $linesQuery = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
+        $linesData = $sap->get($linesQuery);
+        
+        if (($linesData['status'] ?? 0) == 200) {
+            $linesResponse = $linesData['response'] ?? null;
+            if ($linesResponse) {
+                if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
+                    $linesByDocEntry[$docEntry] = $linesResponse['value'];
+                } elseif (is_array($linesResponse) && !isset($linesResponse['value'])) {
+                    $linesByDocEntry[$docEntry] = $linesResponse;
+                }
+            }
+        }
+        
+        // Eğer hala boşsa, StockTransferLines ile dene
+        if (empty($linesByDocEntry[$docEntry])) {
+            $linesQuery2 = "InventoryTransferRequests({$docEntry})/StockTransferLines";
+            $linesData2 = $sap->get($linesQuery2);
+            
+            if (($linesData2['status'] ?? 0) == 200) {
+                $linesResponse2 = $linesData2['response'] ?? null;
+                if ($linesResponse2) {
+                    if (isset($linesResponse2['value']) && is_array($linesResponse2['value'])) {
+                        $linesByDocEntry[$docEntry] = $linesResponse2['value'];
+                    } elseif (is_array($linesResponse2) && !isset($linesResponse2['value'])) {
+                        $linesByDocEntry[$docEntry] = $linesResponse2;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Her satıra lines bilgisini ekle (eğer varsa)
+    foreach ($outgoingTransfersFiltered as &$row) {
+        $docEntry = $row['DocEntry'] ?? '';
+        if (!empty($docEntry) && isset($linesByDocEntry[$docEntry])) {
+            $row['InventoryTransferRequestLines'] = $linesByDocEntry[$docEntry];
+        } else {
+            $row['InventoryTransferRequestLines'] = [];
+        }
+    }
+    unset($row);
+    
+    // Toplam kayıt sayısı (satır sayısı)
+    $totalItems = count($outgoingTransfersFiltered);
+    $totalPages = ceil($totalItems / $itemsPerPage);
+    $skip = ($page - 1) * $itemsPerPage;
+    
+    // Sayfalama: Sadece ilgili sayfadaki satırları al
+    $outgoingTransfers = array_slice($outgoingTransfersFiltered, $skip, $itemsPerPage);
+    
+    // Pagination bilgilerini sakla
+    $outgoingPagination = [
+        'current_page' => $page,
+        'items_per_page' => $itemsPerPage,
+        'total_items' => $totalItems,
+        'total_pages' => $totalPages
+    ];
     
     // Debug bilgisi güncelle
-    $incomingDebugInfo['incomingQuery'] = $incomingQuery;
-    $incomingDebugInfo['incomingFilter'] = $incomingFilter;
-    $incomingDebugInfo['incomingHttpStatus'] = $incomingData['status'] ?? 0;
-    $incomingDebugInfo['incomingRawCount'] = count($incomingTransfersRaw);
-    $incomingDebugInfo['incomingFilteredCount'] = count($incomingTransfers);
+    $debugInfo['outgoingQuery'] = $outgoingQuery;
+    $debugInfo['outgoingFilter'] = $outgoingFilter;
+    $debugInfo['outgoingHttpStatus'] = $outgoingData['status'] ?? 0;
+    $debugInfo['outgoingRawCount'] = count($outgoingTransfersRaw);
+    $debugInfo['outgoingFilteredCount'] = count($outgoingTransfersFiltered);
+    $debugInfo['outgoingPaginatedCount'] = count($outgoingTransfers);
+    $debugInfo['outgoingPagination'] = $outgoingPagination;
     
-    if (isset($incomingData['response']['error'])) {
-        $incomingDebugInfo['error'] = $incomingData['response']['error'];
+    // View'dan gelen ham veri örnekleri (ilk 5 kayıt - tüm alanlar ile)
+    if (!empty($outgoingTransfersRaw)) {
+        $rawSamples = [];
+        foreach (array_slice($outgoingTransfersRaw, 0, 5) as $idx => $sampleRow) {
+            $rawSample = [
+                'index' => $idx,
+                'DocEntry' => $sampleRow['DocEntry'] ?? 'NULL',
+                'U_ASB2B_STATUS_raw' => $sampleRow['U_ASB2B_STATUS'] ?? 'NULL',
+                'U_ASB2B_STATUS_type' => gettype($sampleRow['U_ASB2B_STATUS'] ?? null),
+                'U_ASB2B_STATUS_string' => (string)($sampleRow['U_ASB2B_STATUS'] ?? '0'),
+                'all_fields' => is_array($sampleRow) ? array_keys($sampleRow) : []
+            ];
+            // Tüm alanları ve değerlerini ekle
+            if (is_array($sampleRow)) {
+                foreach ($sampleRow as $key => $value) {
+                    $rawSample['field_' . $key] = [
+                        'value' => $value,
+                        'type' => gettype($value),
+                        'is_null' => is_null($value),
+                        'is_empty' => empty($value)
+                    ];
+                }
+            }
+            $rawSamples[] = $rawSample;
+        }
+        $debugInfo['outgoingRawSamples'] = $rawSamples;
+    }
+    
+    // Sayfalama sonrası veri örnekleri (ilk 5 kayıt - tüm alanlar ile)
+    if (!empty($outgoingTransfers)) {
+        $paginatedSamples = [];
+        foreach (array_slice($outgoingTransfers, 0, 5) as $idx => $sampleRow) {
+            $paginatedSample = [
+                'index' => $idx,
+                'DocEntry' => $sampleRow['DocEntry'] ?? 'NULL',
+                'LineNum' => $sampleRow['LineNum'] ?? 'NULL',
+                'ItemCode' => $sampleRow['ItemCode'] ?? 'NULL',
+                'Dscription' => $sampleRow['Dscription'] ?? 'NULL',
+                'U_ASB2B_STATUS' => $sampleRow['U_ASB2B_STATUS'] ?? 'NULL',
+                'U_ASB2B_STATUS_type' => gettype($sampleRow['U_ASB2B_STATUS'] ?? null),
+                'getStatusText_result' => getStatusText($sampleRow['U_ASB2B_STATUS'] ?? '0'),
+                'getStatusClass_result' => getStatusClass($sampleRow['U_ASB2B_STATUS'] ?? '0')
+            ];
+            // Tüm alanları ve değerlerini ekle
+            if (is_array($sampleRow)) {
+                foreach ($sampleRow as $key => $value) {
+                    $paginatedSample['field_' . $key] = [
+                        'value' => $value,
+                        'type' => gettype($value),
+                        'is_null' => is_null($value),
+                        'is_empty' => empty($value)
+                    ];
+                }
+            }
+            $paginatedSamples[] = $paginatedSample;
+        }
+        $debugInfo['outgoingPaginatedSamples'] = $paginatedSamples;
+    }
+    
+    // View'dan gelen tüm unique status değerleri
+    $uniqueStatuses = [];
+    foreach ($outgoingTransfersRaw as $row) {
+        $status = $row['U_ASB2B_STATUS'] ?? null;
+        $statusKey = var_export($status, true) . ' (' . gettype($status) . ')';
+        if (!isset($uniqueStatuses[$statusKey])) {
+            $uniqueStatuses[$statusKey] = 0;
+        }
+        $uniqueStatuses[$statusKey]++;
+    }
+    $debugInfo['outgoingUniqueStatuses'] = $uniqueStatuses;
+    
+    if (isset($outgoingData['response']['error'])) {
+        $debugInfo['error'] = $outgoingData['response']['error'];
     }
 } else {
-    $incomingDebugInfo['error'] = 'ToWarehouse bulunamadı!';
-}
-
-// 2. Giden transferler (FromWarehouse = '100-KT-0')
-$outgoingTransfers = [];
-$debugInfo = [
-    'branch' => $branch,
-    'uAsOwnr' => $uAsOwnr,
-    'userName' => $userName,
-    'fromWarehouseFilter' => $fromWarehouseFilter,
-    'fromWarehouseQuery' => $fromWarehouseQuery,
-    'fromWarehouseHttpStatus' => $fromWarehouseData['status'] ?? 0,
-    'fromWarehouse' => $fromWarehouse,
-    'fromWarehousesCount' => count($fromWarehouses)
-];
-
-if ($fromWarehouse) {
-        // Sadece TRANSFER tipi (ana depo transferleri MAIN tipinde olur)
-        $outgoingFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_TYPE eq 'TRANSFER' and FromWarehouse eq '{$fromWarehouse}'";
-        
-        if (!empty($filterStatus)) {
-            $outgoingFilter .= " and U_ASB2B_STATUS eq '{$filterStatus}'";
-        }
-        if (!empty($filterStartDate)) {
-            $startDateFormatted = date('Y-m-d', strtotime($filterStartDate));
-            $outgoingFilter .= " and DocDate ge '{$startDateFormatted}'";
-        }
-        if (!empty($filterEndDate)) {
-            $endDateFormatted = date('Y-m-d', strtotime($filterEndDate));
-            $outgoingFilter .= " and DocDate le '{$endDateFormatted}'";
-        }
-        
-        $selectValue = "DocEntry,DocDate,DueDate,U_ASB2B_NumAtCard,U_ASB2B_STATUS,ToWarehouse";
-        // URL encoding: OData query parametrelerini doğru şekilde encode et
-        // Expand parametresini kaldırdık - her transfer için ayrı ayrı lines çekeceğiz
-        $outgoingQuery = "InventoryTransferRequests?\$select=" . urlencode($selectValue) . "&\$filter=" . urlencode($outgoingFilter) . "&\$orderby=" . urlencode("DocEntry desc") . "&\$top=25";
-        
-        $outgoingData = $sap->get($outgoingQuery);
-        $outgoingTransfersRaw = $outgoingData['response']['value'] ?? [];
-        
-        // Debug bilgisi güncelle
-        $debugInfo['outgoingQuery'] = $outgoingQuery;
-        $debugInfo['outgoingFilter'] = $outgoingFilter;
-        $debugInfo['outgoingHttpStatus'] = $outgoingData['status'] ?? 0;
-        $debugInfo['outgoingRawCount'] = count($outgoingTransfersRaw);
-        
-        if (isset($outgoingData['response']['error'])) {
-            $debugInfo['error'] = $outgoingData['response']['error'];
-        }
-        
-        // OPTİMİZASYON: Tüm warehouse kodlarını topla ve tek sorguda çek
-        $uniqueToWhsCodes = [];
-        foreach ($outgoingTransfersRaw as $transfer) {
-            $toWhsCode = $transfer['ToWarehouse'] ?? '';
-            if (!empty($toWhsCode) && !in_array($toWhsCode, $uniqueToWhsCodes)) {
-                $uniqueToWhsCodes[] = $toWhsCode;
-            }
-        }
-        
-        // Tüm warehouse'ları tek sorguda çek
-        $warehouseAnadepoMap = [];
-        if (!empty($uniqueToWhsCodes)) {
-            // OData $filter ile OR kullanarak tüm warehouse'ları tek sorguda çek
-            $whsFilterParts = [];
-            foreach ($uniqueToWhsCodes as $whsCode) {
-                $whsFilterParts[] = "WarehouseCode eq '{$whsCode}'";
-            }
-            $whsFilter = "(" . implode(" or ", $whsFilterParts) . ")";
-            $whsQuery = "Warehouses?\$select=WarehouseCode,U_ASB2B_FATH&\$filter=" . urlencode($whsFilter);
-            $whsData = $sap->get($whsQuery);
-            $whsList = $whsData['response']['value'] ?? [];
-            
-            // Map oluştur: WarehouseCode => isAnadepo
-            foreach ($whsList as $whs) {
-                $whsCode = $whs['WarehouseCode'] ?? '';
-                $isAnadepo = ($whs['U_ASB2B_FATH'] ?? '') === 'Y';
-                $warehouseAnadepoMap[$whsCode] = $isAnadepo;
-            }
-        }
-        
-        // Ana depo warehouse'larını filtrele ve her transfer için detayları çek
-        foreach ($outgoingTransfersRaw as $transfer) {
-            $toWhsCode = $transfer['ToWarehouse'] ?? '';
-            if (!empty($toWhsCode)) {
-                // Map'ten kontrol et (tek sorgu ile çekilmiş)
-                $isAnadepo = $warehouseAnadepoMap[$toWhsCode] ?? false;
-                if (!$isAnadepo) {
-                    $docEntry = $transfer['DocEntry'] ?? '';
-                    $status = $transfer['U_ASB2B_STATUS'] ?? '0';
-                    
-                    // OPTİMİZASYON: Lines'ları sadece sepet için gerekli olan transferler için çek
-                    // Sepet sadece onay bekleyen transferler (status 0 veya 1) için kullanılıyor
-                    $lines = [];
-                    if (!empty($docEntry) && ($status == '0' || $status == '1')) {
-                        // Sadece onay bekleyen transferler için lines çek (sepet için gerekli)
-                        // En basit yöntemle çek: InventoryTransferRequestLines endpoint
-                        $linesQuery = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
-                        $linesData = $sap->get($linesQuery);
-                        
-                        if (($linesData['status'] ?? 0) == 200) {
-                            $linesResponse = $linesData['response'] ?? null;
-                            if ($linesResponse) {
-                                if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
-                                    $lines = $linesResponse['value'];
-                                } elseif (is_array($linesResponse) && !isset($linesResponse['value'])) {
-                                    $lines = $linesResponse;
-                                }
-                            }
-                        }
-                        
-                        // Eğer hala boşsa, StockTransferLines ile dene
-                        if (empty($lines)) {
-                            $linesQuery2 = "InventoryTransferRequests({$docEntry})/StockTransferLines";
-                            $linesData2 = $sap->get($linesQuery2);
-                            
-                            if (($linesData2['status'] ?? 0) == 200) {
-                                $linesResponse2 = $linesData2['response'] ?? null;
-                                if ($linesResponse2) {
-                                    if (isset($linesResponse2['value']) && is_array($linesResponse2['value'])) {
-                                        $lines = $linesResponse2['value'];
-                                    } elseif (is_array($linesResponse2) && !isset($linesResponse2['value'])) {
-                                        $lines = $linesResponse2;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    $transfer['InventoryTransferRequestLines'] = $lines;
-                    $outgoingTransfers[] = $transfer;
-                }
-            } else {
-                // ToWarehouse boşsa da ekle (güvenlik için)
-                $outgoingTransfers[] = $transfer;
-            }
-        }
+    $debugInfo['error'] = 'View expose edilemedi!';
 }
 
 // Tarih formatlama
@@ -368,8 +688,8 @@ function buildSearchData(...$parts) {
 $warehouseNamesMap = [];
 $allWarehouseCodes = [];
 foreach ($incomingTransfers as $transfer) {
-    if (!empty($transfer['FromWarehouse'])) {
-        $allWarehouseCodes[] = $transfer['FromWarehouse'];
+    if (!empty($transfer['FromWhsCode'])) {
+        $allWarehouseCodes[] = $transfer['FromWhsCode'];
     }
 }
 foreach ($outgoingTransfers as $transfer) {
@@ -963,31 +1283,132 @@ input[type="checkbox"]:focus {
                     <div class="show-entries">
                         Sayfada 
                         <select class="entries-select" id="entriesPerPage" onchange="applyFilters()">
-                            <option value="25" selected>25</option>
-                            <option value="50">50</option>
-                            <option value="75">75</option>
+                            <option value="25" <?= (isset($incomingPagination['items_per_page']) && $incomingPagination['items_per_page'] == 25) ? 'selected' : '' ?>>25</option>
+                            <option value="50" <?= (isset($incomingPagination['items_per_page']) && $incomingPagination['items_per_page'] == 50) ? 'selected' : '' ?>>50</option>
+                            <option value="75" <?= (isset($incomingPagination['items_per_page']) && $incomingPagination['items_per_page'] == 75) ? 'selected' : '' ?>>75</option>
                         </select>
                         kayıt göster
                     </div>
 
                     <div class="search-box">
-                        <input type="text" class="search-input" id="tableSearch" placeholder="Ara..." onkeyup="if(event.key==='Enter') performSearch()">
+                        <input type="text" class="search-input" id="tableSearch" placeholder="Ara..." value="<?= htmlspecialchars($_GET['search'] ?? '') ?>" onkeyup="if(event.key==='Enter') performSearch()">
                         <button class="btn btn-secondary" onclick="performSearch()">🔍</button>
                         </div>
                     </div>
+
+                    <?php if (isset($incomingDebugInfo) && !empty($incomingDebugInfo)): ?>
+                        <div style="margin: 1rem 0; padding: 1rem; background: #fef3c7; border-radius: 6px; font-size: 0.875rem; text-align: left;">
+                            <strong>🔍 Debug Bilgisi (Gelen Transferler):</strong><br>
+                            <strong>Kullanıcı:</strong> <?= htmlspecialchars($incomingDebugInfo['userName'] ?? 'BULUNAMADI') ?><br>
+                            <strong>Branch:</strong> <?= htmlspecialchars($incomingDebugInfo['branch'] ?? 'BULUNAMADI') ?><br>
+                            <strong>U_AS_OWNR:</strong> <?= htmlspecialchars($incomingDebugInfo['uAsOwnr'] ?? 'BULUNAMADI') ?><br>
+                            <hr style="margin: 1rem 0; border: 1px solid #d1d5db;">
+                            <strong style="color: #1e40af; font-size: 1rem;">📡 View Sorgu Bilgileri:</strong><br>
+                            <strong>Incoming Query:</strong> <code style="background: #f3f4f6; padding: 2px 4px; border-radius: 3px;"><?= htmlspecialchars($incomingDebugInfo['incomingQuery'] ?? 'YOK') ?></code><br>
+                            <strong>Incoming Filter:</strong> <code style="background: #f3f4f6; padding: 2px 4px; border-radius: 3px;"><?= htmlspecialchars($incomingDebugInfo['incomingFilter'] ?? 'YOK') ?></code><br>
+                            <strong>Incoming HTTP Status:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingHttpStatus'] ?? '0') ?><br>
+                            <strong>Incoming Raw Count:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingRawCount'] ?? '0') ?> (View'dan gelen toplam satır sayısı)<br>
+                            <strong>Incoming Filtered Count:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingFilteredCount'] ?? '0') ?> (Gösterilen transfer sayısı)<br>
+                            
+                            <?php if (isset($incomingDebugInfo['rawSamples']) && !empty($incomingDebugInfo['rawSamples'])): ?>
+                                <hr style="margin: 1rem 0; border: 1px solid #d1d5db;">
+                                <strong style="color: #dc2626; font-size: 1rem;">📊 View'dan Gelen Ham Veri (İlk 5 Kayıt - Tüm Alanlar):</strong><br>
+                                <?php foreach ($incomingDebugInfo['rawSamples'] as $sample): ?>
+                                    <div style="margin-left: 1rem; margin-top: 0.75rem; padding: 0.75rem; background: #f3f4f6; border-radius: 4px; border-left: 3px solid #3b82f6;">
+                                        <strong style="color: #1e40af;">Kayıt #<?= $sample['index'] ?> (DocEntry: <?= htmlspecialchars($sample['DocEntry']) ?>):</strong><br>
+                                        <div style="margin-left: 1rem; margin-top: 0.5rem;">
+                                            <strong>U_ASB2B_STATUS:</strong><br>
+                                            &nbsp;&nbsp;• Raw Değer: <code><?= htmlspecialchars(var_export($sample['U_ASB2B_STATUS_raw'], true)) ?></code><br>
+                                            &nbsp;&nbsp;• Tip: <code><?= htmlspecialchars($sample['U_ASB2B_STATUS_type']) ?></code><br>
+                                            &nbsp;&nbsp;• String'e Çevrilmiş: <code><?= htmlspecialchars($sample['U_ASB2B_STATUS_string']) ?></code><br>
+                                            <strong style="margin-top: 0.5rem; display: block;">Tüm Alanlar ve Değerleri:</strong>
+                                            <div style="margin-left: 1rem; font-family: monospace; font-size: 0.8rem;">
+                                                <?php 
+                                                $fieldKeys = array_filter(array_keys($sample), function($key) {
+                                                    return strpos($key, 'field_') === 0;
+                                                });
+                                                foreach ($fieldKeys as $fieldKey): 
+                                                    $fieldName = str_replace('field_', '', $fieldKey);
+                                                    $fieldData = $sample[$fieldKey];
+                                                ?>
+                                                    <div style="margin-top: 0.25rem;">
+                                                        <strong><?= htmlspecialchars($fieldName) ?>:</strong> 
+                                                        <code><?= htmlspecialchars(var_export($fieldData['value'], true)) ?></code> 
+                                                        (<?= htmlspecialchars($fieldData['type']) ?><?= $fieldData['is_null'] ? ', NULL' : '' ?><?= $fieldData['is_empty'] ? ', EMPTY' : '' ?>)
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                            
+                            <?php if (isset($incomingDebugInfo['paginatedSamples']) && !empty($incomingDebugInfo['paginatedSamples'])): ?>
+                                <hr style="margin: 1rem 0; border: 1px solid #d1d5db;">
+                                <strong style="color: #059669; font-size: 1rem;">📦 Sayfalama Sonrası Veri (İlk 5 Kayıt - Tüm Alanlar):</strong><br>
+                                <?php foreach ($incomingDebugInfo['paginatedSamples'] as $sample): ?>
+                                    <div style="margin-left: 1rem; margin-top: 0.75rem; padding: 0.75rem; background: #dbeafe; border-radius: 4px; border-left: 3px solid #3b82f6;">
+                                        <strong style="color: #1e40af;">Kayıt #<?= $sample['index'] ?> (DocEntry: <?= htmlspecialchars($sample['DocEntry']) ?>):</strong><br>
+                                        <div style="margin-left: 1rem; margin-top: 0.5rem;">
+                                            <strong>U_ASB2B_STATUS:</strong><br>
+                                            &nbsp;&nbsp;• Değer: <code><?= htmlspecialchars(var_export($sample['U_ASB2B_STATUS'], true)) ?></code><br>
+                                            &nbsp;&nbsp;• Tip: <code><?= htmlspecialchars($sample['U_ASB2B_STATUS_type']) ?></code><br>
+                                            &nbsp;&nbsp;• getStatusText(): <strong style="color: #dc2626;"><?= htmlspecialchars($sample['getStatusText_result']) ?></strong><br>
+                                            &nbsp;&nbsp;• getStatusClass(): <code><?= htmlspecialchars($sample['getStatusClass_result']) ?></code><br>
+                                            <strong style="margin-top: 0.5rem; display: block;">Tüm Alanlar ve Değerleri:</strong>
+                                            <div style="margin-left: 1rem; font-family: monospace; font-size: 0.8rem;">
+                                                <?php 
+                                                $fieldKeys = array_filter(array_keys($sample), function($key) {
+                                                    return strpos($key, 'field_') === 0;
+                                                });
+                                                foreach ($fieldKeys as $fieldKey): 
+                                                    $fieldName = str_replace('field_', '', $fieldKey);
+                                                    $fieldData = $sample[$fieldKey];
+                                                ?>
+                                                    <div style="margin-top: 0.25rem;">
+                                                        <strong><?= htmlspecialchars($fieldName) ?>:</strong> 
+                                                        <code><?= htmlspecialchars(var_export($fieldData['value'], true)) ?></code> 
+                                                        (<?= htmlspecialchars($fieldData['type']) ?><?= $fieldData['is_null'] ? ', NULL' : '' ?><?= $fieldData['is_empty'] ? ', EMPTY' : '' ?>)
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                            
+                            <?php if (isset($incomingDebugInfo['uniqueStatuses']) && !empty($incomingDebugInfo['uniqueStatuses'])): ?>
+                                <hr style="margin: 1rem 0; border: 1px solid #d1d5db;">
+                                <strong style="color: #dc2626; font-size: 1rem;">🔢 View'dan Gelen Tüm Unique Status Değerleri:</strong><br>
+                                <div style="margin-left: 1rem; margin-top: 0.5rem; padding: 0.75rem; background: #fef3c7; border-radius: 4px; border-left: 3px solid #f59e0b;">
+                                    <?php foreach ($incomingDebugInfo['uniqueStatuses'] as $statusKey => $count): ?>
+                                        <div style="margin-top: 0.25rem;">
+                                            <strong><?= htmlspecialchars($statusKey) ?>:</strong> <span style="color: #dc2626; font-weight: bold;"><?= $count ?> adet</span>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                            
+                            <?php if (isset($incomingPagination)): ?>
+                                <hr style="margin: 1rem 0; border: 1px solid #d1d5db;">
+                                <strong>Pagination:</strong> Sayfa <?= $incomingPagination['current_page'] ?> / <?= $incomingPagination['total_pages'] ?> (Toplam: <?= $incomingPagination['total_items'] ?> kayıt)<br>
+                            <?php endif; ?>
+                            <?php if (isset($incomingDebugInfo['error'])): ?>
+                                <strong style="color: #dc2626;">Error:</strong> <?= htmlspecialchars(json_encode($incomingDebugInfo['error'])) ?><br>
+                            <?php endif; ?>
+                        </div>
+                    <?php endif; ?>
 
                         <table class="data-table">
                             <thead>
                                 <tr>
                                     <th>Transfer No</th>
+                                    <th>Kalem No</th>
+                                    <th>Kalem Tanımı</th>
+                                    <th>Tarih<br><small style="font-weight: normal;">Talep / Vade</small></th>
                                     <th>Gönderen Şube</th>
-
-                            <th>Talep Tarihi</th>
-                            <th>Vade Tarihi</th>
-                            <th>Teslimat Belge No</th>
                                     <th>Durum</th>
-
-                            <th>İşlemler</th>
+                                    <th>İşlemler</th>
                                 </tr>
                             </thead>
 
@@ -996,119 +1417,234 @@ input[type="checkbox"]:focus {
                             <tr>
                                 <td colspan="7" style="text-align: center; padding: 40px; color: #9ca3af;">
                                     Gelen transfer bulunamadı.
-                                    <?php if (isset($incomingDebugInfo) && !empty($incomingDebugInfo)): ?>
-                                        <div style="margin-top: 1rem; padding: 1rem; background: #fef3c7; border-radius: 6px; font-size: 0.875rem; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
-                                            <strong>🔍 Debug Bilgisi (Gelen Transferler):</strong><br>
-                                            <strong>Kullanıcı:</strong> <?= htmlspecialchars($incomingDebugInfo['userName'] ?? 'BULUNAMADI') ?><br>
-                                            <strong>Branch:</strong> <?= htmlspecialchars($incomingDebugInfo['branch'] ?? 'BULUNAMADI') ?><br>
-                                            <strong>U_AS_OWNR:</strong> <?= htmlspecialchars($incomingDebugInfo['uAsOwnr'] ?? 'BULUNAMADI') ?><br>
-                                            <strong>ToWarehouse Filter:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseFilter'] ?? '') ?><br>
-                                            <strong>ToWarehouse Query:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseQuery'] ?? '') ?><br>
-                                            <strong>ToWarehouse HTTP Status:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseHttpStatus'] ?? '0') ?><br>
-                                            <strong>ToWarehouse:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouse'] ?? 'BULUNAMADI') ?><br>
-                                            <strong>ToWarehouse Source:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseSource'] ?? 'BULUNAMADI') ?><br>
-                                            <strong>ToWarehouses Count (MAIN=2):</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehousesCount'] ?? '0') ?><br>
-                                            <?php if (!empty($incomingDebugInfo['toWarehouseFilterAlt'])): ?>
-                                                <strong>ToWarehouse Filter Alt (MAIN=1):</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseFilterAlt']) ?><br>
-                                                <strong>ToWarehouse Query Alt:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseQueryAlt'] ?? '') ?><br>
-                                                <strong>ToWarehouse HTTP Status Alt:</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehouseHttpStatusAlt'] ?? '0') ?><br>
-                                                <strong>ToWarehouses Count Alt (MAIN=1):</strong> <?= htmlspecialchars($incomingDebugInfo['toWarehousesCountAlt'] ?? '0') ?><br>
-                                            <?php endif; ?>
-                                            <?php if (!empty($incomingDebugInfo['toWarehouse'])): ?>
-                                                <strong>Incoming Query:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingQuery'] ?? '') ?><br>
-                                                <strong>Incoming Filter:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingFilter'] ?? '') ?><br>
-                                                <strong>Incoming HTTP Status:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingHttpStatus'] ?? '0') ?><br>
-                                                <strong>Incoming Raw Count:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingRawCount'] ?? '0') ?><br>
-                                                <strong>Incoming Filtered Count:</strong> <?= htmlspecialchars($incomingDebugInfo['incomingFilteredCount'] ?? '0') ?><br>
-                                            <?php endif; ?>
-                                            <?php if (isset($incomingDebugInfo['error'])): ?>
-                                                <strong style="color: #dc2626;">Error:</strong> <?= htmlspecialchars(json_encode($incomingDebugInfo['error'])) ?><br>
-                                            <?php endif; ?>
-                        </div>
-
-                                    <?php endif; ?>
                                 </td>
                             </tr>
                         <?php else: ?>
-                            <?php foreach ($incomingTransfers as $transfer): 
-                                $status = $transfer['U_ASB2B_STATUS'] ?? '0';
+                            <?php foreach ($incomingTransfers as $row): 
+                                $status = (string)($row['U_ASB2B_STATUS'] ?? '0');
                                 $statusText = getStatusText($status);
                                 $statusClass = getStatusClass($status);
                                 // Gelen transferlerde: Sadece Sevk Edildi (3) durumunda Teslim Al butonu göster
                                 $canReceive = ($status === '3'); // Sadece Sevk Edildi
-                                $fromWhsCode = $transfer['FromWarehouse'] ?? '';
+                                $fromWhsCode = $row['FromWhsCode'] ?? '';
                                 $fromWhsName = $warehouseNamesMap[$fromWhsCode] ?? '';
                                 $fromWhsDisplay = $fromWhsCode;
                                 if (!empty($fromWhsName)) {
                                     $fromWhsDisplay = $fromWhsCode . ' / ' . $fromWhsName;
                                 }
-                                $docDate = formatDate($transfer['DocDate'] ?? '');
-                                $dueDate = formatDate($transfer['DueDate'] ?? '');
-                                $numAtCard = htmlspecialchars($transfer['U_ASB2B_NumAtCard'] ?? '-');
-                                $docEntry = htmlspecialchars($transfer['DocEntry'] ?? '-');
+                                $docDate = formatDate($row['DocDate'] ?? '');
+                                $dueDate = formatDate($row['DocDueDate'] ?? '');
+                                $numAtCard = htmlspecialchars($row['U_ASB2B_NumAtCard'] ?? '-');
+                                $docEntry = htmlspecialchars($row['DocEntry'] ?? '-');
+                                $itemCode = htmlspecialchars($row['ItemCode'] ?? '-');
+                                $dscription = htmlspecialchars($row['Dscription'] ?? '-');
                                 $searchData = buildSearchData($docEntry, $fromWhsDisplay, $docDate, $dueDate, $numAtCard, $statusText);
                             ?>
                                 <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>">
                                     <td style="font-weight: 600; color: #1e40af;"><?= $docEntry ?></td>
+                                    <td><?= $itemCode ?></td>
+                                    <td><?= $dscription ?></td>
+                                    <td style="line-height: 1.4;">
+                                        <div><?= $docDate ?></div>
+                                        <div style="color: #6b7280; font-size: 0.875rem;"><?= $dueDate ?></div>
+                                    </td>
                                     <td><?= htmlspecialchars($fromWhsDisplay) ?></td>
-                                    <td><?= $docDate ?></td>
-                                    <td><?= $dueDate ?></td>
-                                    <td><?= $numAtCard ?></td>
                                     <td>
                                         <span class="status-badge <?= $statusClass ?>"><?= htmlspecialchars($statusText) ?></span>
-                                            </td>
-
-
+                                    </td>
                                     <td>
                                         <div class="table-actions">
-                                            <a href="Transferler-Detay.php?docEntry=<?= urlencode($transfer['DocEntry']) ?>&type=incoming">
+                                            <a href="Transferler-Detay.php?docEntry=<?= urlencode($row['DocEntry']) ?>&type=incoming&itemCode=<?= urlencode($row['ItemCode'] ?? '') ?>&lineNum=<?= urlencode($row['LineNum'] ?? '') ?>">
                                                 <button class="btn-icon btn-view">👁️ Detay</button>
                                             </a>
                                             <?php if ($canReceive): ?>
-                                                <a href="Transferler-TeslimAl.php?docEntry=<?= urlencode($transfer['DocEntry']) ?>">
+                                                <a href="Transferler-TeslimAl.php?docEntry=<?= urlencode($row['DocEntry']) ?>&itemCode=<?= urlencode($row['ItemCode'] ?? '') ?>&lineNum=<?= urlencode($row['LineNum'] ?? '') ?>">
                                                     <button class="btn-icon btn-receive">✓ Teslim Al</button>
                                                 </a>
                                             <?php endif; ?>
-                    </div>
-
+                                        </div>
                                     </td>
-                                        </tr>
+                                </tr>
 
                             <?php endforeach; ?>
                         <?php endif; ?>
                     </tbody>
                 </table>
+                
+                <?php if (isset($incomingPagination) && $incomingPagination['total_pages'] >= 1): ?>
+                <div style="padding: 20px; display: flex; justify-content: center; align-items: center; gap: 8px;">
+                    <?php
+                    $currentPage = $incomingPagination['current_page'];
+                    $totalPages = $incomingPagination['total_pages'];
+                    $maxPagesToShow = 7;
+                    
+                    $searchParam = !empty($_GET['search']) ? '&search=' . urlencode($_GET['search']) : '';
+                    $statusParam = !empty($filterStatus) ? '&status=' . urlencode($filterStatus) : '';
+                    $startDateParam = !empty($filterStartDate) ? '&start_date=' . urlencode($filterStartDate) : '';
+                    $endDateParam = !empty($filterEndDate) ? '&end_date=' . urlencode($filterEndDate) : '';
+                    $entriesParam = isset($incomingPagination['items_per_page']) ? '&entries=' . $incomingPagination['items_per_page'] : '';
+                    $baseParams = $statusParam . $startDateParam . $endDateParam . $entriesParam . $searchParam;
+                    
+                    // İlk sayfa
+                    if ($currentPage > 1): ?>
+                        <a href="?view=incoming&page=1<?= $baseParams ?>" 
+                           style="padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; text-decoration: none; color: #374151; background: white;">« İlk</a>
+                    <?php endif; ?>
+                    
+                    <?php
+                    // Sayfa numaralarını hesapla
+                    $startPage = max(1, $currentPage - floor($maxPagesToShow / 2));
+                    $endPage = min($totalPages, $startPage + $maxPagesToShow - 1);
+                    if ($endPage - $startPage < $maxPagesToShow - 1) {
+                        $startPage = max(1, $endPage - $maxPagesToShow + 1);
+                    }
+                    
+                    for ($i = $startPage; $i <= $endPage; $i++): ?>
+                        <a href="?view=incoming&page=<?= $i ?><?= $baseParams ?>" 
+                           style="padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; text-decoration: none; color: #374151; background: <?= $i == $currentPage ? '#3b82f6; color: white;' : 'white;' ?>"><?= $i ?></a>
+                    <?php endfor; ?>
+                    
+                    <?php if ($currentPage < $totalPages): ?>
+                        <a href="?view=incoming&page=<?= $totalPages ?><?= $baseParams ?>" 
+                           style="padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; text-decoration: none; color: #374151; background: white;">Son »</a>
+                    <?php endif; ?>
+                </div>
+                <?php endif; ?>
+                
                 <?php else: ?>
                 <!-- Giden Transferler (Bu şubeden giden) -->
                 <div class="table-controls">
                     <div class="show-entries">
                         Sayfada 
                         <select class="entries-select" id="entriesPerPage" onchange="applyFilters()">
-                            <option value="25" selected>25</option>
-                            <option value="50">50</option>
-                            <option value="75">75</option>
+                            <option value="25" <?= (isset($outgoingPagination['items_per_page']) && $outgoingPagination['items_per_page'] == 25) ? 'selected' : '' ?>>25</option>
+                            <option value="50" <?= (isset($outgoingPagination['items_per_page']) && $outgoingPagination['items_per_page'] == 50) ? 'selected' : '' ?>>50</option>
+                            <option value="75" <?= (isset($outgoingPagination['items_per_page']) && $outgoingPagination['items_per_page'] == 75) ? 'selected' : '' ?>>75</option>
                         </select>
                         kayıt göster
                     </div>
                     <div class="search-box">
-                        <input type="text" class="search-input" id="tableSearch" placeholder="Ara..." onkeyup="if(event.key==='Enter') performSearch()">
+                        <input type="text" class="search-input" id="tableSearch" placeholder="Ara..." value="<?= htmlspecialchars($_GET['search'] ?? '') ?>" onkeyup="if(event.key==='Enter') performSearch()">
                         <button class="btn btn-secondary" onclick="performSearch()">🔍</button>
                     </div>
                         </div>
+
+                    <?php if (isset($debugInfo) && !empty($debugInfo)): ?>
+                        <div style="margin: 1rem 0; padding: 1rem; background: #fef3c7; border-radius: 6px; font-size: 0.875rem; text-align: left;">
+                            <strong>🔍 Debug Bilgisi (Giden Transferler):</strong><br>
+                            <strong>Kullanıcı:</strong> <?= htmlspecialchars($debugInfo['userName'] ?? 'BULUNAMADI') ?><br>
+                            <strong>Branch:</strong> <?= htmlspecialchars($debugInfo['branch'] ?? 'BULUNAMADI') ?><br>
+                            <strong>U_AS_OWNR:</strong> <?= htmlspecialchars($debugInfo['uAsOwnr'] ?? 'BULUNAMADI') ?><br>
+                            <hr style="margin: 1rem 0; border: 1px solid #d1d5db;">
+                            <strong style="color: #1e40af; font-size: 1rem;">📡 View Sorgu Bilgileri:</strong><br>
+                            <strong>Outgoing Query:</strong> <code style="background: #f3f4f6; padding: 2px 4px; border-radius: 3px;"><?= htmlspecialchars($debugInfo['outgoingQuery'] ?? 'YOK') ?></code><br>
+                            <strong>Outgoing Filter:</strong> <code style="background: #f3f4f6; padding: 2px 4px; border-radius: 3px;"><?= htmlspecialchars($debugInfo['outgoingFilter'] ?? 'YOK') ?></code><br>
+                            <strong>Outgoing HTTP Status:</strong> <?= htmlspecialchars($debugInfo['outgoingHttpStatus'] ?? '0') ?><br>
+                            <strong>Outgoing Raw Count:</strong> <?= htmlspecialchars($debugInfo['outgoingRawCount'] ?? '0') ?> (View'dan gelen toplam satır sayısı)<br>
+                            <strong>Outgoing Filtered Count:</strong> <?= htmlspecialchars($debugInfo['outgoingFilteredCount'] ?? '0') ?> (Ana depo filtresi sonrası satır sayısı)<br>
+                            <strong>Outgoing Paginated Count:</strong> <?= htmlspecialchars($debugInfo['outgoingPaginatedCount'] ?? '0') ?> (Sayfalama sonrası gösterilen satır sayısı)<br>
+                            
+                            <?php if (isset($debugInfo['outgoingRawSamples']) && !empty($debugInfo['outgoingRawSamples'])): ?>
+                                <hr style="margin: 1rem 0; border: 1px solid #d1d5db;">
+                                <strong style="color: #dc2626; font-size: 1rem;">📊 View'dan Gelen Ham Veri (İlk 5 Kayıt - Tüm Alanlar):</strong><br>
+                                <?php foreach ($debugInfo['outgoingRawSamples'] as $sample): ?>
+                                    <div style="margin-left: 1rem; margin-top: 0.75rem; padding: 0.75rem; background: #f3f4f6; border-radius: 4px; border-left: 3px solid #3b82f6;">
+                                        <strong style="color: #1e40af;">Kayıt #<?= $sample['index'] ?> (DocEntry: <?= htmlspecialchars($sample['DocEntry']) ?>):</strong><br>
+                                        <div style="margin-left: 1rem; margin-top: 0.5rem;">
+                                            <strong>U_ASB2B_STATUS:</strong><br>
+                                            &nbsp;&nbsp;• Raw Değer: <code><?= htmlspecialchars(var_export($sample['U_ASB2B_STATUS_raw'], true)) ?></code><br>
+                                            &nbsp;&nbsp;• Tip: <code><?= htmlspecialchars($sample['U_ASB2B_STATUS_type']) ?></code><br>
+                                            &nbsp;&nbsp;• String'e Çevrilmiş: <code><?= htmlspecialchars($sample['U_ASB2B_STATUS_string']) ?></code><br>
+                                            <strong style="margin-top: 0.5rem; display: block;">Tüm Alanlar ve Değerleri:</strong>
+                                            <div style="margin-left: 1rem; font-family: monospace; font-size: 0.8rem;">
+                                                <?php 
+                                                $fieldKeys = array_filter(array_keys($sample), function($key) {
+                                                    return strpos($key, 'field_') === 0;
+                                                });
+                                                foreach ($fieldKeys as $fieldKey): 
+                                                    $fieldName = str_replace('field_', '', $fieldKey);
+                                                    $fieldData = $sample[$fieldKey];
+                                                ?>
+                                                    <div style="margin-top: 0.25rem;">
+                                                        <strong><?= htmlspecialchars($fieldName) ?>:</strong> 
+                                                        <code><?= htmlspecialchars(var_export($fieldData['value'], true)) ?></code> 
+                                                        (<?= htmlspecialchars($fieldData['type']) ?><?= $fieldData['is_null'] ? ', NULL' : '' ?><?= $fieldData['is_empty'] ? ', EMPTY' : '' ?>)
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                            
+                            <?php if (isset($debugInfo['outgoingPaginatedSamples']) && !empty($debugInfo['outgoingPaginatedSamples'])): ?>
+                                <hr style="margin: 1rem 0; border: 1px solid #d1d5db;">
+                                <strong style="color: #059669; font-size: 1rem;">📦 Sayfalama Sonrası Veri (İlk 5 Kayıt - Tüm Alanlar):</strong><br>
+                                <?php foreach ($debugInfo['outgoingPaginatedSamples'] as $sample): ?>
+                                    <div style="margin-left: 1rem; margin-top: 0.75rem; padding: 0.75rem; background: #dbeafe; border-radius: 4px; border-left: 3px solid #3b82f6;">
+                                        <strong style="color: #1e40af;">Kayıt #<?= $sample['index'] ?> (DocEntry: <?= htmlspecialchars($sample['DocEntry']) ?>):</strong><br>
+                                        <div style="margin-left: 1rem; margin-top: 0.5rem;">
+                                            <strong>U_ASB2B_STATUS:</strong><br>
+                                            &nbsp;&nbsp;• Değer: <code><?= htmlspecialchars(var_export($sample['U_ASB2B_STATUS'], true)) ?></code><br>
+                                            &nbsp;&nbsp;• Tip: <code><?= htmlspecialchars($sample['U_ASB2B_STATUS_type']) ?></code><br>
+                                            &nbsp;&nbsp;• getStatusText(): <strong style="color: #dc2626;"><?= htmlspecialchars($sample['getStatusText_result']) ?></strong><br>
+                                            &nbsp;&nbsp;• getStatusClass(): <code><?= htmlspecialchars($sample['getStatusClass_result']) ?></code><br>
+                                            <strong style="margin-top: 0.5rem; display: block;">Tüm Alanlar ve Değerleri:</strong>
+                                            <div style="margin-left: 1rem; font-family: monospace; font-size: 0.8rem;">
+                                                <?php 
+                                                $fieldKeys = array_filter(array_keys($sample), function($key) {
+                                                    return strpos($key, 'field_') === 0;
+                                                });
+                                                foreach ($fieldKeys as $fieldKey): 
+                                                    $fieldName = str_replace('field_', '', $fieldKey);
+                                                    $fieldData = $sample[$fieldKey];
+                                                ?>
+                                                    <div style="margin-top: 0.25rem;">
+                                                        <strong><?= htmlspecialchars($fieldName) ?>:</strong> 
+                                                        <code><?= htmlspecialchars(var_export($fieldData['value'], true)) ?></code> 
+                                                        (<?= htmlspecialchars($fieldData['type']) ?><?= $fieldData['is_null'] ? ', NULL' : '' ?><?= $fieldData['is_empty'] ? ', EMPTY' : '' ?>)
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                            
+                            <?php if (isset($debugInfo['outgoingUniqueStatuses']) && !empty($debugInfo['outgoingUniqueStatuses'])): ?>
+                                <hr style="margin: 1rem 0; border: 1px solid #d1d5db;">
+                                <strong style="color: #dc2626; font-size: 1rem;">🔢 View'dan Gelen Tüm Unique Status Değerleri:</strong><br>
+                                <div style="margin-left: 1rem; margin-top: 0.5rem; padding: 0.75rem; background: #fef3c7; border-radius: 4px; border-left: 3px solid #f59e0b;">
+                                    <?php foreach ($debugInfo['outgoingUniqueStatuses'] as $statusKey => $count): ?>
+                                        <div style="margin-top: 0.25rem;">
+                                            <strong><?= htmlspecialchars($statusKey) ?>:</strong> <span style="color: #dc2626; font-weight: bold;"><?= $count ?> adet</span>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                            
+                            <?php if (isset($debugInfo['outgoingPagination'])): ?>
+                                <hr style="margin: 1rem 0; border: 1px solid #d1d5db;">
+                                <strong>Pagination:</strong> Sayfa <?= $debugInfo['outgoingPagination']['current_page'] ?> / <?= $debugInfo['outgoingPagination']['total_pages'] ?> (Toplam: <?= $debugInfo['outgoingPagination']['total_items'] ?> kayıt)<br>
+                            <?php endif; ?>
+                            <?php if (isset($debugInfo['error'])): ?>
+                                <strong style="color: #dc2626;">Error:</strong> <?= htmlspecialchars(json_encode($debugInfo['error'])) ?><br>
+                            <?php endif; ?>
+                        </div>
+                    <?php endif; ?>
+
                         <table class="data-table">
                             <thead>
                                 <tr>
 
                             <th style="width: 40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
                                     <th>Transfer No</th>
+                                    <th>Kalem No</th>
+                                    <th>Kalem Tanımı</th>
+                                    <th>Tarih<br><small style="font-weight: normal;">Talep / Vade</small></th>
                                     <th>Alıcı Şube</th>
-
-                            <th>Talep Tarihi</th>
-                            <th>Vade Tarihi</th>
-                            <th>Teslimat Belge No</th>
                                     <th>Durum</th>
-
-                            <th>İşlemler</th>
+                                    <th>İşlemler</th>
                                     </tr>
 
                             </thead>
@@ -1116,7 +1652,7 @@ input[type="checkbox"]:focus {
                     <tbody>
                         <?php if (empty($outgoingTransfers)): ?>
                             <tr>
-                                <td colspan="8" style="text-align: center; padding: 40px; color: #9ca3af;">
+                                <td colspan="7" style="text-align: center; padding: 40px; color: #9ca3af;">
                                     Giden transfer bulunamadı.
                                     <?php if (isset($debugInfo) && !empty($debugInfo)): ?>
                                         <div style="margin-top: 1rem; padding: 1rem; background: #fef3c7; border-radius: 6px; font-size: 0.875rem; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
@@ -1144,63 +1680,108 @@ input[type="checkbox"]:focus {
 
                             </tr>
                         <?php else: ?>
-                            <?php foreach ($outgoingTransfers as $transfer): 
-                                $status = $transfer['U_ASB2B_STATUS'] ?? '0';
+                            <?php foreach ($outgoingTransfers as $row): 
+                                $status = (string)($row['U_ASB2B_STATUS'] ?? '0');
                                 $statusText = getStatusText($status);
                                 $statusClass = getStatusClass($status);
                                 // Giden transferlerde: Onay Bekliyor (0, 1) durumunda Onayla/İptal butonları
                                 $canApprove = in_array($status, ['0', '1']); // Onay Bekliyor
-                                $toWhsCode = $transfer['ToWarehouse'] ?? '';
+                                $toWhsCode = $row['WhsCode'] ?? ''; // Giden transferlerde WhsCode = ToWarehouse
                                 $toWhsName = $warehouseNamesMap[$toWhsCode] ?? '';
                                 $toWhsDisplay = $toWhsCode;
                                 if (!empty($toWhsName)) {
                                     $toWhsDisplay = $toWhsCode . ' / ' . $toWhsName;
                                 }
-                                $docDate = formatDate($transfer['DocDate'] ?? '');
-                                $dueDate = formatDate($transfer['DueDate'] ?? '');
-                                $numAtCard = htmlspecialchars($transfer['U_ASB2B_NumAtCard'] ?? '-');
-                                $docEntry = htmlspecialchars($transfer['DocEntry'] ?? '-');
+                                $docDate = formatDate($row['DocDate'] ?? '');
+                                $dueDate = formatDate($row['DocDueDate'] ?? '');
+                                $numAtCard = htmlspecialchars($row['U_ASB2B_NumAtCard'] ?? '-');
+                                $docEntry = htmlspecialchars($row['DocEntry'] ?? '-');
+                                $itemCode = htmlspecialchars($row['ItemCode'] ?? '-');
+                                $dscription = htmlspecialchars($row['Dscription'] ?? '-');
                                 $searchData = buildSearchData($docEntry, $toWhsDisplay, $docDate, $dueDate, $numAtCard, $statusText);
-                                $lines = $transfer['InventoryTransferRequestLines'] ?? [];
+                                $lines = $row['InventoryTransferRequestLines'] ?? [];
                                 
                                 // Lines boş olsa bile JSON olarak encode et
                                 $transferLinesJson = !empty($lines) ? htmlspecialchars(json_encode($lines), ENT_QUOTES, 'UTF-8') : '[]';
                             ?>
-                                <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>" data-docentry="<?= $docEntry ?>" data-lines="<?= $transferLinesJson ?>">
+                                <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>" data-docentry="<?= $docEntry ?>" data-itemcode="<?= htmlspecialchars($itemCode) ?>" data-linenum="<?= htmlspecialchars($row['LineNum'] ?? '') ?>" data-lines="<?= $transferLinesJson ?>">
                                     <td style="text-align: center;">
                                         <?php if ($canApprove): ?>
-                                            <input type="checkbox" class="transfer-checkbox" value="<?= $docEntry ?>" data-docentry="<?= $docEntry ?>">
+                                            <input type="checkbox" class="transfer-checkbox" value="<?= $docEntry ?>" data-docentry="<?= $docEntry ?>" data-itemcode="<?= htmlspecialchars($itemCode) ?>" data-linenum="<?= htmlspecialchars($row['LineNum'] ?? '') ?>">
                                         <?php endif; ?>
                                     </td>
                                     <td style="font-weight: 600; color: #1e40af;"><?= $docEntry ?></td>
+                                    <td><?= $itemCode ?></td>
+                                    <td><?= $dscription ?></td>
+                                    <td style="line-height: 1.4;">
+                                        <div><?= $docDate ?></div>
+                                        <div style="color: #6b7280; font-size: 0.875rem;"><?= $dueDate ?></div>
+                                    </td>
                                     <td><?= htmlspecialchars($toWhsDisplay) ?></td>
-                                    <td><?= $docDate ?></td>
-                                    <td><?= $dueDate ?></td>
-                                    <td><?= $numAtCard ?></td>
                                     <td>
                                         <span class="status-badge <?= $statusClass ?>"><?= htmlspecialchars($statusText) ?></span>
-                                            </td>
+                                    </td>
                                     <td>
                                         <div class="table-actions">
-                                            <a href="Transferler-Detay.php?docEntry=<?= urlencode($transfer['DocEntry']) ?>&type=outgoing">
+                                            <a href="Transferler-Detay.php?docEntry=<?= urlencode($row['DocEntry']) ?>&type=outgoing&itemCode=<?= urlencode($row['ItemCode'] ?? '') ?>&lineNum=<?= urlencode($row['LineNum'] ?? '') ?>">
                                                 <button class="btn-icon btn-view">👁️ Detay</button>
                                             </a>
                                             <?php if ($canApprove): ?>
-                                                <a href="Transferler-Onayla.php?docEntry=<?= urlencode($transfer['DocEntry']) ?>&action=approve">
+                                                <a href="Transferler-Onayla.php?docEntry=<?= urlencode($row['DocEntry']) ?>&action=approve">
                                                     <button class="btn-icon btn-approve">✓ Onayla</button>
                                                 </a>
-                                                <a href="Transferler-Onayla.php?docEntry=<?= urlencode($transfer['DocEntry']) ?>&action=reject">
+                                                <a href="Transferler-Onayla.php?docEntry=<?= urlencode($row['DocEntry']) ?>&action=reject">
                                                     <button class="btn-icon" style="background: #fee2e2; color: #991b1b; border: 1px solid #fecaca;">✗ İptal</button>
                                                 </a>
                                             <?php endif; ?>
                                         </div>
                                     </td>
-                                        </tr>
+                                </tr>
 
                             <?php endforeach; ?>
                                 <?php endif; ?>
                             </tbody>
                         </table>
+                        
+                        <?php if (isset($outgoingPagination) && $outgoingPagination['total_pages'] > 1): ?>
+                        <div style="padding: 20px; display: flex; justify-content: center; align-items: center; gap: 8px;">
+                            <?php
+                            $currentPage = $outgoingPagination['current_page'];
+                            $totalPages = $outgoingPagination['total_pages'];
+                            $maxPagesToShow = 7;
+                            
+                            $searchParam = !empty($_GET['search']) ? '&search=' . urlencode($_GET['search']) : '';
+                            $statusParam = !empty($filterStatus) ? '&status=' . urlencode($filterStatus) : '';
+                            $startDateParam = !empty($filterStartDate) ? '&start_date=' . urlencode($filterStartDate) : '';
+                            $endDateParam = !empty($filterEndDate) ? '&end_date=' . urlencode($filterEndDate) : '';
+                            $entriesParam = isset($outgoingPagination['items_per_page']) ? '&entries=' . $outgoingPagination['items_per_page'] : '';
+                            $baseParams = $statusParam . $startDateParam . $endDateParam . $entriesParam . $searchParam;
+                            
+                            // İlk sayfa
+                            if ($currentPage > 1): ?>
+                                <a href="?view=outgoing&page=1<?= $baseParams ?>" 
+                                   style="padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; text-decoration: none; color: #374151; background: white;">« İlk</a>
+                            <?php endif; ?>
+                            
+                            <?php
+                            // Sayfa numaralarını hesapla
+                            $startPage = max(1, $currentPage - floor($maxPagesToShow / 2));
+                            $endPage = min($totalPages, $startPage + $maxPagesToShow - 1);
+                            if ($endPage - $startPage < $maxPagesToShow - 1) {
+                                $startPage = max(1, $endPage - $maxPagesToShow + 1);
+                            }
+                            
+                            for ($i = $startPage; $i <= $endPage; $i++): ?>
+                                <a href="?view=outgoing&page=<?= $i ?><?= $baseParams ?>" 
+                                   style="padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; text-decoration: none; color: #374151; background: <?= $i == $currentPage ? '#3b82f6; color: white;' : 'white;' ?>"><?= $i ?></a>
+                            <?php endfor; ?>
+                            
+                            <?php if ($currentPage < $totalPages): ?>
+                                <a href="?view=outgoing&page=<?= $totalPages ?><?= $baseParams ?>" 
+                                   style="padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; text-decoration: none; color: #374151; background: white;">Son »</a>
+                            <?php endif; ?>
+                        </div>
+                        <?php endif; ?>
 
                 <?php endif; ?>
             </section>
@@ -1244,46 +1825,73 @@ input[type="checkbox"]:focus {
         function sepetToggle() {
             const panel = document.getElementById('sepetPanel');
             if (panel) {
-                const isVisible = panel.style.display === 'flex';
+                const currentDisplay = window.getComputedStyle(panel).display;
+                const isVisible = currentDisplay === 'flex' || panel.style.display === 'flex';
                 panel.style.display = isVisible ? 'none' : 'flex';
             }
         }
         
-        // Tümünü seç/seçimi kaldır
+        // Checkbox değiştiğinde - Artık ürün bazlı
+        function checkboxChanged(checkbox) {
+            const docEntry = checkbox.getAttribute('data-docentry');
+            const itemCode = checkbox.getAttribute('data-itemcode');
+            const lineNum = checkbox.getAttribute('data-linenum');
+            
+            console.log('Checkbox changed:', { docEntry, itemCode, lineNum, checked: checkbox.checked });
+            
+            if (!docEntry || !itemCode) {
+                console.error('Eksik parametre:', { docEntry, itemCode });
+                return;
+            }
+            
+            if (checkbox.checked) {
+                sepetEkle(docEntry, itemCode, lineNum);
+            } else {
+                sepetCikar(docEntry, itemCode);
+            }
+            sepetGuncelle();
+            console.log('Sepet durumu:', sepet);
+        }
+        
+        // Tümünü seç/seçimi kaldır - Artık ürün bazlı
         function toggleSelectAll() {
             const selectAll = document.getElementById('selectAll');
-            const checkboxes = document.querySelectorAll('input[type="checkbox"][value]:not(#selectAll)');
+            const checkboxes = document.querySelectorAll('input.transfer-checkbox');
             const isChecked = selectAll.checked;
             
             checkboxes.forEach(cb => {
                 cb.checked = isChecked;
+                const docEntry = cb.getAttribute('data-docentry');
+                const itemCode = cb.getAttribute('data-itemcode');
+                const lineNum = cb.getAttribute('data-linenum');
+                
                 if (isChecked) {
-                    sepetEkle(cb.value);
+                    if (docEntry && itemCode) {
+                        sepetEkle(docEntry, itemCode, lineNum);
+                    }
                 } else {
-                    sepetCikar(cb.value);
+                    if (docEntry && itemCode) {
+                        sepetCikar(docEntry, itemCode);
+                    }
                 }
             });
             
             sepetGuncelle();
         }
         
-        // Checkbox değiştiğinde
-        function checkboxChanged(checkbox) {
-            if (checkbox.checked) {
-                sepetEkle(checkbox.value);
-            } else {
-                sepetCikar(checkbox.value);
-            }
-            sepetGuncelle();
-        }
-        
-        // Sepete ekle
-        function sepetEkle(docEntry) {
-            if (!docEntry || sepet[docEntry]) {
+        // Sepete ekle - Artık ürün bazlı (DocEntry + ItemCode)
+        function sepetEkle(docEntry, itemCode, lineNum) {
+            if (!docEntry || !itemCode) {
                 return;
             }
             
-            const row = document.querySelector(`tr[data-docentry="${docEntry}"]`);
+            // Sepet key'i: DocEntry_ItemCode
+            const sepetKey = `${docEntry}_${itemCode}`;
+            if (sepet[sepetKey]) {
+                return; // Zaten sepette
+            }
+            
+            const row = document.querySelector(`tr[data-docentry="${docEntry}"][data-itemcode="${itemCode}"]`);
             if (!row) {
                 return;
             }
@@ -1291,77 +1899,107 @@ input[type="checkbox"]:focus {
             // Lines bilgisini al
             const linesJson = row.getAttribute('data-lines') || '[]';
             
-            let lines = [];
+            let allLines = [];
             if (linesJson && linesJson !== '[]' && linesJson !== 'null' && linesJson.trim() !== '') {
                 try {
                     const parsed = JSON.parse(linesJson);
                     
-                    // Eğer bir error object ise, boş array kullan
                     if (parsed && typeof parsed === 'object' && parsed.error) {
                         console.error('SAP Error in lines:', parsed.error);
-                        lines = [];
+                        allLines = [];
                     } else if (Array.isArray(parsed)) {
-                        lines = parsed;
+                        allLines = parsed;
                     } else if (parsed && parsed.value && Array.isArray(parsed.value)) {
-                        // Eğer {value: [...]} formatında ise
-                        lines = parsed.value;
+                        allLines = parsed.value;
                     } else if (parsed && parsed.StockTransferLines) {
-                        // Eğer StockTransferLines object olarak geliyorsa (navigation property)
                         const stockTransferLines = parsed.StockTransferLines;
                         if (Array.isArray(stockTransferLines)) {
-                            lines = stockTransferLines;
+                            allLines = stockTransferLines;
                         } else if (typeof stockTransferLines === 'object' && stockTransferLines !== null) {
-                            // Object formatında geliyorsa (key-value pairs), array'e çevir
-                            lines = Object.values(stockTransferLines);
-                        } else {
-                            lines = [];
+                            allLines = Object.values(stockTransferLines);
                         }
-                    } else {
-                        lines = [];
                     }
                 } catch (e) {
-
                     console.error('Lines parse hatası:', e);
-                    lines = [];
+                    allLines = [];
                 }
             }
             
-            // Alıcı şube bilgisini al (3. sütun: checkbox(1), TransferNo(2), AlıcıŞube(3))
-            const toWarehouseCell = row.querySelector('td:nth-child(3)');
-            const toWarehouse = toWarehouseCell ? toWarehouseCell.textContent.trim() : '';
-            
-            // Sepete ekle - lines array kontrolü
-            if (!Array.isArray(lines)) {
-                lines = [];
+            // Sadece bu ItemCode'a ait line'ı bul
+            let selectedLine = null;
+            if (lineNum) {
+                selectedLine = allLines.find(l => (l.LineNum || l.LineNum === 0) && String(l.LineNum) === String(lineNum));
+            }
+            if (!selectedLine) {
+                selectedLine = allLines.find(l => (l.ItemCode || '') === itemCode);
             }
             
-            // Sepete ekle - normalize edilmiş format (BaseQty dahil)
-            sepet[docEntry] = {
-                toWarehouse: toWarehouse,
-                lines: lines.map(l => {
-                    const baseQty = parseFloat(l._BaseQty || 1.0);
-                    const requestedQty = parseFloat(l._RequestedQty || 0);
-                    const quantity = parseFloat(l.Quantity || 0);
-                    
-                    return {
-                        ItemCode: l.ItemCode || '',
-                        ItemName: l.ItemDescription || l.ItemName || '',
-                        UoMCode: l.UoMCode || 'AD',
-                        LineNum: l.LineNum || 0,
-                        BaseQty: baseQty,
-                        RequestedQty: requestedQty > 0 ? requestedQty : (baseQty > 0 ? (quantity / baseQty) : quantity),
-                        StockQty: parseFloat(l._StockQty || 0),
-                        SentQty: parseFloat(l._SentQty || l._RequestedQty || (baseQty > 0 ? (quantity / baseQty) : quantity))
-                    };
-                })
-            };
+            // Eğer line bulunamazsa, view'dan gelen veriyi kullan (satır bazlı olduğu için)
+            if (!selectedLine && allLines.length === 0) {
+                // View'dan gelen veri kullanılabilir - satır bazlı olduğu için direkt row'dan bilgi al
+                const itemNameCell = row.querySelector('td:nth-child(3)'); // Kalem Tanımı
+                const itemName = itemNameCell ? itemNameCell.textContent.trim() : '';
+                
+                // Basit bir line objesi oluştur
+                selectedLine = {
+                    ItemCode: itemCode,
+                    ItemDescription: itemName,
+                    ItemName: itemName,
+                    UoMCode: 'AD',
+                    LineNum: lineNum || 0,
+                    BaseQty: 1.0,
+                    Quantity: 0,
+                    RequestedQty: 0
+                };
+            }
             
+            if (!selectedLine) {
+                console.error('Line bulunamadı:', { docEntry, itemCode, lineNum, allLinesCount: allLines.length, allLines });
+                // Yine de sepete ekle, basit bir line ile
+                selectedLine = {
+                    ItemCode: itemCode,
+                    ItemDescription: '',
+                    ItemName: '',
+                    UoMCode: 'AD',
+                    LineNum: lineNum || 0,
+                    BaseQty: 1.0,
+                    Quantity: 0,
+                    RequestedQty: 0
+                };
+            }
+            
+            // Alıcı şube bilgisini al (6. sütun: checkbox(1), TransferNo(2), KalemNo(3), KalemTanımı(4), Tarih(5), AlıcıŞube(6))
+            const toWarehouseCell = row.querySelector('td:nth-child(6)');
+            const toWarehouse = toWarehouseCell ? toWarehouseCell.textContent.trim() : '';
+            
+            // Sadece seçilen ürünü sepete ekle
+            const baseQty = parseFloat(selectedLine._BaseQty || selectedLine.BaseQty || 1.0);
+            const requestedQty = parseFloat(selectedLine._RequestedQty || selectedLine.RequestedQty || 0);
+            const quantity = parseFloat(selectedLine.Quantity || 0);
+            
+            sepet[sepetKey] = {
+                docEntry: docEntry,
+                itemCode: itemCode,
+                toWarehouse: toWarehouse,
+                lines: [{
+                    ItemCode: selectedLine.ItemCode || itemCode,
+                    ItemName: selectedLine.ItemDescription || selectedLine.ItemName || '',
+                    UoMCode: selectedLine.UoMCode || 'AD',
+                    LineNum: selectedLine.LineNum || lineNum || 0,
+                    BaseQty: baseQty,
+                    RequestedQty: requestedQty > 0 ? requestedQty : (baseQty > 0 ? (quantity / baseQty) : quantity),
+                    StockQty: parseFloat(selectedLine._StockQty || selectedLine.StockQty || 0),
+                    SentQty: parseFloat(selectedLine._SentQty || selectedLine.SentQty || requestedQty || (baseQty > 0 ? (quantity / baseQty) : quantity))
+                }]
+            };
         }
         
-        // Sepetten çıkar
-        function sepetCikar(docEntry) {
-            if (sepet[docEntry]) {
-                delete sepet[docEntry];
+        // Sepetten çıkar - Artık ürün bazlı
+        function sepetCikar(docEntry, itemCode) {
+            if (!docEntry || !itemCode) return;
+            const sepetKey = `${docEntry}_${itemCode}`;
+            if (sepet[sepetKey]) {
+                delete sepet[sepetKey];
             }
         }
         
@@ -1398,21 +2036,20 @@ input[type="checkbox"]:focus {
                 sepetBtn.style.display = 'inline-flex';
             }
             
-            // Sepet doluysa paneli göster
-            if (sepetPanel) {
-                sepetPanel.style.display = 'flex';
-            }
+            // Sepet doluysa paneli göster (sepetToggle ile açılabilir)
+            // Panel başlangıçta gizli, kullanıcı butona tıklayınca açılır
             
-            // Sepet içeriğini oluştur
+            // Sepet içeriğini oluştur - Artık ürün bazlı
             if (sepetContent) {
                 let html = '';
-                for (const [docEntry, t] of Object.entries(sepet)) {
+                for (const [sepetKey, t] of Object.entries(sepet)) {
                     html += `<div style="margin-bottom: 1.5rem; padding: 1rem; background: #f8fafc; border-radius: 8px; border: 1px solid #e5e7eb;">`;
-                    html += `<div style="font-weight: 600; color: #1e40af; margin-bottom: 0.5rem; font-size: 1rem;">Transfer No: ${docEntry}</div>`;
+                    html += `<div style="font-weight: 600; color: #1e40af; margin-bottom: 0.5rem; font-size: 1rem;">Transfer No: ${t.docEntry}</div>`;
+                    html += `<div style="font-size: 0.875rem; color: #6b7280; margin-bottom: 0.5rem;">Kalem No: ${t.itemCode}</div>`;
                     html += `<div style="font-size: 0.875rem; color: #6b7280; margin-bottom: 0.75rem;">Alıcı: ${t.toWarehouse}</div>`;
                     
                     if (!t.lines || t.lines.length === 0) {
-                        html += `<div style="padding: 0.75rem; background: #e0edff; border-radius: 6px; font-size: 0.85rem; color: #1d4ed8;">ℹ Kalem bilgisi yüklenemedi veya bu transfer için satır yok.</div>`;
+                        html += `<div style="padding: 0.75rem; background: #e0edff; border-radius: 6px; font-size: 0.85rem; color: #1d4ed8;">ℹ Kalem bilgisi yüklenemedi.</div>`;
                     } else {
                         t.lines.forEach((line, idx) => {
                             const baseQty = parseFloat(line.BaseQty || 1.0);
@@ -1439,9 +2076,9 @@ input[type="checkbox"]:focus {
                             html += `</div>`;
                             html += `<div style="display: flex; align-items: center; gap: 0.5rem;">`;
                             html += `<span style="font-size: 0.85rem; color: #6b7280;">Gönderilecek:</span>`;
-                            html += `<button onclick="sepetMiktarDegistir('${docEntry}', ${idx}, -1)" style="width: 32px; height: 32px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px;">-</button>`;
-                            html += `<input type="number" id="sent_${docEntry}_${idx}" value="${send.toFixed(2)}" min="0" max="${max.toFixed(2)}" step="0.01" onchange="sepetMiktarInput('${docEntry}', ${idx}, ${max}, this.value)" style="width: 80px; padding: 0.25rem; text-align: center; border: 1px solid #d1d5db; border-radius: 6px; font-weight: 600; font-size: 14px;">`;
-                            html += `<button onclick="sepetMiktarDegistir('${docEntry}', ${idx}, 1)" style="width: 32px; height: 32px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px;">+</button>`;
+                            html += `<button onclick="sepetMiktarDegistir('${sepetKey}', ${idx}, -1)" style="width: 32px; height: 32px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px;">-</button>`;
+                            html += `<input type="number" id="sent_${sepetKey}_${idx}" value="${send.toFixed(2)}" min="0" max="${max.toFixed(2)}" step="0.01" onchange="sepetMiktarInput('${sepetKey}', ${idx}, ${max}, this.value)" style="width: 80px; padding: 0.25rem; text-align: center; border: 1px solid #d1d5db; border-radius: 6px; font-weight: 600; font-size: 14px;">`;
+                            html += `<button onclick="sepetMiktarDegistir('${sepetKey}', ${idx}, 1)" style="width: 32px; height: 32px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px;">+</button>`;
                             html += `<span style="font-size: 0.85rem; color: #6b7280;">${uomCode}</span>`;
                             html += `</div>`;
                             html += `</div>`;
@@ -1453,14 +2090,13 @@ input[type="checkbox"]:focus {
             }
         }
         
-        // Miktar değiştir (+/- butonları için)
-        function sepetMiktarDegistir(docEntry, idx, delta) {
-            const t = sepet[docEntry];
+        // Miktar değiştir (+/- butonları için) - Artık sepetKey kullanıyor
+        function sepetMiktarDegistir(sepetKey, idx, delta) {
+            const t = sepet[sepetKey];
             if (!t || !t.lines[idx]) return;
             
             const line = t.lines[idx];
             const req = parseFloat(line.RequestedQty || 0);
-            // Stok olsa bile max = req (talep edilen kadar)
             const max = req;
             
             let yeni = parseFloat(line.SentQty || 0) + delta;
@@ -1471,9 +2107,9 @@ input[type="checkbox"]:focus {
             sepetGuncelle();
         }
         
-        // Miktar güncelle (input için)
-        function sepetMiktarInput(docEntry, idx, max, value) {
-            const t = sepet[docEntry];
+        // Miktar güncelle (input için) - Artık sepetKey kullanıyor
+        function sepetMiktarInput(sepetKey, idx, max, value) {
+            const t = sepet[sepetKey];
             if (!t || !t.lines[idx]) return;
             
             let v = parseFloat(value) || 0;
@@ -1501,7 +2137,7 @@ input[type="checkbox"]:focus {
             let failedCount = 0;
             const promises = [];
             
-            for (const [docEntry, transfer] of Object.entries(sepet)) {
+            for (const [sepetKey, transfer] of Object.entries(sepet)) {
                 // Lines'ı BaseQty ile çarpılmış haliyle hazırla (SAP'ye gönderilecek format)
                 const sapLines = transfer.lines.map(line => {
                     const baseQty = parseFloat(line.BaseQty || 1.0);
@@ -1520,7 +2156,8 @@ input[type="checkbox"]:focus {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: new URLSearchParams({
-                        docEntry: docEntry,
+                        docEntry: transfer.docEntry,
+                        itemCode: transfer.itemCode,
                         action: 'approve',
                         lines: JSON.stringify(sapLines)
                     })
@@ -1531,12 +2168,12 @@ input[type="checkbox"]:focus {
                         successCount++;
                     } else {
                         failedCount++;
-                        console.error('Onaylama hatası:', docEntry, data.message);
+                        console.error('Onaylama hatası:', transfer.docEntry, transfer.itemCode, data.message);
                     }
                 })
                 .catch(error => {
                     failedCount++;
-                    console.error('Onaylama hatası:', docEntry, error);
+                    console.error('Onaylama hatası:', transfer.docEntry, transfer.itemCode, error);
                 });
                 
                 promises.push(promise);
@@ -1588,50 +2225,23 @@ input[type="checkbox"]:focus {
             const endDate = document.getElementById('end-date').value;
             const viewType = '<?= $viewType ?>';
             const entriesPerPage = document.getElementById('entriesPerPage')?.value || '25';
+            const search = document.getElementById('tableSearch')?.value || '';
             
             const params = new URLSearchParams();
             params.append('view', viewType);
+            params.append('page', '1'); // entries değiştiğinde ilk sayfaya dön
             if (status) params.append('status', status);
             if (startDate) params.append('start_date', startDate);
             if (endDate) params.append('end_date', endDate);
             if (entriesPerPage) params.append('entries', entriesPerPage);
+            if (search) params.append('search', search);
             
             window.location.href = 'Transferler.php?' + params.toString();
         }
 
         function performSearch() {
-            const searchTerm = document.getElementById('tableSearch').value.toLowerCase();
-            const rows = document.querySelectorAll('tr[data-row]');
-            let visibleCount = 0;
-            
-            rows.forEach(row => {
-                const searchData = row.getAttribute('data-search') || '';
-                if (searchData.includes(searchTerm)) {
-                    row.style.display = '';
-                    visibleCount++;
-                } else {
-                    row.style.display = 'none';
-                }
-            });
-            
-            // "Sonuç bulunamadı" mesajını göster/gizle
-            let noResultsRow = document.getElementById('noResultsRow');
-            if (visibleCount === 0 && rows.length > 0) {
-                if (!noResultsRow) {
-                    const tableBody = document.querySelector('table.data-table tbody');
-                    if (tableBody) {
-                        noResultsRow = document.createElement('tr');
-                        noResultsRow.id = 'noResultsRow';
-                        noResultsRow.innerHTML = '<td colspan="8" style="text-align: center; padding: 40px; color: #9ca3af;">Sonuç bulunamadı.</td>';
-                        tableBody.appendChild(noResultsRow);
-                    }
-                }
-                noResultsRow.style.display = '';
-            } else {
-                if (noResultsRow) {
-                    noResultsRow.style.display = 'none';
-                }
-            }
+            // Arama parametresini URL'e ekle ve sayfayı yenile
+            applyFilters();
         }
         
         // Sayfa yüklendiğinde kayma animasyonunu tetikle
