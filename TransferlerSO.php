@@ -30,23 +30,14 @@ function formatQuantity($qty) {
 
 $branch = (string)$branch;
 
-// ToWarehouse (talep eden depo - sevkiyat deposu)
-// Transferler.php'deki gibi $branch'ı doğrudan kullan (U_ASB2B_BRAN ile eşleşmeli)
+// ToWarehouse (talep eden depo - sevkiyat deposu) - POST işlemi için gerekli
 $toWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '2' and U_ASB2B_BRAN eq '{$branch}'";
-$toWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&\$filter=" . urlencode($toWarehouseFilter);
+$toWarehouseQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($toWarehouseFilter);
 $toWarehouseData = $sap->get($toWarehouseQuery);
 $toWarehouses = $toWarehouseData['response']['value'] ?? [];
 $toWarehouse = !empty($toWarehouses) ? $toWarehouses[0]['WarehouseCode'] : null;
 
-// FromWarehouse (gönderen şube deposu)
-// Transferler.php'deki gibi $branch'ı doğrudan kullan (U_ASB2B_BRAN ile eşleşmeli)
-$fromWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1' and U_ASB2B_BRAN eq '{$branch}'";
-$fromWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&\$filter=" . urlencode($fromWarehouseFilter);
-$fromWarehouseData = $sap->get($fromWarehouseQuery);
-$fromWarehouses = $fromWarehouseData['response']['value'] ?? [];
-$fromWarehouse = !empty($fromWarehouses) ? $fromWarehouses[0]['WarehouseCode'] : null;
-
-// Diğer şubeler (filtreleme için)
+// Diğer şubeler (filtreleme için) - View'dan FromWhsName kullanılacak, sadece isim listesi için gerekli
 $allOtherWarehousesFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_MAIN eq '1'";
 $allOtherWarehousesQuery = "Warehouses?\$select=WarehouseCode,WarehouseName,U_ASB2B_BRAN&\$filter=" . urlencode($allOtherWarehousesFilter);
 $allOtherWarehousesData = $sap->get($allOtherWarehousesQuery);
@@ -88,7 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     foreach ($selectedItems as $item) {
         $userQuantity = floatval($item['quantity'] ?? 0);
         if ($userQuantity > 0) {
-            $itemFromWarehouse = $item['fromWhsCode'] ?? $fromWarehouse;
+            $itemFromWarehouse = $item['fromWhsCode'] ?? '';
             if (empty($itemFromWarehouse)) continue;
             
             if (!isset($itemsByFromWarehouse[$itemFromWarehouse])) {
@@ -276,50 +267,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
         $filter .= $stockStatus === 'var' ? " and OtherBranQty gt 0" : " and OtherBranQty le 0";
     }
     
-    // View expose kontrolü ve işlemi
-    $viewCheckQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$top=1";
-    $viewCheck = $sap->get($viewCheckQuery);
-    $viewCheckStatus = $viewCheck['status'] ?? 'NO STATUS';
-    $viewCheckError = $viewCheck['response']['error'] ?? null;
-    $isViewExposed = true;
-    $exposeAttempted = false;
-    $exposeResult = null;
-    
-    // View expose edilmemişse (806 hatası), expose et
-    if (isset($viewCheckError['code']) && $viewCheckError['code'] === '806') {
-        $isViewExposed = false;
-        $exposeAttempted = true;
-        $exposeResult = $sap->post("SQLViews('ASB2B_BranchWhsItem_B1SLQuery')/Expose", []);
-        $exposeStatus = $exposeResult['status'] ?? 'NO STATUS';
-        $exposeError = $exposeResult['response']['error'] ?? null;
-        
-        // Expose başarısızsa hata döndür
-        if ($exposeStatus != 200 && $exposeStatus != 201 && $exposeStatus != 204) {
-            echo json_encode([
-                'data' => [],
-                'count' => 0,
-                'hasMore' => false,
-                'error' => 'View expose edilemedi!'
-            ]);
-            exit;
-        }
-        
-        // Expose başarılı, kısa bir bekleme sonrası tekrar kontrol et
-        sleep(1);
-        $viewCheck2 = $sap->get($viewCheckQuery);
-        if (isset($viewCheck2['response']['error']['code']) && $viewCheck2['response']['error']['code'] === '806') {
-            // Hala expose edilmemiş
-            echo json_encode([
-                'data' => [],
-                'count' => 0,
-                'hasMore' => false,
-                'error' => 'View expose edildi ancak hala erişilemiyor!'
-            ]);
-            exit;
-        }
-    }
-    
-    // Normal sorguyu çalıştır
+    // View sorgusunu çalıştır
     $itemsQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$filter=" . urlencode($filter) . "&\$orderby=ItemCode&\$top={$top}&\$skip={$skip}";
     $itemsData = $sap->get($itemsQuery);
     $items = $itemsData['response']['value'] ?? [];
@@ -372,20 +320,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
         exit;
     }
     
-    // Sadece FromWhsName ile filtreleme (AnaDepoSO.php'deki gibi)
+    // Sadece FromWhsName ile filtreleme
     $filter = "(" . implode(" or ", $fromWhsNameConditions) . ")";
     
-    // View expose kontrolü
-    $viewCheckQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$top=1";
-    $viewCheck = $sap->get($viewCheckQuery);
-    if (isset($viewCheck['response']['error']['code']) && $viewCheck['response']['error']['code'] === '806') {
-        $exposeResult = $sap->post("SQLViews('ASB2B_BranchWhsItem_B1SLQuery')/Expose", []);
-        if (($exposeResult['status'] ?? 0) == 200 || ($exposeResult['status'] ?? 0) == 201 || ($exposeResult['status'] ?? 0) == 204) {
-            sleep(1); // Expose sonrası kısa bekleme
-        }
-    }
-    
-    // Normal sorguyu çalıştır
+    // View sorgusunu çalıştır
     $itemsQuery = "view.svc/ASB2B_BranchWhsItem_B1SLQuery?\$filter=" . urlencode($filter) . "&\$select=ItemCode,ItemName,ItemGroup,FromWhsName&\$top=1000";
     $itemsData = $sap->get($itemsQuery);
     $items = $itemsData['response']['value'] ?? [];

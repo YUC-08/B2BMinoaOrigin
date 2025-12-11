@@ -45,11 +45,14 @@ $userName = $_SESSION["UserName"] ?? '';
 
 // Onaylama işlemi ise (STATUS = 3), ilk StockTransfer oluştur (gönderici depo -> sevkiyat depo)
 if ($action === 'approve' && $newStatus === '3') {
-    // InventoryTransferRequest bilgilerini çek
-    // Önce header bilgilerini çek (FromWarehouse, ToWarehouse için)
-    $headerQuery = "InventoryTransferRequests({$docEntry})?\$select=FromWarehouse,ToWarehouse,DocDate,DocNum,U_ASB2B_BRAN";
+    // ====================================================================================
+    // 1. ADIM: BELGE HEADER BİLGİLERİ - ASB2B_TransferRequestList_B1SLQuery
+    // ====================================================================================
+    $filterStr = "DocEntry eq {$docEntry}";
+    $headerQuery = "view.svc/ASB2B_TransferRequestList_B1SLQuery?\$filter=" . urlencode($filterStr) . "&\$top=1";
     $headerData = $sap->get($headerQuery);
-    $headerInfo = $headerData['response'] ?? null;
+    $headerRows = $headerData['response']['value'] ?? [];
+    $headerInfo = !empty($headerRows) ? $headerRows[0] : null;
     
     if (!$headerInfo) {
         $errorMsg = 'Transfer talebi bulunamadı!';
@@ -63,20 +66,15 @@ if ($action === 'approve' && $newStatus === '3') {
         }
     }
     
-    $fromWarehouse = $headerInfo['FromWarehouse'] ?? '';
-    $toWarehouse = $headerInfo['ToWarehouse'] ?? ''; // Bu sevkiyat deposu olmalı
+    // View'dan gelen bilgiler
+    $fromWarehouse = $headerInfo['FromWhsCode'] ?? '';
+    $toWarehouse = $headerInfo['WhsCode'] ?? ''; // Bu sevkiyat deposu olmalı
     $docDate = $headerInfo['DocDate'] ?? date('Y-m-d');
-    $docNum = $headerInfo['DocNum'] ?? $docEntry;
-    $aliciBranch = $headerInfo['U_ASB2B_BRAN'] ?? '';
-    
-    // Lines'ı ayrı çek
-    $requestQuery = "InventoryTransferRequests({$docEntry})?\$expand=InventoryTransferRequestLines";
-    $requestData = $sap->get($requestQuery);
-    $requestInfo = $requestData['response'] ?? null;
+    $aliciBranch = $headerInfo['U_ASB2B_BRAN'] ?? $branch;
     
     // FromWarehouse kontrolü
     if (empty($fromWarehouse)) {
-        $errorMsg = 'Gönderen depo (FromWarehouse) bulunamadı!';
+        $errorMsg = 'Gönderen depo (FromWhsCode) bulunamadı!';
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Content-Type: application/json');
             echo json_encode(['success' => false, 'message' => $errorMsg]);
@@ -87,24 +85,9 @@ if ($action === 'approve' && $newStatus === '3') {
         }
     }
     
-    // Alıcı şubenin sevkiyat deposunu bul
-    // ToWarehouse zaten sevkiyat deposu olmalı (InventoryTransferRequest'te alıcı şube sevkiyat deposunu belirtir)
-    // Alıcı şubenin sevkiyat deposunu bul (U_ASB2B_MAIN='2')
-    $sevkiyatDepo = null;
-    if (!empty($aliciBranch)) {
-        $sevkiyatDepoFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$aliciBranch}' and U_ASB2B_MAIN eq '2'";
-        $sevkiyatDepoQuery = "Warehouses?\$filter=" . urlencode($sevkiyatDepoFilter);
-        $sevkiyatDepoData = $sap->get($sevkiyatDepoQuery);
-        $sevkiyatDepolar = $sevkiyatDepoData['response']['value'] ?? [];
-        $sevkiyatDepo = !empty($sevkiyatDepolar) ? $sevkiyatDepolar[0]['WarehouseCode'] : null;
-    }
+    // Sevkiyat deposu: View'dan gelen WhsCode kullanılacak (zaten sevkiyat deposu)
+    $sevkiyatDepo = $toWarehouse;
     
-    // Eğer sevkiyat deposu bulunamazsa, request'teki ToWarehouse'u kullan
-    if (empty($sevkiyatDepo)) {
-        $sevkiyatDepo = $toWarehouse;
-    }
-    
-    // Sevkiyat deposu kontrolü
     if (empty($sevkiyatDepo)) {
         $errorMsg = 'Alıcı şube sevkiyat deposu bulunamadı!';
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -117,78 +100,36 @@ if ($action === 'approve' && $newStatus === '3') {
         }
     }
     
-    // InventoryTransferRequestLines'ı hazırla - çoklu deneme stratejisi (Transferler-TeslimAl.php'deki gibi)
-    $requestLines = [];
+    // ====================================================================================
+    // 2. ADIM: SATIR LİSTESİ - ASB2B_TransferRequestList_B1SLQuery (Tüm satırlar)
+    // ====================================================================================
+    $linesQuery = "view.svc/ASB2B_TransferRequestList_B1SLQuery?\$filter=" . urlencode($filterStr);
+    $linesData = $sap->get($linesQuery);
+    $requestLines = $linesData['response']['value'] ?? [];
     
-    // Deneme 1: Expand ile InventoryTransferRequestLines
-    $linesQuery1 = "InventoryTransferRequests({$docEntry})?\$expand=InventoryTransferRequestLines";
-    $linesData1 = $sap->get($linesQuery1);
-    if (($linesData1['status'] ?? 0) == 200) {
-        $response1 = $linesData1['response'] ?? null;
-        if ($response1 && isset($response1['InventoryTransferRequestLines']) && is_array($response1['InventoryTransferRequestLines'])) {
-            $requestLines = $response1['InventoryTransferRequestLines'];
-        }
-    }
-    
-    // Deneme 2: Expand ile StockTransferLines (fallback)
     if (empty($requestLines)) {
-        $linesQuery2 = "InventoryTransferRequests({$docEntry})?\$expand=StockTransferLines";
-        $linesData2 = $sap->get($linesQuery2);
-        if (($linesData2['status'] ?? 0) == 200) {
-            $response2 = $linesData2['response'] ?? null;
-            if ($response2 && isset($response2['StockTransferLines']) && is_array($response2['StockTransferLines'])) {
-                $requestLines = $response2['StockTransferLines'];
-            }
+        $errorMsg = 'Transfer satırları bulunamadı!';
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'message' => $errorMsg]);
+            exit;
+        } else {
+            header("Location: Transferler.php?view=outgoing&error=" . urlencode($errorMsg));
+            exit;
         }
     }
     
-    // Deneme 3: Direct query ile InventoryTransferRequestLines
-    if (empty($requestLines)) {
-        $linesQuery3 = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
-        $linesData3 = $sap->get($linesQuery3);
-        if (($linesData3['status'] ?? 0) == 200) {
-            $response3 = $linesData3['response'] ?? null;
-            if ($response3) {
-                if (isset($response3['value']) && is_array($response3['value'])) {
-                    $requestLines = $response3['value'];
-                } elseif (is_array($response3) && !isset($response3['value'])) {
-                    $requestLines = $response3;
-                }
-            }
-        }
-    }
-    
-    // Deneme 4: Direct query ile StockTransferLines (fallback)
-    if (empty($requestLines)) {
-        $linesQuery4 = "InventoryTransferRequests({$docEntry})/StockTransferLines";
-        $linesData4 = $sap->get($linesQuery4);
-        if (($linesData4['status'] ?? 0) == 200) {
-            $response4 = $linesData4['response'] ?? null;
-            if ($response4) {
-                if (isset($response4['value']) && is_array($response4['value'])) {
-                    $requestLines = $response4['value'];
-                } elseif (is_array($response4) && !isset($response4['value']) && !isset($response4['@odata.context'])) {
-                    $requestLines = $response4;
-                } elseif (isset($response4['StockTransferLines'])) {
-                    $stockTransferLines = $response4['StockTransferLines'];
-                    if (is_array($stockTransferLines)) {
-                        $requestLines = $stockTransferLines;
-                    }
-                }
-            }
-        }
-    }
-    
+    // ====================================================================================
+    // 3. ADIM: STOCK TRANSFER LİNES HAZIRLAMA
+    // ====================================================================================
     $stockTransferLines = [];
     
     // Eğer sepetteki lines gönderilmişse, onları kullan (kullanıcının seçtiği "Gönderilecek" miktarları)
-    // ÖNEMLİ: cartLines içindeki Quantity değeri zaten sentQty * baseQty olarak hesaplanmış (Transferler.php'den geliyor)
     if (!empty($cartLines) && is_array($cartLines)) {
         // Sepetteki lines'ı kullan (Quantity zaten sentQty * baseQty olarak hesaplanmış)
         foreach ($cartLines as $cartLine) {
             $itemCode = $cartLine['ItemCode'] ?? '';
             $cartLineNum = $cartLine['LineNum'] ?? null;
-            // Quantity değeri zaten sentQty * baseQty olarak hesaplanmış (Transferler.php'den geliyor)
             $quantity = floatval($cartLine['Quantity'] ?? 0);
             
             if (empty($itemCode) || $quantity <= 0) {
@@ -198,7 +139,6 @@ if ($action === 'approve' && $newStatus === '3') {
             // RequestLines'dan eşleşen line'ı bul (LineNum için)
             $matchedRequestLine = null;
             if ($cartLineNum !== null) {
-                $matchedRequestLine = null;
                 foreach ($requestLines as $reqLine) {
                     if (($reqLine['LineNum'] ?? null) == $cartLineNum && ($reqLine['ItemCode'] ?? '') === $itemCode) {
                         $matchedRequestLine = $reqLine;
@@ -216,7 +156,7 @@ if ($action === 'approve' && $newStatus === '3') {
                 }
             }
             
-            // BaseLine: Talebin LineNum'ı (0 ise 0, yoksa LineNum değeri)
+            // BaseLine: Talebin LineNum'ı
             $baseLine = 0;
             if ($matchedRequestLine && isset($matchedRequestLine['LineNum'])) {
                 $baseLine = (int)$matchedRequestLine['LineNum'];
@@ -224,10 +164,9 @@ if ($action === 'approve' && $newStatus === '3') {
                 $baseLine = (int)$cartLineNum;
             }
             
-            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $lineData = [
                 'ItemCode' => $itemCode,
-                'Quantity' => $quantity, // Sepetteki "Gönderilecek" miktar × baseQty (kullanıcının seçtiği miktar)
+                'Quantity' => $quantity, // Sepetteki "Gönderilecek" miktar × baseQty
                 'FromWarehouseCode' => $fromWarehouse,
                 'WarehouseCode' => $sevkiyatDepo,
                 'BaseType' => 1250000001, // Statik - InventoryTransferRequest için
@@ -238,8 +177,7 @@ if ($action === 'approve' && $newStatus === '3') {
             $stockTransferLines[] = $lineData;
         }
     } else {
-        // Sepetteki lines yoksa, eski mantıkla devam et (talep edilen miktarları kullan)
-        // NOT: Bu durum normalde olmamalı çünkü sepetteki lines her zaman gönderilmeli
+        // Sepetteki lines yoksa, view'dan gelen tüm satırları kullan (fallback)
         foreach ($requestLines as $line) {
             $itemCode = $line['ItemCode'] ?? '';
             $quantity = floatval($line['Quantity'] ?? 0);
@@ -249,10 +187,9 @@ if ($action === 'approve' && $newStatus === '3') {
                 continue;
             }
             
-            // NOT: Price alanı gönderilmiyor - SAP kendi cost'unu hesaplayacak
             $lineData = [
                 'ItemCode' => $itemCode,
-                'Quantity' => $quantity, // Talep edilen miktar (fallback - normalde kullanılmamalı)
+                'Quantity' => $quantity, // Talep edilen miktar (fallback)
                 'FromWarehouseCode' => $fromWarehouse,
                 'WarehouseCode' => $sevkiyatDepo,
                 'BaseType' => 1250000001, // Statik - InventoryTransferRequest için
@@ -292,7 +229,7 @@ if ($action === 'approve' && $newStatus === '3') {
         'U_ASB2B_User' => $userName,
         'U_ASB2B_QutMaster' => (int)$docEntry,
         'StockTransferLines' => $stockTransferLines
-        ];
+    ];
     
     $stockTransferResult = $sap->post('StockTransfers', $stockTransferPayload);
     
@@ -352,17 +289,28 @@ if ($action === 'approve' && $newStatus === '3') {
     }
     
     // StockTransfer başarıyla oluşturuldu
-    $stockTransferResponse = $stockTransferResult['response'] ?? [];
-    $stockTransferDocEntry = is_array($stockTransferResponse) ? ($stockTransferResponse['DocEntry'] ?? null) : null;
-    $stockTransferDocNum = is_array($stockTransferResponse) ? ($stockTransferResponse['DocNum'] ?? null) : null;
+    // Status'u '3' (Sevk Edildi) olarak güncelle
+    $newStatus = '3';
+    
+    // PATCH request ile status güncelle (StockTransfer başarılı olduktan sonra)
+    $updatePayload = [
+        'U_ASB2B_STATUS' => $newStatus
+    ];
+    
+    $result = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
+    
+    // Status güncelleme başarısız olursa logla ama işlemi durdurma
+    if ($result['status'] != 200 && $result['status'] != 204) {
+        error_log("[TRANSFER-ONAYLA] Status güncellenemedi. DocEntry: {$docEntry}, Status: " . ($result['status'] ?? 'NO STATUS') . ", Error: " . json_encode($result['response']['error'] ?? []));
+    }
+} else {
+    // Reject durumunda status güncelle
+    $updatePayload = [
+        'U_ASB2B_STATUS' => $newStatus
+    ];
+    
+    $result = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
 }
-
-// PATCH request ile status güncelle
-$updatePayload = [
-    'U_ASB2B_STATUS' => $newStatus
-];
-
-$result = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
 
 // AJAX isteği ise JSON döndür
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {

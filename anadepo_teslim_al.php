@@ -97,19 +97,34 @@ if (empty($fireZayiWarehouse)) {
 $stockTransferLinesMap = []; // Ana deponun sevk ettiği miktar
 $deliveryTransferLinesMap = []; // Kullanıcının teslim aldığı miktar (varsa)
 
-// Sevk miktarını bul (StockTransfer'den)
+// Sevk miktarını bul (StockTransfer'den) - expand kullanmadan
 $stockTransferFilter = "BaseType eq 1250000001 and BaseEntry eq {$doc}";
-$stockTransferQuery = "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
+$stockTransferQuery = "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$select=DocEntry&\$orderby=DocEntry desc&\$top=1";
 $stockTransferData = $sap->get($stockTransferQuery);
 $stockTransfers = $stockTransferData['response']['value'] ?? [];
 
 if (!empty($stockTransfers)) {
     $stockTransferInfo = $stockTransfers[0];
-    $stLines = $stockTransferInfo['StockTransferLines'] ?? [];
-    foreach ($stLines as $stLine) {
-        $itemCode = $stLine['ItemCode'] ?? '';
-        $qty = (float)($stLine['Quantity'] ?? 0);
-        $stockTransferLinesMap[$itemCode] = $qty;
+    $stDocEntry = $stockTransferInfo['DocEntry'] ?? null;
+    
+    if ($stDocEntry) {
+        // Lines'ı ayrı çek
+        $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
+        $stLinesData = $sap->get($stLinesQuery);
+        $stLinesResponse = $stLinesData['response'] ?? null;
+        
+        $stLines = [];
+        if (isset($stLinesResponse['value']) && is_array($stLinesResponse['value'])) {
+            $stLines = $stLinesResponse['value'];
+        } elseif (is_array($stLinesResponse) && !isset($stLinesResponse['value'])) {
+            $stLines = $stLinesResponse;
+        }
+        
+        foreach ($stLines as $stLine) {
+            $itemCode = $stLine['ItemCode'] ?? '';
+            $qty = (float)($stLine['Quantity'] ?? 0);
+            $stockTransferLinesMap[$itemCode] = $qty;
+        }
     }
 }
 

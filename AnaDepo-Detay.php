@@ -321,23 +321,23 @@ if ($status == '3' || $status == '4') {
     $stockTransferInfo = null;
     
     $stockTransferFilter = "U_ASB2B_QutMaster eq {$docEntry}";
-    $stockTransferQuery 	= "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$select=DocEntry,DocNum,DocDate,FromWarehouse,ToWarehouse,DocumentStatus&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
+    $stockTransferQuery = "StockTransfers?\$filter=" . urlencode($stockTransferFilter) . "&\$select=DocEntry,DocNum,DocDate,FromWarehouse,ToWarehouse,DocumentStatus&\$orderby=DocEntry desc&\$top=1";
     $stockTransferData = $sap->get($stockTransferQuery);
-    $stockTransfers 	 = $stockTransferData['response']['value'] ?? [];
+    $stockTransfers = $stockTransferData['response']['value'] ?? [];
     
     if (empty($stockTransfers)) {
         $stockTransferFilter2 = "BaseType eq 1250000001 and BaseEntry eq {$docEntry}";
-        $stockTransferQuery2 = "StockTransfers?\$filter=" . urlencode($stockTransferFilter2) . "&\$select=DocEntry,DocNum,DocDate,FromWarehouse,ToWarehouse,DocumentStatus&\$expand=StockTransferLines&\$orderby=DocEntry desc&\$top=1";
+        $stockTransferQuery2 = "StockTransfers?\$filter=" . urlencode($stockTransferFilter2) . "&\$select=DocEntry,DocNum,DocDate,FromWarehouse,ToWarehouse,DocumentStatus&\$orderby=DocEntry desc&\$top=1";
         $stockTransferData2 = $sap->get($stockTransferQuery2);
         $stockTransfers = $stockTransferData2['response']['value'] ?? [];
     }
     
     if (!empty($stockTransfers)) {
         $stockTransferInfo = $stockTransfers[0];
+        $stDocEntry = $stockTransferInfo['DocEntry'] ?? null;
         
         // Eğer DocNum gelmediyse, direkt StockTransfer sorgusu yap
-        if (empty($stockTransferInfo['DocNum']) && !empty($stockTransferInfo['DocEntry'])) {
-            $stDocEntry = $stockTransferInfo['DocEntry'];
+        if (empty($stockTransferInfo['DocNum']) && $stDocEntry) {
             $stDirectQuery = "StockTransfers({$stDocEntry})?\$select=DocEntry,DocNum,DocDate";
             $stDirectData = $sap->get($stDirectQuery);
             $stDirectInfo = $stDirectData['response'] ?? null;
@@ -351,12 +351,24 @@ if ($status == '3' || $status == '4') {
             $teslimatTarihi = formatDate($stockTransferInfo['DocDate'] ?? '');
         }
         
-        // StockTransfer satırlarındaki Quantity'leri topla (sevk miktarı)
-        $stLines = $stockTransferInfo['StockTransferLines'] ?? [];
-        foreach ($stLines as $stLine) {
-            $itemCode = $stLine['ItemCode'] ?? '';
-            $qty = (float)($stLine['Quantity'] ?? 0);
-            $stockTransferLinesMap[$itemCode] = $qty; 
+        // StockTransfer satırlarını ayrı çek (expand kullanmadan)
+        if ($stDocEntry) {
+            $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
+            $stLinesData = $sap->get($stLinesQuery);
+            $stLinesResponse = $stLinesData['response'] ?? null;
+            
+            $stLines = [];
+            if (isset($stLinesResponse['value']) && is_array($stLinesResponse['value'])) {
+                $stLines = $stLinesResponse['value'];
+            } elseif (is_array($stLinesResponse) && !isset($stLinesResponse['value'])) {
+                $stLines = $stLinesResponse;
+            }
+            
+            foreach ($stLines as $stLine) {
+                $itemCode = $stLine['ItemCode'] ?? '';
+                $qty = (float)($stLine['Quantity'] ?? 0);
+                $stockTransferLinesMap[$itemCode] = $qty; 
+            }
         }
     }
     
@@ -829,246 +841,6 @@ body {
             <div class="card">
                 <table class="data-table">
                     <thead>
-                        <tr>
-                            <th>Kalem Numarası</th>
-                            <th>Kalem Tanımı</th>
-                            <th>Talep Miktarı</th>
-                            <th>Sevk Miktarı</th>
-                            <th>Teslimat Miktarı</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php if (!empty($lines)): ?>
-                            <?php foreach ($lines as $line): ?>
-                                <?php 
-                                    $quantity = (float)($line['Quantity'] ?? 0);
-                                    $remaining = (float)($line['RemainingOpenQuantity'] ?? 0);
-                                    $itemCode = $line['ItemCode'] ?? '';
-                                    $uomCode = $line['UoMCode'] ?? 'AD';
-                                    $shipped = 0; // Sevk Miktarı
-                                    $delivered = 0; // Teslimat Miktarı
-                                    
-                                    // Sevk ve Teslimat Miktarı hesaplama mantığı: Sadece Sevk Edildi (3) ve Tamamlandı (4) durumunda
-                                    if ($status == '3' || $status == '4') {
-                                        // Sevk Miktarı: Ana deponun sevk ettiği miktar (StockTransfer belgesinden)
-                                        $shipped = $stockTransferLinesMap[$itemCode] ?? 0;
-                                        
-                                        // Eğer StockTransfer'den miktar gelmediyse, RemainingOpenQuantity'ye göre hesapla
-                                        if ($shipped == 0 && $quantity > 0) {
-                                            // RemainingOpenQuantity < Quantity ise, sevk edilen miktar = Quantity - RemainingOpenQuantity
-                                            if ($remaining < $quantity) {
-                                                $shipped = $quantity - $remaining;
-                                            } else {
-                                                // RemainingOpenQuantity = Quantity ise, henüz sevk edilmemiş demektir
-                                                // Ama status "Sevk Edildi" ise, talep miktarını göster (ana depo göndermiş sayılır)
-                                                if ($status == '3') {
-                                                    $shipped = $quantity;
-                                                }
-                                            }
-                                            
-                                            // Tamamlandı durumunda: Eğer hala 0 ise ve StockTransfer yoksa, talep miktarını göster
-                                            if ($shipped == 0 && $status == '4' && empty($stockTransferInfo) && $quantity > 0) {
-                                                $shipped = $quantity;
-                                            }
-                                        }
-                                        
-                                        // Teslimat Miktarı: Kullanıcının gerçekten teslim aldığı miktar (Teslim Al işleminden oluşan StockTransfer belgesinden)
-                                        $delivered = $deliveryTransferLinesMap[$itemCode] ?? 0;
-                                        
-                                        // Eğer teslimat belgesi yoksa, teslimat miktarı 0'dır (henüz teslim alınmamış)
-                                        // Kullanıcı "Teslim Al" işlemini yapmadıysa, teslimat miktarı gösterilmez (0 olarak kalır)
-                                    }
-                                    
-                                    // Talep Miktarı formatı: "1 AD" (0 ise sadece "0")
-                                    $quantityDisplay = formatQuantity($quantity);
-                                    if ($quantity > 0) {
-                                        $quantityDisplay .= ' ' . htmlspecialchars($uomCode);
-                                    }
-                                    
-                                    // Sevk Miktarı formatı: "1 AD" (0 ise sadece "0") - Her zaman göster
-                                    $shippedFormatted = formatQuantity($shipped);
-                                    if ($shipped > 0) {
-                                        $shippedDisplay = $shippedFormatted . ' ' . htmlspecialchars($uomCode);
-                                    } else {
-                                        $shippedDisplay = '0';
-                                    }
-                                    
-                                    // Teslimat Miktarı formatı: "1 AD" (0 ise sadece "0") - Her zaman göster
-                                    $deliveredFormatted = formatQuantity($delivered);
-                                    if ($delivered > 0) {
-                                        $deliveredDisplay = $deliveredFormatted . ' ' . htmlspecialchars($uomCode);
-                                    } else {
-                                        $deliveredDisplay = '0';
-                                    }
-                                ?>
-                                <tr>
-                                    <td><?= htmlspecialchars($itemCode) ?></td>
-                                    <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
-                                    <td><?= $quantityDisplay ?></td>
-                                    <td><?= $shippedDisplay ?></td>
-                                    <td><?= $deliveredDisplay ?></td>
-                                </tr>
-                            <?php endforeach; ?>
-                        <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center;color:#888;">Kalem bulunamadı.</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </main>
-
-    <script src="script.js"></script>
-    <script>
-    // Sayfayı otomatik yenile (30 saniyede bir) - SAP'deki status değişikliklerini görmek için
-    let autoRefreshInterval = setInterval(function() {
-        // Sayfa görünür durumdaysa yenile
-        if (!document.hidden) {
-            // Sadece GET parametrelerini koruyarak yenile (POST işlemi yapmadan)
-            if (window.location.search.indexOf('refresh=') === -1) {
-                window.location.href = window.location.pathname + window.location.search + (window.location.search ? '&' : '?') + 'refresh=' + Date.now();
-            } else {
-                // Zaten refresh parametresi varsa, sadece timestamp'i güncelle
-                const url = new URL(window.location);
-                url.searchParams.set('refresh', Date.now());
-                window.location.href = url.toString();
-            }
-        }
-    }, 30000); // 30 saniye
-    
-    // Sayfa görünür olduğunda da kontrol et
-    document.addEventListener('visibilitychange', function() {
-        if (!document.hidden) {
-            // Sayfa tekrar görünür olduğunda yenile
-            const url = new URL(window.location);
-            url.searchParams.set('refresh', Date.now());
-            window.location.href = url.toString();
-        }
-    });
-    </script>
-</body>
-</html>
-
-                        <tr>
-                            <th>Kalem Numarası</th>
-                            <th>Kalem Tanımı</th>
-                            <th>Talep Miktarı</th>
-                            <th>Sevk Miktarı</th>
-                            <th>Teslimat Miktarı</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php if (!empty($lines)): ?>
-                            <?php foreach ($lines as $line): ?>
-                                <?php 
-                                    $quantity = (float)($line['Quantity'] ?? 0);
-                                    $remaining = (float)($line['RemainingOpenQuantity'] ?? 0);
-                                    $itemCode = $line['ItemCode'] ?? '';
-                                    $uomCode = $line['UoMCode'] ?? 'AD';
-                                    $shipped = 0; // Sevk Miktarı
-                                    $delivered = 0; // Teslimat Miktarı
-                                    
-                                    // Sevk ve Teslimat Miktarı hesaplama mantığı: Sadece Sevk Edildi (3) ve Tamamlandı (4) durumunda
-                                    if ($status == '3' || $status == '4') {
-                                        // Sevk Miktarı: Ana deponun sevk ettiği miktar (StockTransfer belgesinden)
-                                        $shipped = $stockTransferLinesMap[$itemCode] ?? 0;
-                                        
-                                        // Eğer StockTransfer'den miktar gelmediyse, RemainingOpenQuantity'ye göre hesapla
-                                        if ($shipped == 0 && $quantity > 0) {
-                                            // RemainingOpenQuantity < Quantity ise, sevk edilen miktar = Quantity - RemainingOpenQuantity
-                                            if ($remaining < $quantity) {
-                                                $shipped = $quantity - $remaining;
-                                            } else {
-                                                // RemainingOpenQuantity = Quantity ise, henüz sevk edilmemiş demektir
-                                                // Ama status "Sevk Edildi" ise, talep miktarını göster (ana depo göndermiş sayılır)
-                                                if ($status == '3') {
-                                                    $shipped = $quantity;
-                                                }
-                                            }
-                                            
-                                            // Tamamlandı durumunda: Eğer hala 0 ise ve StockTransfer yoksa, talep miktarını göster
-                                            if ($shipped == 0 && $status == '4' && empty($stockTransferInfo) && $quantity > 0) {
-                                                $shipped = $quantity;
-                                            }
-                                        }
-                                        
-                                        // Teslimat Miktarı: Kullanıcının gerçekten teslim aldığı miktar (Teslim Al işleminden oluşan StockTransfer belgesinden)
-                                        $delivered = $deliveryTransferLinesMap[$itemCode] ?? 0;
-                                        
-                                        // Eğer teslimat belgesi yoksa, teslimat miktarı 0'dır (henüz teslim alınmamış)
-                                        // Kullanıcı "Teslim Al" işlemini yapmadıysa, teslimat miktarı gösterilmez (0 olarak kalır)
-                                    }
-                                    
-                                    // Talep Miktarı formatı: "1 AD" (0 ise sadece "0")
-                                    $quantityDisplay = formatQuantity($quantity);
-                                    if ($quantity > 0) {
-                                        $quantityDisplay .= ' ' . htmlspecialchars($uomCode);
-                                    }
-                                    
-                                    // Sevk Miktarı formatı: "1 AD" (0 ise sadece "0") - Her zaman göster
-                                    $shippedFormatted = formatQuantity($shipped);
-                                    if ($shipped > 0) {
-                                        $shippedDisplay = $shippedFormatted . ' ' . htmlspecialchars($uomCode);
-                                    } else {
-                                        $shippedDisplay = '0';
-                                    }
-                                    
-                                    // Teslimat Miktarı formatı: "1 AD" (0 ise sadece "0") - Her zaman göster
-                                    $deliveredFormatted = formatQuantity($delivered);
-                                    if ($delivered > 0) {
-                                        $deliveredDisplay = $deliveredFormatted . ' ' . htmlspecialchars($uomCode);
-                                    } else {
-                                        $deliveredDisplay = '0';
-                                    }
-                                ?>
-                                <tr>
-                                    <td><?= htmlspecialchars($itemCode) ?></td>
-                                    <td><?= htmlspecialchars($line['ItemDescription'] ?? '-') ?></td>
-                                    <td><?= $quantityDisplay ?></td>
-                                    <td><?= $shippedDisplay ?></td>
-                                    <td><?= $deliveredDisplay ?></td>
-                                </tr>
-                            <?php endforeach; ?>
-                        <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center;color:#888;">Kalem bulunamadı.</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </main>
-
-    <script src="script.js"></script>
-    <script>
-    // Sayfayı otomatik yenile (30 saniyede bir) - SAP'deki status değişikliklerini görmek için
-    let autoRefreshInterval = setInterval(function() {
-        // Sayfa görünür durumdaysa yenile
-        if (!document.hidden) {
-            // Sadece GET parametrelerini koruyarak yenile (POST işlemi yapmadan)
-            if (window.location.search.indexOf('refresh=') === -1) {
-                window.location.href = window.location.pathname + window.location.search + (window.location.search ? '&' : '?') + 'refresh=' + Date.now();
-            } else {
-                // Zaten refresh parametresi varsa, sadece timestamp'i güncelle
-                const url = new URL(window.location);
-                url.searchParams.set('refresh', Date.now());
-                window.location.href = url.toString();
-            }
-        }
-    }, 30000); // 30 saniye
-    
-    // Sayfa görünür olduğunda da kontrol et
-    document.addEventListener('visibilitychange', function() {
-        if (!document.hidden) {
-            // Sayfa tekrar görünür olduğunda yenile
-            const url = new URL(window.location);
-            url.searchParams.set('refresh', Date.now());
-            window.location.href = url.toString();
-        }
-    });
-    </script>
-</body>
-</html>
-
                         <tr>
                             <th>Kalem Numarası</th>
                             <th>Kalem Tanımı</th>
