@@ -340,16 +340,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $headerComments[] = "{$itemCode} ({$itemName}): " . implode(", ", $commentParts);
         }
 
-        // Normal transfer satırı (sevkiyat -> ana depo)
-        $normalTransferMiktar = max(0.0, $sevkMiktari);
-        if ($normalTransferMiktar > 0) {
-            $transferLines[] = [
-                'ItemCode'         => $itemCode,
-                'Quantity'         => $normalTransferMiktar * $baseQty,
-                'FromWarehouseCode'=> $sevkiyatDepo,
-                'WarehouseCode'    => $targetWarehouse,
-            ];
-        }
+       // Normal transfer satırı (sevkiyat -> ana depo)
+       $normalTransferMiktar = max(0.0, $sevkMiktari);
+       if ($normalTransferMiktar > 0) {
+           $transferLines[] = [
+               'ItemCode'         => $itemCode,
+               'Quantity'         => $normalTransferMiktar * $baseQty,
+               'FromWarehouseCode'=> $sevkiyatDepo,
+               'WarehouseCode'    => $targetWarehouse,
+               
+               // --- BAĞLANTI HARİTASI İÇİN EKLENDİ ---
+               'BaseType'         => 1250000001,           // Stok Nakli Talebi ObjType
+               'BaseEntry'        => (int)$docEntry,       // Hangi talep?
+               'BaseLine'         => (int)($line['LineNum'] ?? 0) // Hangi satır?
+               // --------------------------------------
+           ];
+       }
 
         // Eksik/Fazla için sevkiyat depo hareketi
         if ($eksikFazlaQty != 0) {
@@ -439,7 +445,128 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
 
-    // ST2 payload (sevkiyat → ana depo)
+    // --- ÖNEMLİ: STATUS GÜNCELLEMESİ POST'TAN ÖNCE YAPILMALI ---
+    // BaseEntry/BaseLine ile SAP belgeyi otomatik kapatıyor, bu yüzden
+    // status güncellemesini belge kapanmadan önce yapmalıyız.
+    
+    // 1. SEVK MİKTARLARI (ST1): Sayfa başında hesaplanan
+    $allSevkMiktarMap = $sevkMiktarMap;
+    
+    // 2. TESLİMAT MİKTARLARI (ST2): Şu an teslim alacağımız miktarlar
+    $allTeslimatMiktarMap = [];
+    if (!empty($transferLines)) {
+        foreach ($transferLines as $tLine) {
+            $tItem = $tLine['ItemCode'] ?? '';
+            $tQty = (float)($tLine['Quantity'] ?? 0);
+            
+            // Fire/Zayi satırlarını atla
+            $lost = trim($tLine['U_ASB2B_LOST'] ?? '');
+            $damaged = trim($tLine['U_ASB2B_Damaged'] ?? '');
+            if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
+                continue;
+            }
+            
+            if ($tItem !== '' && $tQty > 0) {
+                if (!isset($allTeslimatMiktarMap[$tItem])) {
+                    $allTeslimatMiktarMap[$tItem] = 0;
+                }
+                $allTeslimatMiktarMap[$tItem] += $tQty;
+            }
+        }
+    }
+    
+    // 3. SATIR STATÜLERİNİ HESAPLA
+    $lineStatuses = [];
+    foreach ($allLines as $line) {
+        $itemCode = $line['ItemCode'] ?? '';
+        if ($itemCode === '') continue;
+
+        $baseQty        = floatval($line['BaseQty'] ?? 1.0);
+        $requestedRaw   = floatval($line['Quantity'] ?? 0);
+        $requestedQty   = $baseQty > 0 ? ($requestedRaw / $baseQty) : $requestedRaw;
+
+        $shippedRaw     = $allSevkMiktarMap[$itemCode]     ?? 0;
+        $deliveredRaw   = $allTeslimatMiktarMap[$itemCode] ?? 0;
+        
+        $shippedQty     = $baseQty > 0 ? ($shippedRaw   / $baseQty) : $shippedRaw;
+        $deliveredQty   = $baseQty > 0 ? ($deliveredRaw / $baseQty) : $deliveredRaw;
+
+        $lineStatus = '1';
+        if ($shippedQty == 0 && $deliveredQty == 0) {
+            $lineStatus = '1';
+        } elseif ($shippedQty > 0 && $deliveredQty == 0) {
+            $lineStatus = '3';
+        } elseif ($shippedQty > 0 && $deliveredQty > 0 && $deliveredQty < $shippedQty) {
+            $lineStatus = '3';
+        } elseif ($deliveredQty >= $shippedQty && $shippedQty > 0) {
+            $lineStatus = '4';
+        } elseif ($shippedQty > 0 && $deliveredQty >= $shippedQty) {
+            $lineStatus = '4';
+        }
+        
+        $lineStatuses[] = $lineStatus;
+    }
+
+    // 4. BAŞLIK STATÜSÜNÜ HESAPLA
+    $headerStatus = '1';
+    if (!empty($lineStatuses)) {
+        $allStatus1 = true;
+        $hasStatus3 = false;
+        $allStatus4 = true;
+
+        foreach ($lineStatuses as $st) {
+            if ($st != '1') $allStatus1 = false;
+            if ($st == '3') $hasStatus3 = true;
+            if ($st != '4') $allStatus4 = false;
+        }
+
+        if ($allStatus1)       $headerStatus = '1';
+        elseif ($allStatus4)   $headerStatus = '4';
+        elseif ($hasStatus3)   $headerStatus = '3';
+    }
+
+    // 5. SATIR GÜNCELLEME HAZIRLA
+    $linesToUpdate = [];
+    foreach ($allLines as $line) {
+        $lineNum = $line['LineNum'] ?? 0;
+        $itemCode = $line['ItemCode'] ?? '';
+        
+        if ($headerStatus == '4') {
+            $thisLineStatus = '4';
+        } else {
+            $baseQty = floatval($line['BaseQty'] ?? 1.0);
+            $shippedRaw = $allSevkMiktarMap[$itemCode] ?? 0;
+            $deliveredRaw = $allTeslimatMiktarMap[$itemCode] ?? 0;
+            $shippedQty = $baseQty > 0 ? ($shippedRaw / $baseQty) : $shippedRaw;
+            $deliveredQty = $baseQty > 0 ? ($deliveredRaw / $baseQty) : $deliveredRaw;
+            
+            if ($deliveredRaw >= $shippedRaw && $shippedRaw > 0) {
+                $thisLineStatus = '4';
+            } else {
+                $thisLineStatus = '3';
+            }
+        }
+        
+        $linesToUpdate[] = [
+            'LineNum' => $lineNum,
+            'U_ASB2B_STATUS' => $thisLineStatus
+        ];
+    }
+
+    // 6. STATUS GÜNCELLEMESİNİ YAP (POST'TAN ÖNCE - BELGE AÇIKKEN)
+    $updatePayload = [
+        'U_ASB2B_STATUS' => $headerStatus,
+        'StockTransferLines' => $linesToUpdate
+    ];
+    
+    $updateResult = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
+    
+    // Status güncelleme başarısız olursa logla
+    if ($updateResult['status'] != 200 && $updateResult['status'] != 204) {
+        error_log("[TRANSFER-TESLIMAL] Status güncellenemedi (POST öncesi). DocEntry: {$docEntry}, Status: " . ($updateResult['status'] ?? 'NO STATUS') . ", Error: " . json_encode($updateResult['response']['error'] ?? []));
+    }
+    
+    // 7. STOCK TRANSFER OLUŞTUR (POST - SAP BELGEYİ KAPATACAK)
     $stockTransferPayload = [
         'FromWarehouse'   => $sevkiyatDepo,
         'ToWarehouse'     => $targetWarehouse,
@@ -460,131 +587,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $result = $sap->post('StockTransfers', $stockTransferPayload);
 
     if ($result['status'] == 200 || $result['status'] == 201) {
-        $stockTransferResponse = $result['response'] ?? [];
+        // StockTransfer başarıyla oluşturuldu
+        // Status güncellemesi zaten POST'tan önce yapıldı
+        // SAP belgeyi kapattı, ama status zaten "Tamamlandı" olarak işaretlendi
         
-        // --- DÜZELTME BAŞLANGICI ---
-        
-        // 1. SEVK MİKTARLARI (ST1):
-        // Tekrar sorgu atıp hata riskine girmeyelim.
-        // Sayfa başında hesapladığımız doğru haritayı ($sevkMiktarMap) kullanalım.
-        $allSevkMiktarMap = $sevkMiktarMap; 
-
-        // 2. TESLİMAT MİKTARLARI (ST2):
-        // Şu an gönderdiğimiz payload'daki ($transferLines) miktarları teslim edilmiş sayalım.
-        // (Eğer daha önce kısmi teslimat varsa, mantığı daha da geliştirmek gerekir ama
-        // şu anki sorununuz "Sıfırlanma" olduğu için bu çözüm işinizi görecektir).
-        $allTeslimatMiktarMap = [];
-        
-        if (!empty($transferLines)) {
-            foreach ($transferLines as $tLine) {
-                $tItem = $tLine['ItemCode'] ?? '';
-                $tQty = (float)($tLine['Quantity'] ?? 0);
-                
-                // Fire/Zayi satırlarını atla
-                $lost = trim($tLine['U_ASB2B_LOST'] ?? '');
-                $damaged = trim($tLine['U_ASB2B_Damaged'] ?? '');
-                if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) {
-                    continue;
-                }
-                
-                if ($tItem !== '' && $tQty > 0) {
-                    if (!isset($allTeslimatMiktarMap[$tItem])) {
-                        $allTeslimatMiktarMap[$tItem] = 0;
-                    }
-                    $allTeslimatMiktarMap[$tItem] += $tQty;
-                }
-            }
-        }
-        // --- DÜZELTME BİTİŞİ (Karmaşık döngüleri sildik) ---
-
-        // Satır statüleri
-        $lineStatuses = [];
-        foreach ($allLines as $line) {
-            $itemCode = $line['ItemCode'] ?? '';
-            if ($itemCode === '') continue;
-
-            $baseQty        = floatval($line['BaseQty'] ?? 1.0);
-            $requestedRaw   = floatval($line['Quantity'] ?? 0);
-            $requestedQty   = $baseQty > 0 ? ($requestedRaw / $baseQty) : $requestedRaw;
-
-            $shippedRaw     = $allSevkMiktarMap[$itemCode]     ?? 0;
-            $deliveredRaw   = $allTeslimatMiktarMap[$itemCode] ?? 0;
-            $shippedQty     = $baseQty > 0 ? ($shippedRaw   / $baseQty) : $shippedRaw;
-            $deliveredQty   = $baseQty > 0 ? ($deliveredRaw / $baseQty) : $deliveredRaw;
-
-            $lineStatus = '1';
-            if ($shippedQty == 0 && $deliveredQty == 0) {
-                $lineStatus = '1';
-            } elseif ($shippedQty > 0 && $deliveredQty == 0) {
-                $lineStatus = '3';
-            } elseif ($shippedQty > 0 && $deliveredQty > 0 && $deliveredQty < $shippedQty) {
-                $lineStatus = '3';
-            } elseif ($deliveredQty >= $shippedQty && $shippedQty > 0) {
-                $lineStatus = '4';
-            }
-            $lineStatuses[] = $lineStatus;
-        }
-
-        // Başlık statüsü
-        $headerStatus = '1';
-        if (!empty($lineStatuses)) {
-            $allStatus1 = true;
-            $hasStatus3 = false;
-            $allStatus4 = true;
-
-            foreach ($lineStatuses as $st) {
-                if ($st != '1') $allStatus1 = false;
-                if ($st == '3') $hasStatus3 = true;
-                if ($st != '4') $allStatus4 = false;
-            }
-
-            if ($allStatus1)       $headerStatus = '1';
-            elseif ($allStatus4)   $headerStatus = '4';
-            elseif ($hasStatus3)   $headerStatus = '3';
-        }
-
-        // --- YENİ KOD: SATIR GÜNCELLEME ---
-        $linesToUpdate = [];
-        foreach ($allLines as $line) {
-            $lineNum = $line['LineNum'] ?? 0;
-            $itemCode = $line['ItemCode'] ?? '';
-            
-            // Statüyü tekrar bul (yukarıdaki döngüden de alabilirdik ama temiz olsun)
-            // Basitçe: Eğer başlık 4 ise hepsi 4'tür. Değilse hesapla.
-            if ($headerStatus == '4') {
-                $thisLineStatus = '4';
-            } else {
-                // (Yukarıdaki mantığın aynısı item bazlı)
-                $baseQty = floatval($line['BaseQty'] ?? 1.0);
-                $shippedRaw = $allSevkMiktarMap[$itemCode] ?? 0;
-                $deliveredRaw = $allTeslimatMiktarMap[$itemCode] ?? 0;
-                $shippedQty = $baseQty > 0 ? ($shippedRaw / $baseQty) : $shippedRaw;
-                $deliveredQty = $baseQty > 0 ? ($deliveredRaw / $baseQty) : $deliveredRaw;
-                
-                if ($deliveredRaw >= $shippedRaw && $shippedRaw > 0) {
-                    $thisLineStatus = '4';
-                } else {
-                    $thisLineStatus = '3'; // En kötü ihtimalle sevk edildi kalsın, 1 olmasın.
-                }
-            }
-            
-            $linesToUpdate[] = [
-                'LineNum' => $lineNum,
-                'U_ASB2B_STATUS' => $thisLineStatus
-            ];
-        }
-
-        // Request başlığını VE satırlarını güncelle
-        $updatePayload = [
-            'U_ASB2B_STATUS' => $headerStatus,
-            'StockTransferLines' => $linesToUpdate // KRİTİK: StockTransferLines ismini kullanın!
-        ];
-        
-        $updateResult = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
-
-        // Tamamlandıysa Close
+        // Tamamlandıysa Close (Eğer daha önce kapatılmadıysa)
         if ($headerStatus == '4') {
-            $sap->post("InventoryTransferRequests({$docEntry})/Close", []);
+            // SAP zaten BaseEntry/BaseLine ile belgeyi kapatmış olabilir
+            // Ama yine de Close çağrısını yapalım (idempotent işlem)
+            $closeResult = $sap->post("InventoryTransferRequests({$docEntry})/Close", []);
+            if ($closeResult['status'] != 200 && $closeResult['status'] != 204) {
+                // Belge zaten kapalı olabilir, bu normal
+                error_log("[TRANSFER-TESLIMAL] Close işlemi başarısız (muhtemelen zaten kapalı). DocEntry: {$docEntry}");
+            }
         }
 
         $_SESSION['success_message'] = "Transfer başarıyla teslim alındı!";
