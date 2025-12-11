@@ -348,7 +348,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $currentDeliveryMap[$itemCode] += $qtyToSend;
         }
 
-        // 2. Eksik/Fazla
+        /* 2. Eksik/Fazla
         if ($eksikFazlaQty != 0) {
             $eksikFazlaMiktar = abs($eksikFazlaQty);
             $eksikFazlaLine   = [
@@ -365,7 +365,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
             $eksikFazlaLine['U_ASB2B_Comments'] = ($eksikFazlaQty < 0 ? "Eksik" : "Fazla") . ": {$eksikFazlaMiktar} | {$not}";
             $transferLines[] = $eksikFazlaLine;
-        }
+        }*/
 
         // 3. Kusurlu
         if ($kusurluQty > 0) {
