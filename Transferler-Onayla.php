@@ -213,7 +213,7 @@ if ($action === 'approve' && $newStatus === '3') {
     $result = $stockTransferResult; // Sonuç bu
 
     // Eğer StockTransfer başarısız olursa, durumu geri (0) almak gerekebilir.
-    // Ancak basitlik adına şimdilik böyle bırakıyoruz.
+    // Ancak basitlik adına şimdilik böyle bırakıyoruz. 
     
 } else {
     // REJECT (İPTAL) DURUMU

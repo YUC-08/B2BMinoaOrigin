@@ -579,6 +579,7 @@ body {
 .data-table {
     width: 100%;
     border-collapse: collapse;
+    table-layout: fixed;
 }
 
 .data-table thead {
@@ -602,6 +603,7 @@ body {
     border-bottom: 1px solid #f3f4f6;
     font-size: 14px;
     color: #374151;
+    vertical-align: middle;
 }
 
 .data-table tbody tr {
@@ -1034,7 +1036,7 @@ input[type="checkbox"]:focus {
                                             </a>
                                             <?php if ($canReceive): ?>
                                                 <a href="Transferler-TeslimAl.php?docEntry=<?= urlencode($row['DocEntry']) ?>&itemCode=<?= urlencode($row['ItemCode'] ?? '') ?>&lineNum=<?= urlencode($row['LineNum'] ?? '') ?>">
-                                                    <button class="btn-icon btn-receive">✓ Teslim Al</button>
+                                                    <button class="btn-icon" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);">✓ Teslim Al</button>
                                                 </a>
                                             <?php endif; ?>
                                         </div>
@@ -1140,7 +1142,7 @@ input[type="checkbox"]:focus {
                         <table class="data-table">
                             <thead>
                                 <tr>
-                                    <th style="width: 40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+                                    <th style="width: 50px;"></th>
                                     <th>Transfer No</th>
                                     <th>Kalem No</th>
                                     <th>Kalem Tanımı</th>
@@ -1239,9 +1241,9 @@ input[type="checkbox"]:focus {
 ?>
                                 <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>" data-docentry="<?= $docEntry ?>" data-itemcode="<?= htmlspecialchars($itemCode) ?>" data-linenum="<?= htmlspecialchars($row['LineNum'] ?? '') ?>" data-lines="<?= $transferLinesJson ?>">
                                     <td style="text-align: center;">
-                                       
-                                            <input type="checkbox" class="transfer-checkbox" value="<?= $docEntry ?>" data-docentry="<?= $docEntry ?>" data-itemcode="<?= htmlspecialchars($itemCode) ?>" data-linenum="<?= htmlspecialchars($row['LineNum'] ?? '') ?>"<?= $canApprove ? '' : 'disabled readonly' ?>
-                                        
+                                        <?php if ($canApprove): ?>
+                                        <input type="checkbox" class="transfer-checkbox" value="<?= $docEntry ?>" data-docentry="<?= $docEntry ?>" data-itemcode="<?= htmlspecialchars($itemCode) ?>" data-linenum="<?= htmlspecialchars($row['LineNum'] ?? '') ?>">
+                                        <?php endif; ?>
                                     </td>
                                     <td style="font-weight: 600; color: #1e40af;"><?= $docEntry ?></td>
                                     <td><?= $itemCode ?></td>
@@ -1262,9 +1264,6 @@ input[type="checkbox"]:focus {
                                                 <button class="btn-icon btn-view">👁️ Detay</button>
                                             </a>
                                             <?php if ($canApprove): ?>
-                                                <a href="Transferler-Onayla.php?docEntry=<?= urlencode($row['DocEntry']) ?>&action=approve">
-                                                    <button class="btn-icon btn-approve">✓ Onayla</button>
-                                                </a>
                                                 <a href="Transferler-Onayla.php?docEntry=<?= urlencode($row['DocEntry']) ?>&action=reject">
                                                     <button class="btn-icon" style="background: #fee2e2; color: #991b1b; border: 1px solid #fecaca;">✗ İptal</button>
                                                 </a>
