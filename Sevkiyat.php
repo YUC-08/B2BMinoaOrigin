@@ -178,7 +178,8 @@ if (($transfersData['status'] ?? 0) == 200) {
 
         .filter-group input[type="text"],
         .filter-group input[type="date"],
-        .filter-group select {
+        .filter-group select,
+        .filter-select {
             padding: 10px 14px;
             border: 2px solid #e5e7eb;
             border-radius: 8px;
@@ -188,10 +189,12 @@ if (($transfersData['status'] ?? 0) == 200) {
             min-height: 42px;
             height: 42px;
             box-sizing: border-box;
+            width: 100%;
         }
 
         .filter-group input:focus,
-        .filter-group select:focus {
+        .filter-group select:focus,
+        .filter-select:focus {
             outline: none;
             border-color: #3b82f6;
             box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
@@ -514,20 +517,14 @@ if (($transfersData['status'] ?? 0) == 200) {
                     </div>
                     <div class="filter-group">
                         <label>Durum</label>
-                        <div class="single-select-container">
-                            <div class="single-select-input" onclick="toggleDropdown('status')">
-                                <input type="text" id="filter-status-display" value="Hepsi" placeholder="Seçiniz..." readonly>
-                                <span class="dropdown-arrow">▼</span>
-                            </div>
-                            <div class="single-select-dropdown" id="statusDropdown">
-                                <div class="single-select-option selected" data-value="" onclick="selectStatus('')">Hepsi</div>
-                                <div class="single-select-option" data-value="1" onclick="selectStatus('1')">Onay bekleniyor</div>
-                                <div class="single-select-option" data-value="2" onclick="selectStatus('2')">Hazırlanıyor</div>
-                                <div class="single-select-option" data-value="3" onclick="selectStatus('3')">Sevk edildi</div>
-                                <div class="single-select-option" data-value="4" onclick="selectStatus('4')">Tamamlandı</div>
-                                <div class="single-select-option" data-value="5" onclick="selectStatus('5')">İptal edildi</div>
-                            </div>
-                        </div>
+                        <select class="filter-select" id="filterStatus" onchange="applyFilters()">
+                            <option value="">Hepsi</option>
+                            <option value="1" <?= (isset($_GET['status']) && $_GET['status'] === '1') ? 'selected' : '' ?>>Onay bekleniyor</option>
+                            <option value="2" <?= (isset($_GET['status']) && $_GET['status'] === '2') ? 'selected' : '' ?>>Hazırlanıyor</option>
+                            <option value="3" <?= (isset($_GET['status']) && $_GET['status'] === '3') ? 'selected' : '' ?>>Sevk edildi</option>
+                            <option value="4" <?= (isset($_GET['status']) && $_GET['status'] === '4') ? 'selected' : '' ?>>Tamamlandı</option>
+                            <option value="5" <?= (isset($_GET['status']) && $_GET['status'] === '5') ? 'selected' : '' ?>>İptal edildi</option>
+                        </select>
                     </div>
                 </div>
             </div>
@@ -623,41 +620,12 @@ if (($transfersData['status'] ?? 0) == 200) {
         let entriesPerPage = 25;
         let userWarehouses = <?= json_encode($userWarehouses) ?>;
 
-        // Durum seçimi için global değişken
-        let selectedStatus = '';
-        
-        // Dropdown toggle
-        function toggleDropdown(type) {
-            const dropdown = document.getElementById(type + 'Dropdown');
-            const input = document.querySelector(`#filter-${type}-display`).parentElement;
-            const isOpen = dropdown.classList.contains('show');
-            
-            // Close all dropdowns
-            document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
-            document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
-            
-            if (!isOpen) {
-                dropdown.classList.add('show');
-                input.classList.add('active');
-            }
-        }
-        
-        // Durum seçimi
-        function selectStatus(value) {
-            selectedStatus = value;
-            const statusText = document.querySelector(`#statusDropdown .single-select-option[data-value="${value}"]`).textContent;
-            document.getElementById('filter-status-display').value = statusText;
-            document.querySelectorAll('#statusDropdown .single-select-option').forEach(opt => opt.classList.remove('selected'));
-            document.querySelector(`#statusDropdown .single-select-option[data-value="${value}"]`).classList.add('selected');
-            applyFilters();
-        }
-        
         // Filtreleme
         function applyFilters() {
             const docEntry = document.getElementById('filter-doc-entry').value.toLowerCase();
             const startDate = document.getElementById('filter-start-date').value;
             const endDate = document.getElementById('filter-end-date').value;
-            const status = selectedStatus;
+            const status = document.getElementById('filterStatus').value;
 
             filteredData = allData.filter(item => {
                 // Belge No filtresi
@@ -689,13 +657,6 @@ if (($transfersData['status'] ?? 0) == 200) {
             renderTable();
         }
         
-        // Dışarı tıklandığında dropdown'ları kapat
-        document.addEventListener('click', function(e) {
-            if (!e.target.closest('.single-select-container')) {
-                document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
-                document.querySelectorAll('.single-select-input').forEach(d => d.classList.remove('active'));
-            }
-        });
 
         // Tablo render
         function renderTable() {

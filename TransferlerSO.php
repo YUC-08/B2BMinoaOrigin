@@ -90,8 +90,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 'ItemCode' => $item['itemCode'] ?? '',
                 'Quantity' => $userQuantity * floatval($item['baseQty'] ?? 1.0),
                 'FromWarehouseCode' => $itemFromWarehouse,
-                'WarehouseCode' => $toWarehouse
-            ];
+                'WarehouseCode' => $toWarehouse,
+                'U_ASB2B_STATUS' => '1', 
+            ]; 
         }
     }
     
@@ -114,7 +115,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             'Comments' => 'Transfer nakil talebi',
             'U_ASB2B_BRAN' => $branch,
             'U_AS_OWNR' => $uAsOwnr,
-            'U_ASB2B_STATUS' => '1', // Onay Bekliyor (string olarak '1')
             'U_ASB2B_TYPE' => 'TRANSFER',
             'U_ASB2B_User' => $userName,
             'StockTransferLines' => $stockTransferLines

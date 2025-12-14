@@ -357,18 +357,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             padding: 24px 32px;
             max-width: 1400px;
             margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
         }
 
         .card {
             background: white;
             border-radius: 12px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-            margin-bottom: 24px;
-            overflow: visible;
+            padding: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 0;
         }
 
         .card-header {
-            padding: 20px 24px 0 24px;
+            padding: 0;
+            margin-bottom: 1rem;
         }
 
         .card-header h3 {
@@ -379,7 +383,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
 
         .card-body {
-            padding: 16px 24px 24px 24px;
+            padding: 0;
         }
 
         .form-grid {
@@ -539,29 +543,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
 
         .btn {
-            padding: 12px 24px;
+            padding: 0.625rem 1.25rem;
             border: none;
             border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
+            font-size: 0.95rem;
+            font-weight: 500;
             cursor: pointer;
-            transition: all 0.2s ease;
+            transition: all 0.2s;
             display: inline-flex;
             align-items: center;
-            gap: 8px;
+            gap: 0.5rem;
             text-decoration: none;
         }
 
         .btn-primary {
             background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
             color: white;
-            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
         }
 
         .btn-primary:hover:not(:disabled) {
             background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
             transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
         }
 
         .btn-primary:disabled {
@@ -570,13 +573,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
 
         .btn-secondary {
-            background: white;
-            color: #3b82f6;
-            border: 2px solid #3b82f6;
+            background: #f3f4f6;
+            color: #374151;
         }
 
         .btn-secondary:hover {
-            background: #f0f9ff;
+            background: #e5e7eb;
         }
 
         .table-controls {
@@ -613,30 +615,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         .data-table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 14px;
+            font-size: 0.9rem;
         }
 
         .data-table thead {
-            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%);
+            color: white;
         }
 
         .data-table th {
-            padding: 14px 16px;
+            padding: 1rem;
             text-align: left;
             font-weight: 600;
-            font-size: 12px;
-            color: #475569;
+            font-size: 0.875rem;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            border-bottom: 2px solid #e5e7eb;
         }
 
         .data-table tbody tr {
-            transition: background-color 0.2s ease;
+            border-bottom: 1px solid #e5e7eb;
+            transition: background-color 0.2s;
         }
 
         .data-table tbody tr:hover {
-            background-color: #f9fafb;
+            background-color: #f8fafc;
+        }
+
+        .data-table td {
+            padding: 1rem;
+            font-size: 0.95rem;
         }
 
         .quantity-controls {

@@ -256,21 +256,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
                 
                 // UoM listesini çek
                 if (!empty($itemDetail['UoMGroupEntry'])) {
-                    // Alternatif query: direkt collection path
-                    $uomGroupQuery = "UoMGroups({$itemDetail['UoMGroupEntry']})?\$expand=UoMGroupDefinitionCollection";
+                    // Direkt collection path kullan (expand yok)
+                    $uomGroupQuery = "UoMGroups({$itemDetail['UoMGroupEntry']})/UoMGroupDefinitionCollection";
                     $uomGroupData = $sap->get($uomGroupQuery);
                     if (($uomGroupData['status'] ?? 0) == 200) {
-                        $uomGroup = $uomGroupData['response'] ?? $uomGroupData;
+                        $uomGroupResponse = $uomGroupData['response'] ?? $uomGroupData;
                         $uomList = [];
                         
                         // Farklı response yapılarını kontrol et
                         $collection = [];
-                        if (isset($uomGroup['UoMGroupDefinitionCollection']) && is_array($uomGroup['UoMGroupDefinitionCollection'])) {
-                            $collection = $uomGroup['UoMGroupDefinitionCollection'];
-                        } elseif (isset($uomGroup['value']) && is_array($uomGroup['value'])) {
-                            $collection = $uomGroup['value'];
-                        } elseif (is_array($uomGroup)) {
-                            $collection = $uomGroup;
+                        if (isset($uomGroupResponse['value']) && is_array($uomGroupResponse['value'])) {
+                            $collection = $uomGroupResponse['value'];
+                        } elseif (isset($uomGroupResponse['UoMGroupDefinitionCollection']) && is_array($uomGroupResponse['UoMGroupDefinitionCollection'])) {
+                            $collection = $uomGroupResponse['UoMGroupDefinitionCollection'];
+                        } elseif (is_array($uomGroupResponse) && !isset($uomGroupResponse['error'])) {
+                            $collection = $uomGroupResponse;
                         }
                         
                         if (!empty($collection)) {
@@ -291,40 +291,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
                             }
                         }
                         
-                        // Eğer UoMList hala boşsa, BaseUoM'u kullan (ana birim)
-                        if (empty($uomList) && isset($uomGroup['BaseUoM'])) {
-                            $baseUoM = $uomGroup['BaseUoM'];
-                            // BaseUoM'dan UoMCode'u bulmak için UoMCodes endpoint'ini kullan
-                            // Şimdilik BaseUoM'u direkt kullan
-                            $uomList[] = [
-                                'UoMEntry' => $baseUoM,
-                                'UoMCode' => $itemDetail['InventoryUOM'] ?? '',
-                                'BaseQty' => 1
-                            ];
-                        }
-                        
-                        $item['UoMList'] = $uomList;
-                        
-                        // Eğer UoMList boşsa ve InventoryUOM varsa, InventoryUOM'un UoMEntry'sini bul
+                        // Eğer UoMList boşsa ve InventoryUOM varsa, InventoryUOM'u kullan
                         if (empty($uomList) && !empty($itemDetail['InventoryUOM'])) {
                             $inventoryUOM = $itemDetail['InventoryUOM'];
-                            // UoMGroupDefinitionCollection'dan InventoryUOM ile eşleşeni bul
-                            if (isset($uomGroup['UoMGroupDefinitionCollection'])) {
-                                foreach ($uomGroup['UoMGroupDefinitionCollection'] as $uomDef) {
+                            // Collection'dan InventoryUOM ile eşleşeni bul
+                            if (!empty($collection)) {
+                                foreach ($collection as $uomDef) {
                                     $uomCode = $uomDef['UoMCode'] ?? '';
                                     $uomEntry = $uomDef['UoMEntry'] ?? '';
                                     // InventoryUOM ile eşleşen veya herhangi bir geçerli UoMEntry bul
                                     if (!empty($uomEntry) && ($uomCode === $inventoryUOM || empty($uomList))) {
-                                        $item['UoMList'] = [[
+                                        $uomList[] = [
                                             'UoMEntry' => $uomEntry,
                                             'UoMCode' => $uomCode ?: $inventoryUOM,
                                             'BaseQty' => $uomDef['BaseQty'] ?? 1
-                                        ]];
+                                        ];
                                         break;
                                     }
                                 }
                             }
                         }
+                        
+                        $item['UoMList'] = $uomList;
                     }
                 }
             }
@@ -578,36 +566,39 @@ function formatDate($dateString) {
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #f5f7fa 0%, #e9ecef 100%);
-            color: #1f2937;
+            background: #f5f7fa;
+            color: #2c3e50;
+            line-height: 1.6;
         }
 
         .main-content {
             width: 100%;
-            min-height: 100vh;
+            background: whitesmoke;
             padding: 0;
+            min-height: 100vh;
         }
 
         .page-header {
-            background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%);
-            color: white;
-            padding: 24px 2rem;
-            box-shadow: 0 4px 20px rgba(30, 64, 175, 0.15);
+            background: white;
+            padding: 20px 2rem;
+            border-radius: 0 0 0 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            margin: 0;
             position: sticky;
             top: 0;
             z-index: 100;
-            height: auto;
-            min-height: 80px;
+            height: 80px;
+            box-sizing: border-box;
         }
 
         .page-header h2 {
-            font-size: 2rem;
-            font-weight: 700;
+            color: #1e40af;
+            font-size: 1.75rem;
+            font-weight: 600;
             margin: 0;
-            letter-spacing: -0.5px;
         }
 
         .header-actions {
@@ -617,42 +608,36 @@ function formatDate($dateString) {
         }
 
         .content-wrapper {
-            padding: 32px;
-            max-width: 1600px;
+            padding: 24px 32px;
+            max-width: 1400px;
             margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
         }
 
         .card {
             background: white;
             border-radius: 12px;
-            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-            margin-bottom: 24px;
-            overflow: hidden;
-            transition: box-shadow 0.3s ease;
-        }
-
-        .card:hover {
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+            padding: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 0;
         }
 
         .card-header {
-            padding: 20px 24px;
-            border-bottom: 2px solid #f3f4f6;
-            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            padding: 0;
+            margin-bottom: 1rem;
         }
 
         .card-header h3 {
             color: #1e40af;
-            font-size: 1.25rem;
+            font-size: 1.3rem;
             font-weight: 600;
             margin: 0;
-            display: flex;
-            align-items: center;
-            gap: 8px;
         }
 
         .card-body {
-            padding: 24px;
+            padding: 0;
         }
 
         .form-grid {
@@ -742,36 +727,36 @@ function formatDate($dateString) {
         .data-table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 14px;
+            font-size: 0.9rem;
         }
 
         .data-table thead {
-            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%);
+            color: white;
         }
 
         .data-table th {
-            padding: 14px 16px;
+            padding: 1rem;
             text-align: left;
             font-weight: 600;
-            font-size: 12px;
-            color: #475569;
+            font-size: 0.875rem;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            border-bottom: 2px solid #e5e7eb;
-        }
-
-        .data-table td {
-            padding: 14px 16px;
-            border-bottom: 1px solid #f3f4f6;
-            vertical-align: middle;
         }
 
         .data-table tbody tr {
-            transition: background-color 0.2s ease;
+            border-bottom: 1px solid #e5e7eb;
+            transition: background-color 0.2s;
         }
 
         .data-table tbody tr:hover {
-            background-color: #f9fafb;
+            background-color: #f8fafc;
+        }
+
+        .data-table td {
+            padding: 1rem;
+            font-size: 0.95rem;
+            color: #374151;
         }
 
         .quantity-controls {
@@ -821,59 +806,48 @@ function formatDate($dateString) {
         }
 
         .btn {
-            padding: 10px 20px;
+            padding: 0.625rem 1.25rem;
             border: none;
             border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
+            font-size: 0.95rem;
+            font-weight: 500;
             cursor: pointer;
-            transition: all 0.25s ease;
+            transition: all 0.2s;
             display: inline-flex;
             align-items: center;
-            gap: 8px;
+            gap: 0.5rem;
             text-decoration: none;
-            white-space: nowrap;
         }
 
         .btn-primary {
             background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
             color: white;
-            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
         }
 
         .btn-primary:hover {
             background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-            box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4);
-            transform: translateY(-2px);
-        }
-
-        .btn-primary:active {
-            transform: translateY(0);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
         }
 
         .btn-secondary {
-            background: white;
-            color: #3b82f6;
-            border: 2px solid #3b82f6;
-            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.1);
+            background: #f3f4f6;
+            color: #374151;
         }
 
         .btn-secondary:hover {
-            background: #f0f9ff;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
-            transform: translateY(-2px);
+            background: #e5e7eb;
         }
 
         .btn-success {
-            background: linear-gradient(135deg,rgb(56, 30, 255) 0%,rgb(2, 64, 196) 100%);
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
             color: white;
-            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
         }
 
         .btn-success:hover {
-            background: linear-gradient(135deg,rgb(44, 120, 233) 0%,rgb(48, 92, 236) 100%);
-            box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4);
-            transform: translateY(-2px);
+            background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
         }
 
         .btn-danger {
@@ -889,9 +863,11 @@ function formatDate($dateString) {
         }
 
         .btn-small {
-            padding: 6px 12px;
-            font-size: 12px;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.875rem;
+            font-weight: 500;
         }
+        
 
         .input-small {
             padding: 8px 12px;
@@ -1021,7 +997,7 @@ function formatDate($dateString) {
                 <div class="card-header">
                     <h3>📋 Sayım Bilgileri</h3>
                 </div>
-                <div class="card-body">
+                <div class="card-body" style="margin-top: 1rem;">
                     <div class="form-grid">
                         <div class="form-group">
                             <label>Depo *</label>
@@ -1053,7 +1029,7 @@ function formatDate($dateString) {
                 <div class="card-header">
                     <h3>🔍 Ürün Listesi</h3>
                 </div>
-                <div class="card-body">
+                <div class="card-body" style="margin-top: 1rem;">
                     <div class="table-controls">
                         <div class="search-box">
                             <input type="text" class="search-input" id="itemSearch" placeholder="Ürün kodu veya adına göre ara..." onkeyup="if(event.key==='Enter') loadItems()">
@@ -1069,8 +1045,8 @@ function formatDate($dateString) {
                                     <th>Ürün Adı</th>
                                     <th>Depo</th>
                                     <th>Birim</th>
-                                    <th>Sepete Ekle</th>
-                                    <th>Dönüşüm</th>
+                                    <th>Miktar</th>
+                                    <th>İşlem</th>
                                 </tr>
                             </thead>
                             <tbody id="itemsTableBody">
@@ -1088,7 +1064,7 @@ function formatDate($dateString) {
                 <div class="card-header">
                     <h3>🛒 Sayım Sepeti</h3>
                 </div>
-                <div class="card-body">
+                <div class="card-body" style="margin-top: 1rem;">
                     <div style="overflow-x: auto;">
                         <table class="data-table cart-table">
                             <thead>
@@ -1101,7 +1077,6 @@ function formatDate($dateString) {
                                     <th>Depo</th>
                                     <th>Birim</th>
                                     <th>Sayılan Miktar</th>
-                                    <th>Dönüşüm</th>
                                     <th style="text-align: center;">İşlem</th>
                                 </tr>
                             </thead>
@@ -1123,11 +1098,9 @@ function formatDate($dateString) {
                                                    step="0.01" 
                                                    min="0" 
                                                    onchange="updateCartQuantity(this)" 
-                                                   oninput="updateCartConversionForExisting(this)">
                                             <button type="button" class="qty-btn" onclick="changeExistingCartQuantity(this.parentElement.querySelector('.qty-input'), 1)">+</button>
                                         </div>
                                     </td>
-                                    <td class="conversion-cell">-</td>
                                     <td style="text-align: center;">
                                         <button class="btn btn-danger btn-small" onclick="removeFromCart(this)">Sil</button>
                                     </td>
@@ -1135,7 +1108,7 @@ function formatDate($dateString) {
                                 <?php endforeach; ?>
                                 <?php else: ?>
                                 <tr>
-                                    <td colspan="<?= $isUpdateMode ? '8' : '7' ?>" class="empty-message">Sepet boş - Ürün seçiniz</td>
+                                    <td colspan="<?= $isUpdateMode ? '7' : '6' ?>" class="empty-message">Sepet boş - Ürün seçiniz</td>
                                 </tr>
                                 <?php endif; ?>
                             </tbody>
@@ -1225,11 +1198,6 @@ function formatDate($dateString) {
                                 uomSelect = '<span data-uom-code="' + technicalUomCode + '" data-base-qty="' + defaultBaseQty + '">' + (technicalUomCode || displayUom) + '</span>';
                             }
                             
-                            let conversionText = '-';
-                            if (defaultBaseQty && defaultBaseQty !== 1 && defaultBaseQty > 0) {
-                                conversionText = `1x${formatQuantity(defaultBaseQty)} = ${formatQuantity(defaultBaseQty)} AD`;
-                            }
-                            
                             row.innerHTML = `
                                 <td><strong>${item.ItemCode || ''}</strong></td>
                                 <td>${item.ItemName || ''}</td>
@@ -1249,9 +1217,10 @@ function formatDate($dateString) {
                                                oninput="updateItemQuantity('${item.ItemCode || ''}', this.value)">
                                         <button type="button" class="qty-btn" onclick="changeItemQuantity('${item.ItemCode || ''}', 1)">+</button>
                                     </div>
-                                    <button class="btn btn-success btn-small" style="margin-top: 8px; width: 100%;" onclick="addToCart(this)">Ekle</button>
                                 </td>
-                                <td class="conversion-cell">${conversionText}</td>
+                                <td style="text-align: center;">
+                                    <button class="btn btn-primary btn-small" onclick="addToCart(this)">Ekle</button>
+                                </td>
                             `;
                             row.setAttribute('data-item-code', item.ItemCode || '');
                             row.setAttribute('data-item-data', JSON.stringify(item));
@@ -1356,7 +1325,7 @@ function formatDate($dateString) {
             tbody.innerHTML = '';
             
             if (cart.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="${isUpdateMode ? '8' : '7'}" class="empty-message">Sepet boş - Ürün seçiniz</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="${isUpdateMode ? '7' : '6'}" class="empty-message">Sepet boş - Ürün seçiniz</td></tr>`;
                 return;
             }
             
@@ -1368,13 +1337,6 @@ function formatDate($dateString) {
                 row.setAttribute('data-item-code', item.ItemCode);
                 
                 const qty = parseFloat(item.CountedQuantity) || 0;
-                const baseQty = parseFloat(item.BaseQty || 1.0);
-                
-                let conversionText = '-';
-                if (baseQty !== 1 && baseQty > 0) {
-                    const adKarşılığı = qty * baseQty;
-                    conversionText = `${formatQuantity(qty)}x${formatQuantity(baseQty)} = ${formatQuantity(adKarşılığı)} AD`;
-                }
                 
                 let html = '';
                 if (isUpdateMode) {
@@ -1393,12 +1355,10 @@ function formatDate($dateString) {
                                    value="${qty}" 
                                    step="0.01" 
                                    min="0" 
-                                   onchange="updateCartQuantity(this, ${index})" 
-                                   oninput="updateCartConversion(this, ${index})">
+                                   onchange="updateCartQuantity(this, ${index})">
                             <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 1)">+</button>
                         </div>
                     </td>
-                    <td class="conversion-cell">${conversionText}</td>
                     <td style="text-align: center;">
                         <button class="btn btn-danger btn-small" onclick="removeFromCart(${index})">Sil</button>
                     </td>
@@ -1455,19 +1415,35 @@ function formatDate($dateString) {
             formData.append('remarks', remarks);
             
             const lines = cart.map(item => {
+                // KT birimindeki ürünler Ad olarak sayılmalı (BaseQty ile çarp)
+                const baseQty = parseFloat(item.BaseQty || 1.0);
+                let countedQty = parseFloat(item.CountedQuantity) || 0;
+                
+                // Eğer birim KT ise ve BaseQty > 1 ise, miktarı Ad'a dönüştür
+                if (item.UoMCode === 'KT' && baseQty > 1) {
+                    countedQty = countedQty * baseQty;
+                }
+                
                 const line = {
                     ItemCode: item.ItemCode,
                     WarehouseCode: item.WarehouseCode,
-                    CountedQuantity: item.CountedQuantity
+                    CountedQuantity: countedQty
                 };
                 
                 if (isUpdateMode && item.LineNumber !== null && item.LineNumber !== undefined) {
                     line.LineNumber = item.LineNumber;
                 } else if (!isUpdateMode || item.LineNumber === null || item.LineNumber === undefined) {
-                    if (item.UoMEntry) {
-                        line.UoMEntry = item.UoMEntry;
-                    } else if (item.UoMCode) {
-                        line.UoMCode = item.UoMCode;
+                    // KT birimindeki ürünler Ad olarak kaydedilmeli
+                    if (item.UoMCode === 'KT' && baseQty > 1) {
+                        // Ad birimini kullan (UoMEntry veya UoMCode olarak)
+                        // BaseUoM'u bulmak için UoMCode'u 'AD' olarak ayarla
+                        line.UoMCode = 'AD';
+                    } else {
+                        if (item.UoMEntry) {
+                            line.UoMEntry = item.UoMEntry;
+                        } else if (item.UoMCode) {
+                            line.UoMCode = item.UoMCode;
+                        }
                     }
                 }
                 

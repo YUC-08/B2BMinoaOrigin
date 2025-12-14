@@ -236,20 +236,22 @@ foreach ($lines as $line) {
             padding: 24px 32px;
             max-width: 1400px;
             margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
         }
 
         .card {
             background: white;
             border-radius: 12px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+            padding: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
             margin-bottom: 24px;
-            overflow: visible;
         }
 
         .card-header {
-            padding: 20px 24px;
-            border-bottom: 2px solid #f3f4f6;
-            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            padding: 0;
+            margin-bottom: 1rem;
         }
 
         .card-header h3 {
@@ -260,7 +262,7 @@ foreach ($lines as $line) {
         }
 
         .card-body {
-            padding: 24px;
+            padding: 0;
         }
 
         .detail-grid {
@@ -327,49 +329,41 @@ foreach ($lines as $line) {
             width: 100%;
             border-collapse: collapse;
             font-size: 14px;
-            table-layout: fixed;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
         }
 
         .data-table thead {
-            background: #f8fafc;
+            background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
         }
 
         .data-table th {
-            padding: 12px 16px;
+            padding: 16px 20px;
             text-align: left;
             font-weight: 600;
             font-size: 13px;
-            color: #4b5563;
+            color: #1e3a8a;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             border-bottom: 2px solid #e5e7eb;
         }
 
-        .data-table th.text-right {
-            text-align: right;
-        }
-
         .data-table tbody tr {
-            border-bottom: 1px solid #e5e7eb;
-            transition: background 0.15s;
+            border-bottom: 1px solid #f3f4f6;
+            transition: background 0.15s ease;
         }
 
         .data-table tbody tr:hover {
-            background: #f9fafb;
+            background: #f8fafc;
         }
 
         .data-table td {
-            padding: 12px 16px;
+            padding: 16px 20px;
+            border-bottom: 1px solid #f3f4f6;
+            font-size: 14px;
             color: #374151;
-            text-align: left;
-        }
-
-        .data-table td.text-right {
-            text-align: right;
-        }
-
-        .text-right {
-            text-align: right;
         }
 
         .btn {
@@ -489,49 +483,29 @@ foreach ($lines as $line) {
                                     <th>Ürün Kodu</th>
                                     <th>Ürün Adı</th>
                                     <th>Birim</th>
-                                    <th class="text-right">Miktar</th>
-                                    <th class="text-right">Birim Fiyat</th>
-                                    <th class="text-right">Toplam</th>
                                 </tr>
                             </thead>
                             <tbody id="linesTableBody">
                                 <?php if (empty($lines)): ?>
                                 <tr>
-                                    <td colspan="7" class="empty-message">Satır bulunamadı</td>
+                                    <td colspan="4" class="empty-message">Satır bulunamadı</td>
                                 </tr>
                                 <?php else: ?>
-                                <?php
-                                $grandTotal = 0;
-                                foreach ($lines as $line): 
+                                <?php foreach ($lines as $line): 
                                     $lineNum = $line['LineNum'] ?? $line['LineNumber'] ?? '';
                                     $itemCode = $line['ItemCode'] ?? '';
                                     $itemName = $line['ItemDescription'] ?? $line['ItemName'] ?? '';
                                     $uomCode = $line['UoMCode'] ?? '';
                                     $quantity = floatval($line['Quantity'] ?? 0);
-                                    $unitPrice = floatval($line['UnitPrice'] ?? 0);
-                                    $total = $quantity * $unitPrice;
-                                    $grandTotal += $total;
+                                    $formattedQty = formatNumber($quantity);
                                 ?>
                                 <tr>
                                     <td><?= htmlspecialchars($lineNum) ?></td>
                                     <td><strong><?= htmlspecialchars($itemCode) ?></strong></td>
                                     <td><?= htmlspecialchars($itemName) ?></td>
-                                    <td><?= htmlspecialchars($uomCode) ?></td>
-                                    <td class="text-right"><?= formatNumber($quantity) ?></td>
-                                    <td class="text-right"><?= formatNumber($unitPrice) ?> ₺</td>
-                                    <td class="text-right"><strong><?= formatNumber($total) ?> ₺</strong></td>
+                                    <td><?= htmlspecialchars($formattedQty) ?> <?= htmlspecialchars($uomCode) ?></td>
                                 </tr>
                                 <?php endforeach; ?>
-                                <?php if (!empty($lines)): ?>
-                                <tr style="background: #f8fafc; font-weight: 600; border-top: 2px solid #e5e7eb;">
-                                    <td colspan="4" style="padding: 16px; border: none;"></td>
-                                    <td style="padding: 16px; border: none;"></td>
-                                    <td class="text-right" style="padding: 16px; font-size: 14px; color: #6b7280; border: none;">GENEL TOPLAM:</td>
-                                    <td class="text-right" style="padding: 16px; font-size: 16px; color: #1e40af; border: none;">
-                                        <strong><?= formatNumber($grandTotal) ?> ₺</strong>
-                                    </td>
-                                </tr>
-                                <?php endif; ?>
                                 <?php endif; ?>
                             </tbody>
                         </table>

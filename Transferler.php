@@ -96,7 +96,6 @@ if ($viewType === 'incoming') {
     
     // FİLTRE DÜZELTİLDİ: substringof yerine net eşleşme
     // Bu depoya (User'ın deposuna) gelen transferler. 
-    // View'da 'WhsCode' hedef depoyu temsil eder.
     $incomingFilter = "U_AS_OWNR eq '{$uAsOwnr}' and WhsCode eq '{$currentUserWhsCode}'";
     
     // Status filtresi
@@ -237,20 +236,63 @@ if ($viewType === 'outgoing') {
 
     // Lines gruplama (Sepet işlemleri için)
     $linesByDocEntry = [];
+    $processedDocEntries = [];
+    
     foreach ($outgoingTransfersFiltered as $row) {
         $docEntry = $row['DocEntry'] ?? '';
         $status = (string)($row['U_ASB2B_STATUS'] ?? '0');
+        $itemCode = $row['ItemCode'] ?? '';
+        $lineNum = (int)($row['LineNum'] ?? 0);
+        
         if (!empty($docEntry) && ($status == '0' || $status == '1')) {
-            if (!isset($linesByDocEntry[$docEntry])) $linesByDocEntry[$docEntry] = [];
+            if (!isset($linesByDocEntry[$docEntry])) {
+                $linesByDocEntry[$docEntry] = [];
+                $processedDocEntries[$docEntry] = true;
+            }
             
+            // SAP'den RemainingOpenQuantity çek (kısmi sevk için kritik)
+            $remainingQty = 0;
+            if (!isset($processedDocEntries["{$docEntry}_{$itemCode}_{$lineNum}"])) {
+                $itrlQuery = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines?\$filter=ItemCode eq '{$itemCode}' and LineNum eq {$lineNum}";
+                $itrlData = $sap->get($itrlQuery);
+                if (($itrlData['status'] ?? 0) == 200) {
+                    $itrlResponse = $itrlData['response'] ?? null;
+                    $itrlLines = [];
+                    if (isset($itrlResponse['value']) && is_array($itrlResponse['value'])) {
+                        $itrlLines = $itrlResponse['value'];
+                    } elseif (is_array($itrlResponse) && !isset($itrlResponse['value'])) {
+                        $itrlLines = $itrlResponse;
+                    }
+                    if (!empty($itrlLines)) {
+                        $remainingQty = (float)($itrlLines[0]['RemainingOpenQuantity'] ?? $row['Quantity'] ?? 0);
+                    }
+                }
+                $processedDocEntries["{$docEntry}_{$itemCode}_{$lineNum}"] = true;
+            }
+            
+            // Eğer RemainingOpenQuantity bulunamadıysa, Quantity'yi kullan
+            if ($remainingQty == 0) {
+                $remainingQty = (float)($row['Quantity'] ?? 0);
+            }
+
             $linesByDocEntry[$docEntry][] = [
-                'ItemCode' => $row['ItemCode'] ?? '',
+                'ItemCode' => $itemCode,
                 'ItemDescription' => $row['Dscription'] ?? '',
-                'Quantity' => (float)($row['Quantity'] ?? 0),
-                'LineNum' => (int)($row['LineNum'] ?? 0),
+                
+                // GÖRÜNTÜLEME İÇİN: Toplam Sipariş Miktarı
+                'Quantity' => (float)($row['Quantity'] ?? 0), 
+                
+                // SEPET MANTIĞI İÇİN: Kalan Açık Miktar (RemainingOpenQuantity)
+                'OpenQty' => (float)($row['OpenQty'] ?? 0),//$remainingQty,
+                
+                'LineNum' => $lineNum,
                 'BaseQty' => 1.0, 
-                'UoMCode' => $row['UoMCode'] ?? 'AD'
+                'UoMCode' => $row['UoMCode'] ?? 'AD',
+                // Satır durumu (Kısmi sevk kontrolü için)
+                'LineStatus' => $row['LineStatus'] ?? 'O'
             ];
+
+            
         }
     }
     
@@ -924,26 +966,55 @@ input[type="checkbox"]:focus {
                             </tr>
                         <?php else: ?>
                             <?php foreach ($incomingTransfers as $row): 
-                                $status = (string)($row['U_ASB2B_STATUS'] ?? '0');
-                                $statusText = getStatusText($status);
-                                $statusClass = getStatusClass($status);
-                                // Gelen transferlerde: Sadece Sevk Edildi (3) durumunda Teslim Al butonu göster
-                                $canReceive = ($status === '3'); // Sadece Sevk Edildi
-                                $fromWhsCode = $row['FromWhsCode'] ?? '';
-                                $fromWhsName = $row['FromWhsName'] ?? ''; // View'den geliyor
-                                $fromWhsDisplay = $fromWhsCode;
-                                if (!empty($fromWhsName)) {
-                                    $fromWhsDisplay = $fromWhsCode . ' / ' . $fromWhsName;
-                                }
-                                $docDate = formatDate($row['DocDate'] ?? '');
-                                $dueDate = formatDate($row['DocDueDate'] ?? '');
-                                $numAtCard = htmlspecialchars($row['U_ASB2B_NumAtCard'] ?? '-');
-                                $docEntry = htmlspecialchars($row['DocEntry'] ?? '-');
-                                $itemCode = htmlspecialchars($row['ItemCode'] ?? '-');
-                                $dscription = htmlspecialchars($row['Dscription'] ?? '-');
-                                
-                                $searchData = buildSearchData($docEntry, $fromWhsDisplay, $docDate, $dueDate, $numAtCard, $statusText);
-                            ?>
+    // 1. Veritabanındaki Başlık durumu
+    $headerStatus = (string)($row['U_ASB2B_STATUS'] ?? '0');
+    $status = $headerStatus;
+
+    // 2. SAP Durum Kontrolleri
+    $sapDocStatus = $row['DocumentStatus'] ?? ''; 
+    $sapLineStatus = $row['LineStatus'] ?? ''; // SQL View'a eklediğimiz satır durumu
+
+    // MANTIK:
+    // A) Belge tamamen kapalıysa -> HEPSİ SEVK EDİLDİ
+    // B) Belge açık ama BU SATIR kapalıysa -> BU SATIR SEVK EDİLDİ
+    // C) Belge açık ve satır açıksa -> ONAY BEKLİYOR (Kısmi kalanlar için)
+    
+    if ($status != '5' && $status != '4') {
+        if ($sapDocStatus === 'bost_Close' || $sapDocStatus === 'C') {
+            $status = '3'; // Belge kapalı, hepsi gitti
+        } elseif ($sapLineStatus === 'bost_Close' || $sapLineStatus === 'C') {
+            $status = '3'; // Sadece bu satır gitti
+        } else {
+            // Satır hala açıksa, veritabanındaki başlık durumuna (0/1/2) geri dönmeliyiz.
+            // Eğer başlık '3' yapılmışsa ama satır hala 'Açık' ise, bunu '0' (Onay Bekliyor) gibi gösterelim
+            if ($headerStatus === '3') {
+                $status = '0'; // Kısmi kalanlar bekliyor görünsün
+            }
+        }
+    }
+
+    $statusText = getStatusText($status);
+    $statusClass = getStatusClass($status);
+    
+    // Gelen transferlerde: Sadece Sevk Edildi (3) durumunda Teslim Al butonu göster
+    $canReceive = ($status === '3'); 
+
+    $fromWhsCode = $row['FromWhsCode'] ?? '';
+    $fromWhsName = $row['FromWhsName'] ?? ''; 
+    $fromWhsDisplay = $fromWhsCode;
+    if (!empty($fromWhsName)) {
+        $fromWhsDisplay = $fromWhsCode . ' / ' . $fromWhsName;
+    }
+    
+    $docDate = formatDate($row['DocDate'] ?? '');
+    $dueDate = formatDate($row['DocDueDate'] ?? '');
+    $numAtCard = htmlspecialchars($row['U_ASB2B_NumAtCard'] ?? '-');
+    $docEntry = htmlspecialchars($row['DocEntry'] ?? '-');
+    $itemCode = htmlspecialchars($row['ItemCode'] ?? '-');
+    $dscription = htmlspecialchars($row['Dscription'] ?? '-');
+    
+    $searchData = buildSearchData($docEntry, $fromWhsDisplay, $docDate, $dueDate, $numAtCard, $statusText);
+?>
                                 <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>">
                                     <td style="font-weight: 600; color: #1e40af;"><?= $docEntry ?></td>
                                     <td><?= $itemCode ?></td>
@@ -1114,35 +1185,63 @@ input[type="checkbox"]:focus {
                             </tr>
                         <?php else: ?>
                             <?php foreach ($outgoingTransfers as $row): 
-                                $status = (string)($row['U_ASB2B_STATUS'] ?? '0');
-                                $statusText = getStatusText($status);
-                                $statusClass = getStatusClass($status);
-                                // Giden transferlerde: Onay Bekliyor (0, 1) durumunda Onayla/İptal butonları
-                                $canApprove = in_array($status, ['0', '1']); // Onay Bekliyor
-                                $toWhsCode = $row['WhsCode'] ?? ''; // Giden transferlerde WhsCode = ToWarehouse
-                                $toWhsName = $row['ToWhsName'] ?? ''; // View'den geliyor
-                                $toWhsDisplay = $toWhsCode;
-                                if (!empty($toWhsName)) {
-                                    $toWhsDisplay = $toWhsCode . ' / ' . $toWhsName;
-                                }
-                                $docDate = formatDate($row['DocDate'] ?? '');
-                                $dueDate = formatDate($row['DocDueDate'] ?? '');
-                                $numAtCard = htmlspecialchars($row['U_ASB2B_NumAtCard'] ?? '-');
-                                $docEntry = htmlspecialchars($row['DocEntry'] ?? '-');
-                                $itemCode = htmlspecialchars($row['ItemCode'] ?? '-');
-                                $dscription = htmlspecialchars($row['Dscription'] ?? '-');
-                                
-                                $searchData = buildSearchData($docEntry, $toWhsDisplay, $docDate, $dueDate, $numAtCard, $statusText);
-                                $lines = $row['InventoryTransferRequestLines'] ?? [];
-                                
-                                // Lines boş olsa bile JSON olarak encode et
-                                $transferLinesJson = !empty($lines) ? htmlspecialchars(json_encode($lines), ENT_QUOTES, 'UTF-8') : '[]';
-                            ?>
+    // 1. Veritabanındaki Başlık durumu
+    $headerStatus = (string)($row['U_ASB2B_STATUS'] ?? '0');
+    $status = $headerStatus;
+
+    // 2. SAP Durum Kontrolleri
+    $sapDocStatus = $row['DocumentStatus'] ?? ''; 
+    $sapLineStatus = $row['LineStatus'] ?? ''; // SQL View'a eklediğimiz satır durumu
+
+    // MANTIK:
+    // A) Belge tamamen kapalıysa -> HEPSİ SEVK EDİLDİ
+    // B) Belge açık ama BU SATIR kapalıysa -> BU SATIR SEVK EDİLDİ
+    // C) Belge açık ve satır açıksa -> ONAY BEKLİYOR (Kısmi kalanlar için)
+    
+    if ($status != '5' && $status != '4') {
+        if ($sapDocStatus === 'bost_Close' || $sapDocStatus === 'C') {
+            $status = '3'; // Belge kapalı, hepsi gitti
+        } elseif ($sapLineStatus === 'bost_Close' || $sapLineStatus === 'C') {
+            $status = '3'; // Sadece bu satır gitti
+        } else {
+            // Satır hala açıksa, veritabanındaki başlık durumuna (0/1/2) geri dönmeliyiz.
+            // Eğer başlık '3' yapılmışsa ama satır hala 'Açık' ise, bunu '0' (Onay Bekliyor) gibi gösterelim
+            if ($headerStatus === '3') {
+                $status = '0'; // Kısmi kalanlar bekliyor görünsün
+            }
+        }
+    }
+
+    $statusText = getStatusText($status);
+    $statusClass = getStatusClass($status);
+    
+    // Giden transferlerde: Onay Bekliyor (0, 1) durumunda Onayla/İptal butonları
+    $canApprove = in_array($status, ['0', '1']); 
+
+    $toWhsCode = $row['WhsCode'] ?? ''; 
+    $toWhsName = $row['ToWhsName'] ?? ''; 
+    $toWhsDisplay = $toWhsCode;
+    if (!empty($toWhsName)) {
+        $toWhsDisplay = $toWhsCode . ' / ' . $toWhsName;
+    }
+    
+    $docDate = formatDate($row['DocDate'] ?? '');
+    $dueDate = formatDate($row['DocDueDate'] ?? '');
+    $numAtCard = htmlspecialchars($row['U_ASB2B_NumAtCard'] ?? '-');
+    $docEntry = htmlspecialchars($row['DocEntry'] ?? '-');
+    $itemCode = htmlspecialchars($row['ItemCode'] ?? '-');
+    $dscription = htmlspecialchars($row['Dscription'] ?? '-');
+    
+    $searchData = buildSearchData($docEntry, $toWhsDisplay, $docDate, $dueDate, $numAtCard, $statusText);
+    $lines = $row['InventoryTransferRequestLines'] ?? [];
+    
+    $transferLinesJson = !empty($lines) ? htmlspecialchars(json_encode($lines), ENT_QUOTES, 'UTF-8') : '[]';
+?>
                                 <tr data-row data-search="<?= htmlspecialchars($searchData, ENT_QUOTES, 'UTF-8') ?>" data-docentry="<?= $docEntry ?>" data-itemcode="<?= htmlspecialchars($itemCode) ?>" data-linenum="<?= htmlspecialchars($row['LineNum'] ?? '') ?>" data-lines="<?= $transferLinesJson ?>">
                                     <td style="text-align: center;">
-                                        <?php if ($canApprove): ?>
-                                            <input type="checkbox" class="transfer-checkbox" value="<?= $docEntry ?>" data-docentry="<?= $docEntry ?>" data-itemcode="<?= htmlspecialchars($itemCode) ?>" data-linenum="<?= htmlspecialchars($row['LineNum'] ?? '') ?>">
-                                        <?php endif; ?>
+                                       
+                                            <input type="checkbox" class="transfer-checkbox" value="<?= $docEntry ?>" data-docentry="<?= $docEntry ?>" data-itemcode="<?= htmlspecialchars($itemCode) ?>" data-linenum="<?= htmlspecialchars($row['LineNum'] ?? '') ?>"<?= $canApprove ? '' : 'disabled readonly' ?>
+                                        
                                     </td>
                                     <td style="font-weight: 600; color: #1e40af;"><?= $docEntry ?></td>
                                     <td><?= $itemCode ?></td>
@@ -1261,8 +1360,7 @@ input[type="checkbox"]:focus {
         function sepetToggle() {
             const panel = document.getElementById('sepetPanel');
             if (panel) {
-                const currentDisplay = window.getComputedStyle(panel).display;
-                const isVisible = currentDisplay === 'flex' || panel.style.display === 'flex';
+                const isVisible = panel.style.display === 'flex';
                 panel.style.display = isVisible ? 'none' : 'flex';
             }
         }
@@ -1271,8 +1369,8 @@ input[type="checkbox"]:focus {
         function checkboxChanged(checkbox) {
             const docEntry = checkbox.getAttribute('data-docentry');
             const itemCode = checkbox.getAttribute('data-itemcode');
-            const lineNum = checkbox.getAttribute('data-linenum');
-            
+            const lineNum = checkbox.getAttribute('data-linenum');   
+   
             console.log('Checkbox changed:', { docEntry, itemCode, lineNum, checked: checkbox.checked });
             
             if (!docEntry || !itemCode) {
@@ -1300,7 +1398,7 @@ input[type="checkbox"]:focus {
                 const docEntry = cb.getAttribute('data-docentry');
                 const itemCode = cb.getAttribute('data-itemcode');
                 const lineNum = cb.getAttribute('data-linenum');
-                
+
                 if (isChecked) {
                     if (docEntry && itemCode) {
                         sepetEkle(docEntry, itemCode, lineNum);
@@ -1315,53 +1413,27 @@ input[type="checkbox"]:focus {
             sepetGuncelle();
         }
         
-        // Sepete ekle - Artık ürün bazlı (DocEntry + ItemCode)
         function sepetEkle(docEntry, itemCode, lineNum) {
-            if (!docEntry || !itemCode) {
-                return;
-            }
+            if (!docEntry || !itemCode) return;
             
-            // Sepet key'i: DocEntry_ItemCode
             const sepetKey = `${docEntry}_${itemCode}`;
-            if (sepet[sepetKey]) {
-                return; // Zaten sepette
-            }
+            if (sepet[sepetKey]) return; // Zaten sepette
             
             const row = document.querySelector(`tr[data-docentry="${docEntry}"][data-itemcode="${itemCode}"]`);
-            if (!row) {
-                return;
-            }
-            
+            if (!row) return;
+           
             // Lines bilgisini al
             const linesJson = row.getAttribute('data-lines') || '[]';
-            
+           
             let allLines = [];
-            if (linesJson && linesJson !== '[]' && linesJson !== 'null' && linesJson.trim() !== '') {
-                try {
-                    const parsed = JSON.parse(linesJson);
-                    
-                    if (parsed && typeof parsed === 'object' && parsed.error) {
-                        console.error('SAP Error in lines:', parsed.error);
-                        allLines = [];
-                    } else if (Array.isArray(parsed)) {
-                        allLines = parsed;
-                    } else if (parsed && parsed.value && Array.isArray(parsed.value)) {
-                        allLines = parsed.value;
-                    } else if (parsed && parsed.StockTransferLines) {
-                        const stockTransferLines = parsed.StockTransferLines;
-                        if (Array.isArray(stockTransferLines)) {
-                            allLines = stockTransferLines;
-                        } else if (typeof stockTransferLines === 'object' && stockTransferLines !== null) {
-                            allLines = Object.values(stockTransferLines);
-                        }
-                    }
-                } catch (e) {
-                    console.error('Lines parse hatası:', e);
-                    allLines = [];
-                }
-            }
-            
-            // Sadece bu ItemCode'a ait line'ı bul
+            try {
+                allLines = JSON.parse(linesJson);
+                // SAP formatı düzeltmeleri
+                if (allLines && allLines.value) allLines = allLines.value;
+                if (allLines && allLines.StockTransferLines) allLines = allLines.StockTransferLines;
+            } catch (e) { allLines = []; }
+         
+            // Satırı Bul
             let selectedLine = null;
             if (lineNum) {
                 selectedLine = allLines.find(l => (l.LineNum || l.LineNum === 0) && String(l.LineNum) === String(lineNum));
@@ -1370,64 +1442,57 @@ input[type="checkbox"]:focus {
                 selectedLine = allLines.find(l => (l.ItemCode || '') === itemCode);
             }
             
-            // Eğer line bulunamazsa, view'dan gelen veriyi kullan (satır bazlı olduğu için)
-            if (!selectedLine && allLines.length === 0) {
-                // View'dan gelen veri kullanılabilir - satır bazlı olduğu için direkt row'dan bilgi al
-                const itemNameCell = row.querySelector('td:nth-child(3)'); // Kalem Tanımı
-                const itemName = itemNameCell ? itemNameCell.textContent.trim() : '';
-                
-                // Basit bir line objesi oluştur
-                selectedLine = {
-                    ItemCode: itemCode,
-                    ItemDescription: itemName,
-                    ItemName: itemName,
-                    UoMCode: 'AD',
-                    LineNum: lineNum || 0,
-                    BaseQty: 1.0,
-                    Quantity: 0,
-                    RequestedQty: 0
-                };
-            }
-            
+            // Fallback (Bulunamazsa boş obje)
             if (!selectedLine) {
-                console.error('Line bulunamadı:', { docEntry, itemCode, lineNum, allLinesCount: allLines.length, allLines });
-                // Yine de sepete ekle, basit bir line ile
-                selectedLine = {
-                    ItemCode: itemCode,
-                    ItemDescription: '',
-                    ItemName: '',
-                    UoMCode: 'AD',
-                    LineNum: lineNum || 0,
-                    BaseQty: 1.0,
-                    Quantity: 0,
-                    RequestedQty: 0
-                };
+                const itemName = row.querySelector('td:nth-child(3)')?.textContent.trim() || '';
+                selectedLine = { ItemCode: itemCode, ItemName: itemName, Quantity: 0, OpenQty: 0 };
             }
+
+            let kalanMiktar = 0;
+
+            if (selectedLine.OpenQty !== undefined && selectedLine.OpenQty !== null && selectedLine.OpenQty !== '') {
+                kalanMiktar = parseFloat(selectedLine.OpenQty);
+            } else {
+                kalanMiktar = parseFloat(selectedLine.Quantity) || 0;
+            }            
+
             
-            // Alıcı şube bilgisini al (6. sütun: checkbox(1), TransferNo(2), KalemNo(3), KalemTanımı(4), Tarih(5), AlıcıŞube(6))
-            const toWarehouseCell = row.querySelector('td:nth-child(6)');
-            const toWarehouse = toWarehouseCell ? toWarehouseCell.textContent.trim() : '';
-            
-            // Sadece seçilen ürünü sepete ekle
+            // -------------------------------------------------------------
+            // KRİTİK MİKTAR HESABI (OPENQTY KULLANIMI)
+            // -------------------------------------------------------------
+            // OpenQty (Kalan) varsa onu kullan, yoksa Quantity (Toplam) kullan
+            //let kalanMiktar = parseFloat(selectedLine.OpenQty);        
+
+            // Eğer kalan miktar 0 ise uyarı ver ve ekleme
+            if (kalanMiktar <= 0) {
+                alert('Bu ürün tamamen sevk edilmiş, gönderilecek miktar kalmamış!');
+                const cb = document.querySelector(`input[data-docentry="${docEntry}"][data-itemcode="${itemCode}"]`);
+                if(cb) cb.checked = false;
+                return;
+            }
+            // -------------------------------------------------------------
+
             const baseQty = parseFloat(selectedLine._BaseQty || selectedLine.BaseQty || 1.0);
-            const requestedQty = parseFloat(selectedLine._RequestedQty || selectedLine.RequestedQty || 0);
-            const quantity = parseFloat(selectedLine.Quantity || 0);
             
             sepet[sepetKey] = {
                 docEntry: docEntry,
                 itemCode: itemCode,
-                toWarehouse: toWarehouse,
+                toWarehouse: row.querySelector('td:nth-child(6)')?.textContent.trim() || '',
                 lines: [{
                     ItemCode: selectedLine.ItemCode || itemCode,
                     ItemName: selectedLine.ItemDescription || selectedLine.ItemName || '',
                     UoMCode: selectedLine.UoMCode || 'AD',
                     LineNum: selectedLine.LineNum || lineNum || 0,
                     BaseQty: baseQty,
-                    RequestedQty: requestedQty > 0 ? requestedQty : (baseQty > 0 ? (quantity / baseQty) : quantity),
+                    // Ekranda Toplam Sipariş görünsün
+                    RequestedQty: parseFloat(selectedLine.Quantity || 0), 
                     StockQty: parseFloat(selectedLine._StockQty || selectedLine.StockQty || 0),
-                    SentQty: parseFloat(selectedLine._SentQty || selectedLine.SentQty || requestedQty || (baseQty > 0 ? (quantity / baseQty) : quantity))
+                    // Gönderilecek kutusuna otomatik olarak KALAN miktar gelsin
+                    SentQty: kalanMiktar 
                 }]
             };
+            
+            sepetGuncelle();
         }
         
         // Sepetten çıkar - Artık ürün bazlı
@@ -1556,6 +1621,71 @@ input[type="checkbox"]:focus {
             sepetGuncelle();
         }
         
+        // Debug bilgilerini göster
+        function showDebugInfo(docEntry, debugInfo, isSuccess) {
+            // Debug paneli oluştur veya güncelle
+            let debugPanel = document.getElementById('debugPanel');
+            if (!debugPanel) {
+                debugPanel = document.createElement('div');
+                debugPanel.id = 'debugPanel';
+                debugPanel.style.cssText = 'position: fixed; bottom: 20px; right: 20px; width: 600px; max-height: 80vh; background: #fff; border: 2px solid #3b82f6; border-radius: 8px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); z-index: 10000; overflow: hidden; display: none;';
+                document.body.appendChild(debugPanel);
+            }
+            
+            const header = document.createElement('div');
+            header.style.cssText = 'background: #3b82f6; color: white; padding: 12px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; cursor: pointer;';
+            header.innerHTML = `
+                <span>🔍 Debug Bilgileri - Transfer ${docEntry}</span>
+                <button onclick="document.getElementById('debugPanel').style.display='none'" style="background: transparent; border: none; color: white; font-size: 18px; cursor: pointer;">✕</button>
+            `;
+            
+            const content = document.createElement('div');
+            content.style.cssText = 'padding: 16px; max-height: calc(80vh - 60px); overflow-y: auto; font-family: monospace; font-size: 12px;';
+            
+            let html = '<div style="margin-bottom: 16px;">';
+            html += `<div style="color: ${isSuccess ? '#10b981' : '#ef4444'}; font-weight: 600; margin-bottom: 8px;">Durum: ${isSuccess ? '✅ Başarılı' : '❌ Başarısız'}</div>`;
+            html += `<div style="color: #6b7280; margin-bottom: 12px;">Zaman: ${debugInfo.timestamp || 'N/A'}</div>`;
+            html += '</div>';
+            
+            // Gönderilen Veriler
+            html += '<div style="margin-bottom: 16px; padding: 12px; background: #f3f4f6; border-radius: 6px;">';
+            html += '<div style="font-weight: 600; margin-bottom: 8px; color: #1e40af;">📤 Gönderilen Veriler:</div>';
+            html += `<div style="margin-bottom: 8px;"><strong>DocEntry:</strong> ${debugInfo.docEntry}</div>`;
+            html += `<div style="margin-bottom: 8px;"><strong>FromWarehouse:</strong> ${debugInfo.fromWarehouse || 'N/A'}</div>`;
+            html += `<div style="margin-bottom: 8px;"><strong>ToWarehouse:</strong> ${debugInfo.toWarehouse || 'N/A'}</div>`;
+            html += '<details style="margin-top: 8px;"><summary style="cursor: pointer; font-weight: 600;">Cart Lines (Sepet)</summary><pre style="background: #fff; padding: 8px; border-radius: 4px; margin-top: 4px; overflow-x: auto;">' + JSON.stringify(debugInfo.cartLines || [], null, 2) + '</pre></details>';
+            html += '<details style="margin-top: 8px;"><summary style="cursor: pointer; font-weight: 600;">Request Lines (View)</summary><pre style="background: #fff; padding: 8px; border-radius: 4px; margin-top: 4px; overflow-x: auto;">' + JSON.stringify(debugInfo.requestLines || [], null, 2) + '</pre></details>';
+            html += '<details style="margin-top: 8px;"><summary style="cursor: pointer; font-weight: 600;">StockTransferLines (Temizlenmeden Önce)</summary><pre style="background: #fff; padding: 8px; border-radius: 4px; margin-top: 4px; overflow-x: auto;">' + JSON.stringify(debugInfo.stockTransferLines_before_clean || [], null, 2) + '</pre></details>';
+            html += '<details style="margin-top: 8px;"><summary style="cursor: pointer; font-weight: 600; color: #10b981;">✅ cleanStockTransferLines (SAP\'ye Giden)</summary><pre style="background: #fff; padding: 8px; border-radius: 4px; margin-top: 4px; overflow-x: auto;">' + JSON.stringify(debugInfo.cleanStockTransferLines || [], null, 2) + '</pre></details>';
+            html += '<details style="margin-top: 8px;"><summary style="cursor: pointer; font-weight: 600; color: #1e40af;">📦 StockTransfer Payload (Tam)</summary><pre style="background: #fff; padding: 8px; border-radius: 4px; margin-top: 4px; overflow-x: auto;">' + JSON.stringify(debugInfo.stockTransferPayload || {}, null, 2) + '</pre></details>';
+            html += '</div>';
+            
+            // Gelen Yanıt
+            html += '<div style="margin-bottom: 16px; padding: 12px; background: #fef3c7; border-radius: 6px;">';
+            html += '<div style="font-weight: 600; margin-bottom: 8px; color: #d97706;">📥 SAP Response:</div>';
+            html += `<div style="margin-bottom: 8px;"><strong>HTTP Status:</strong> ${debugInfo.stockTransferResponse?.status || 'N/A'}</div>`;
+            html += '<details style="margin-top: 8px;"><summary style="cursor: pointer; font-weight: 600;">Response Body</summary><pre style="background: #fff; padding: 8px; border-radius: 4px; margin-top: 4px; overflow-x: auto;">' + JSON.stringify(debugInfo.stockTransferResponse?.response || {}, null, 2) + '</pre></details>';
+            if (debugInfo.stockTransferResponse?.error) {
+                html += '<div style="margin-top: 8px; padding: 8px; background: #fee2e2; border-radius: 4px; color: #dc2626;"><strong>Hata:</strong> ' + JSON.stringify(debugInfo.stockTransferResponse.error, null, 2) + '</div>';
+            }
+            html += '</div>';
+            
+            content.innerHTML = html;
+            
+            // Panel içeriğini güncelle
+            debugPanel.innerHTML = '';
+            debugPanel.appendChild(header);
+            debugPanel.appendChild(content);
+            debugPanel.style.display = 'block';
+            
+            // Header'a tıklanınca aç/kapat
+            header.onclick = function(e) {
+                if (e.target.tagName !== 'BUTTON') {
+                    content.style.display = content.style.display === 'none' ? 'block' : 'none';
+                }
+            };
+        }
+        
         // Toplu onayla
         function sepetOnayla() {
             const count = Object.keys(sepet).length;
@@ -1600,6 +1730,11 @@ input[type="checkbox"]:focus {
                 })
                 .then(response => response.json())
                 .then(data => {
+                    // Debug bilgilerini göster
+                    if (data.debug) {
+                        showDebugInfo(transfer.docEntry, data.debug, data.success);
+                    }
+                    
                     if (data.success) {
                         successCount++;
                     } else {

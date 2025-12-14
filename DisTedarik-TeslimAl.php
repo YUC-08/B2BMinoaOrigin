@@ -980,7 +980,7 @@ body {
     <?php if ($warningMsg): ?>
         <div class="card" style="background: #fef3c7; border: 2px solid #f59e0b; margin-bottom: 1.5rem;">
             <p style="color: #92400e; font-weight: 600; margin: 0;"><?= htmlspecialchars($warningMsg) ?></p>
-        </div>
+                    </div>
     <?php endif; ?>
 
     <?php if ($errorMsg): ?>
@@ -1003,12 +1003,12 @@ body {
                     <li><strong>uAsOwnr:</strong> <?= htmlspecialchars($debugInfo['uAsOwnr'] ?? 'BOŞ') ?></li>
                     <li><strong>branch:</strong> <?= htmlspecialchars($debugInfo['branch'] ?? 'BOŞ') ?></li>
                 </ul>
-            </div>
+                    </div>
             
             <div style="margin-bottom: 1rem;">
                 <strong>Fire/Zayi Deposu Sorgu Sonucu:</strong>
                 <pre style="background: #fff; padding: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem;"><?= htmlspecialchars(json_encode($debugInfo['fireZayiWarehouses'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
-            </div>
+                </div>
             
             <div style="margin-bottom: 1rem;">
                 <strong>Kusurlu Miktar Kontrolleri:</strong>
@@ -1043,7 +1043,7 @@ body {
                         <?php endforeach; ?>
                     </tbody>
                 </table>
-            </div>
+                    </div>
             
             <div style="margin-bottom: 1rem;">
                 <strong>StockTransferLines Array:</strong>
@@ -1052,7 +1052,7 @@ body {
                     <li><strong>Success Count:</strong> <?= htmlspecialchars($debugInfo['successCount'] ?? 0) ?></li>
                 </ul>
                 <pre style="background: #fff; padding: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.75rem; max-height: 300px; overflow-y: auto;"><?= htmlspecialchars(json_encode($debugInfo['stockTransferLines'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) ?></pre>
-            </div>
+                </div>
         </div>
     <?php endif; ?>
 
@@ -1279,8 +1279,8 @@ body {
                         <small style="display: block; color: #dc2626; margin-top: 0.5rem;">
                             <?= $isClosed ? 'Sipariş kapalı olduğu için teslim alma yapılamaz.' : 'Teslim alma yapılamaz.' ?>
                         </small>
-                    <?php endif; ?>
-                </div>
+                <?php endif; ?>
+        </div>
                 </div>
         </form>
                 <?php endif; ?>

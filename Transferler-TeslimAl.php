@@ -1,5 +1,6 @@
 <?php
 session_start();
+
 if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
     header("Location: config/login.php");
     exit;
@@ -8,544 +9,577 @@ if (!isset($_SESSION["UserName"]) || !isset($_SESSION["sapSession"])) {
 include 'sap_connect.php';
 $sap = new SAPConnect();
 
-// Session'dan bilgileri al
-$uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
-$branch  = $_SESSION["Branch2"]["Name"] ?? $_SESSION["WhsCode"] ?? $_SESSION["Branch"] ?? '';
-
-if (empty($uAsOwnr) || empty($branch)) {
-    die("Session bilgileri eksik. Lütfen tekrar giriş yapın.");
-}
-
-$docEntry       = $_GET['docEntry']  ?? '';
-$filterItemCode = $_GET['itemCode'] ?? '';
-$filterLineNum  = $_GET['lineNum']  ?? '';
-$isFiltered     = (!empty($filterItemCode) || $filterLineNum !== '');
-
-if (empty($docEntry)) {
-    header("Location: Transferler.php?view=incoming");
-    exit;
-}
-
-// Tarih formatlama
+/* ------------------------
+ * Helpers
+ * ---------------------- */
 function formatDate($date) {
     if (empty($date)) return '-';
-    if (strpos($date, 'T') !== false) {
-        return date('d.m.Y', strtotime(substr($date, 0, 10)));
-    }
+    if (strpos($date, 'T') !== false) return date('d.m.Y', strtotime(substr($date, 0, 10)));
     return date('d.m.Y', strtotime($date));
 }
 
-// Depo bulma
-function findWarehouse($sap, $uAsOwnr, $branch, $filterExpr) {
+function findWarehouse($sap, string $uAsOwnr, string $branch, string $filterExpr): ?string {
     $filter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and {$filterExpr}";
-    $query  = "Warehouses?\$filter=" . urlencode($filter);
+    $query  = "Warehouses?\$select=WarehouseCode&\$filter=" . rawurlencode($filter);
     $data   = $sap->get($query);
+    if (($data['status'] ?? 0) != 200) {
+        error_log("[findWarehouse] GET failed: HTTP " . ($data['status'] ?? 'NO STATUS') . " | Query: {$query} | Error: " . json_encode($data['response']['error'] ?? $data['error'] ?? 'Unknown'));
+    }
     $rows   = $data['response']['value'] ?? [];
-    return !empty($rows) ? $rows[0]['WarehouseCode'] : null;
+    return !empty($rows) ? ($rows[0]['WarehouseCode'] ?? null) : null;
 }
 
-// StockTransfer Headerlarını bul
-function findStockTransfersForRequest($sap, int $docEntryInt): array {
-    $combinedList = []; // Tüm sonuçları burada toplayacağız
-
-    // 1. Sorgu: BaseEntry ile bağlı olanlar (Genelde Teslimat/ST2 Belgeleri)
-    $baseQuery = "StockTransfers?\$filter=BaseEntry%20eq%20{$docEntryInt}%20and%20BaseType%20eq%201250000001&\$orderby=DocEntry%20asc";
-    $baseData  = $sap->get($baseQuery);
-    if (($baseData['status'] ?? 0) == 200) {
-        $rows = $baseData['response']['value'] ?? [];
-        foreach ($rows as $r) {
-            // DocEntry'yi anahtar yaparak çift kayıtları engelle
-            if (isset($r['DocEntry'])) {
-                $combinedList[$r['DocEntry']] = $r;
-            }
-        }
+/**
+ * View: ASB2B_TransferRequestList_B1SLQuery'den doc'un tüm satırlarını çeker.
+ * (Tek kaynak burası)
+ */
+function getRequestLinesFromView($sap, int $docEntry): array {
+    $viewFilter = "DocEntry eq {$docEntry}";
+    $viewQuery  = "view.svc/ASB2B_TransferRequestList_B1SLQuery?\$filter=" . rawurlencode($viewFilter);
+    $viewData   = $sap->get($viewQuery);
+    if (($viewData['status'] ?? 0) != 200) {
+        error_log("[getRequestLinesFromView] GET failed: HTTP " . ($viewData['status'] ?? 'NO STATUS') . " | Query: {$viewQuery} | Error: " . json_encode($viewData['response']['error'] ?? $viewData['error'] ?? 'Unknown'));
     }
-
-    // 2. Sorgu: QutMaster ile bağlı olanlar (Genelde Sevkiyat/ST1 Belgeleri - Bizim bağlantıyı kopardıklarımız)
-    // ŞART YOK! Her durumda bunu da ara ve listeye ekle.
-    $qutQuery = "StockTransfers?\$filter=U_ASB2B_QutMaster%20eq%20{$docEntryInt}&\$orderby=DocEntry%20asc";
-    $qutData  = $sap->get($qutQuery);
-    if (($qutData['status'] ?? 0) == 200) {
-        $rows = $qutData['response']['value'] ?? [];
-        foreach ($rows as $r) {
-            if (isset($r['DocEntry'])) {
-                $combinedList[$r['DocEntry']] = $r;
-            }
-        }
-    }
-
-    // 3. Sorgu: Parent/Comments ile bağlı olanlar (Eski kayıtlar için yedek)
-    // Bunu da her zaman ara
-    $fallbackQuery = "StockTransfers?\$filter=Comments%20eq%20'{$docEntryInt}'%20or%20U_ASB2B_Parent%20eq%20'{$docEntryInt}'&\$orderby=DocEntry%20asc";
-    $fallbackData  = $sap->get($fallbackQuery);
-    if (($fallbackData['status'] ?? 0) == 200) {
-        $rows = $fallbackData['response']['value'] ?? [];
-        foreach ($rows as $r) {
-            if (isset($r['DocEntry'])) {
-                $combinedList[$r['DocEntry']] = $r;
-            }
-        }
-    }
-
-    // Hash map'ten düz diziye çevir ve döndür
-    return array_values($combinedList);
+    return $viewData['response']['value'] ?? [];
 }
 
-// ST satırlarını çek
+/**
+ * ST liste çek (U_ASB2B_QutMaster üzerinden)
+ */
+function getStockTransfersByFilter($sap, string $filter): array {
+    $q = "StockTransfers?\$select=DocEntry,FromWarehouse,ToWarehouse&\$filter=" . rawurlencode($filter) . "&\$orderby=DocEntry%20asc";
+    $d = $sap->get($q);
+    if (($d['status'] ?? 0) != 200) {
+        error_log("[getStockTransfersByFilter] GET failed: HTTP " . ($d['status'] ?? 'NO STATUS') . " | Query: {$q} | Error: " . json_encode($d['response']['error'] ?? $d['error'] ?? 'Unknown'));
+        return [];
+    }
+    return $d['response']['value'] ?? [];
+}
+
+/**
+ * ST1 belgelerini bul (birden fazla yöntemle)
+ * Not: ToWarehouse filtresi kaldırıldı çünkü header seviyesindeki ToWarehouse ile
+ * satır bazlı depo kodları farklı olabilir. Bunun yerine satır bazlı kontrol yapılacak.
+ */
+function findST1Documents($sap, int $docEntry, string $sevkiyatDepo): array {
+    $allST1 = [];
+    $found = [];
+    
+    // Yöntem 1: U_ASB2B_QutMaster ile (ToWarehouse filtresi kaldırıldı)
+    $st1a = getStockTransfersByFilter(
+        $sap,
+        "U_ASB2B_QutMaster eq {$docEntry}"
+    );
+    foreach ($st1a as $st) {
+        $de = (int)($st['DocEntry'] ?? 0);
+        if ($de > 0 && !isset($found[$de])) {
+            // Satır bazlı kontrol: En az bir satırın ToWarehouse'u sevkiyatDepo ile eşleşiyor mu?
+            $lines = getStockTransferLines($sap, $de);
+            $hasMatchingLine = false;
+            foreach ($lines as $line) {
+                $lineToWhs = (string)($line['WarehouseCode'] ?? '');
+                if ($lineToWhs === $sevkiyatDepo) {
+                    $hasMatchingLine = true;
+                    break;
+                }
+            }
+            // Eğer satır bazlı eşleşme yoksa, header seviyesindeki ToWarehouse'u kontrol et
+            if (!$hasMatchingLine) {
+                $headerToWhs = (string)($st['ToWarehouse'] ?? '');
+                if ($headerToWhs === $sevkiyatDepo) {
+                    $hasMatchingLine = true;
+                }
+            }
+            if ($hasMatchingLine) {
+                $allST1[] = $st;
+                $found[$de] = true;
+            }
+        }
+    }
+    
+    // Yöntem 2: BaseEntry + BaseType ile (ToWarehouse filtresi kaldırıldı)
+    $st1b = getStockTransfersByFilter(
+        $sap,
+        "BaseEntry eq {$docEntry} and BaseType eq 1250000001"
+    );
+    foreach ($st1b as $st) {
+        $de = (int)($st['DocEntry'] ?? 0);
+        if ($de > 0 && !isset($found[$de])) {
+            // Satır bazlı kontrol
+            $lines = getStockTransferLines($sap, $de);
+            $hasMatchingLine = false;
+            foreach ($lines as $line) {
+                $lineToWhs = (string)($line['WarehouseCode'] ?? '');
+                if ($lineToWhs === $sevkiyatDepo) {
+                    $hasMatchingLine = true;
+                    break;
+                }
+            }
+            if (!$hasMatchingLine) {
+                $headerToWhs = (string)($st['ToWarehouse'] ?? '');
+                if ($headerToWhs === $sevkiyatDepo) {
+                    $hasMatchingLine = true;
+                }
+            }
+            if ($hasMatchingLine) {
+                $allST1[] = $st;
+                $found[$de] = true;
+            }
+        }
+    }
+    
+    // Yöntem 3: Comments ile (eski kayıtlar için, ToWarehouse filtresi kaldırıldı)
+    $st1c = getStockTransfersByFilter(
+        $sap,
+        "Comments eq '{$docEntry}'"
+    );
+    foreach ($st1c as $st) {
+        $de = (int)($st['DocEntry'] ?? 0);
+        if ($de > 0 && !isset($found[$de])) {
+            // Satır bazlı kontrol
+            $lines = getStockTransferLines($sap, $de);
+            $hasMatchingLine = false;
+            foreach ($lines as $line) {
+                $lineToWhs = (string)($line['WarehouseCode'] ?? '');
+                if ($lineToWhs === $sevkiyatDepo) {
+                    $hasMatchingLine = true;
+                    break;
+                }
+            }
+            if (!$hasMatchingLine) {
+                $headerToWhs = (string)($st['ToWarehouse'] ?? '');
+                if ($headerToWhs === $sevkiyatDepo) {
+                    $hasMatchingLine = true;
+                }
+            }
+            if ($hasMatchingLine) {
+                $allST1[] = $st;
+                $found[$de] = true;
+            }
+        }
+    }
+    
+    return $allST1;
+}
+
+/**
+ * ST lines çek
+ */
 function getStockTransferLines($sap, int $stDocEntry): array {
-    $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";
-    $stLinesData  = $sap->get($stLinesQuery);
-    if (($stLinesData['status'] ?? 0) != 200) return [];
-    $resp = $stLinesData['response'] ?? null;
-    if (isset($resp['value']) && is_array($resp['value'])) return $resp['value'];
-    if (is_array($resp) && !isset($resp['value'])) return $resp;
+    // $select kullanma; bazı ortamlarda navigation + select saçmalıyor
+    $q = "StockTransfers({$stDocEntry})/StockTransferLines";
+    $d = $sap->get($q);
+
+    if (($d['status'] ?? 0) != 200) {
+        // istersen buraya error_log(json_encode($d)) koy
+        return [];
+    }
+
+    $r = $d['response'] ?? [];
+
+    // 1) Klasik OData collection: {"value":[...]}
+    if (isset($r['value']) && is_array($r['value'])) return $r['value'];
+
+    // 2) Sende gelen format: {"StockTransferLines":[...]}
+    if (isset($r['StockTransferLines']) && is_array($r['StockTransferLines'])) return $r['StockTransferLines'];
+
     return [];
 }
 
-// ST1 belgelerinden sevk miktarını topla
-function buildSevkMiktarMapFromSt1($sap, int $docEntryInt, string $sevkiyatDepo): array {
-    $sevkMiktarMap = [];
-    $stList = findStockTransfersForRequest($sap, $docEntryInt);
+/**
+ * ST'lerden (ST1/ST2) satır bazlı qty hesaplar.
+ * Eşleme önceliği: BaseLine == lineNum, yoksa sadece ItemCode (son çare).
+ */
+function sumQtyForLineFromStockTransfers($sap, array $stHeaders, string $itemCode, int $lineNum): float {
+    $sum = 0.0;
+    foreach ($stHeaders as $st) {
+        $stDoc = (int)($st['DocEntry'] ?? 0);
+        if ($stDoc <= 0) continue;
 
-    foreach ($stList as $stInfo) {
-        $stToWarehouse = $stInfo['ToWarehouse'] ?? '';
-        // Depo kodlarını normalize et (boşluk vs temizle)
-        if (trim($stToWarehouse) !== trim($sevkiyatDepo)) continue; 
+        $lines = getStockTransferLines($sap, $stDoc);
+        foreach ($lines as $ln) {
+            $it = (string)($ln['ItemCode'] ?? '');
+            if ($it !== $itemCode) continue;
 
-        $stDocEntry = $stInfo['DocEntry'] ?? null;
-        if (!$stDocEntry) continue;
-
-        $stLines = getStockTransferLines($sap, (int)$stDocEntry);
-        foreach ($stLines as $stLine) {
-            $itemCode = $stLine['ItemCode'] ?? '';
-            $qty      = (float)($stLine['Quantity'] ?? 0);
-            if ($itemCode === '' || $qty <= 0) continue;
-
-            $lost    = trim($stLine['U_ASB2B_LOST']    ?? '');
-            $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
-            if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) continue;
-
-            if (!isset($sevkMiktarMap[$itemCode])) $sevkMiktarMap[$itemCode] = 0;
-            $sevkMiktarMap[$itemCode] += $qty;
+            // BaseLine varsa lineNum ile eşleştir.
+            if (isset($ln['BaseLine']) && $ln['BaseLine'] !== null && $ln['BaseLine'] !== '') {
+                if ((int)$ln['BaseLine'] !== $lineNum) continue;
+            }
+            $qty = (float)($ln['Quantity'] ?? 0);
+            if ($qty > 0) $sum += $qty;
         }
     }
-    return $sevkMiktarMap;
+    return $sum;
 }
 
 /* ------------------------
- * 1) HEADER + SATIRLAR
+ * 0) Session & Params
  * ---------------------- */
-$lines       = [];
-$requestData = null;
+$uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
+$branch  = $_SESSION["Branch2"]["Name"] ?? ($_SESSION["WhsCode"] ?? ($_SESSION["Branch"] ?? ''));
 
-$viewFilter = "DocEntry eq {$docEntry}";
-$viewQuery  = "view.svc/ASB2B_TransferRequestList_B1SLQuery?\$filter=" . urlencode($viewFilter);
-$viewData   = $sap->get($viewQuery);
-$viewRows   = $viewData['response']['value'] ?? [];
-
-if (!empty($viewRows)) {
-    $headerRow = $viewRows[0];
-    $requestData = [
-        'DocEntry'           => $docEntry,
-        'DocDate'            => $headerRow['DocDate']      ?? null,
-        'DueDate'            => $headerRow['DocDueDate']   ?? null,
-        'U_ASB2B_NumAtCard'  => $headerRow['U_ASB2B_NumAtCard'] ?? null,
-        'U_ASB2B_STATUS'     => $headerRow['U_ASB2B_STATUS']    ?? '0',
-        'FromWarehouse'      => $headerRow['FromWhsCode']  ?? '',
-        'ToWarehouse'        => $headerRow['WhsCode']      ?? '',
-    ];
-    foreach ($viewRows as $row) {
-        $lines[] = [
-            'ItemCode'        => $row['ItemCode'] ?? '',
-            'ItemDescription' => $row['Dscription'] ?? ($row['ItemCode'] ?? ''),
-            'Quantity'        => $row['Quantity'] ?? 0,
-            'BaseQty'         => 1.0,
-            'UoMCode'         => $row['UoMCode'] ?? 'AD',
-            'LineNum'         => $row['LineNum'] ?? null,
-            // --- KRİTİK: Satır Durumunu Al ---
-            'U_ASB2B_STATUS'  => $row['U_ASB2B_STATUS'] ?? '0' 
-        ];
-    }
-} else {
-    // Fallback: View yoksa standart tablodan çek (Burada U_ASB2B_STATUS satırda olmayabilir, header'dan gelir)
-    $headerQuery = "InventoryTransferRequests({$docEntry})?\$select=DocEntry,DocDate,DocDueDate,U_ASB2B_NumAtCard,U_ASB2B_STATUS,FromWarehouse,ToWarehouse";
-    $headerData = $sap->get($headerQuery);
-    $requestData = $headerData['response'] ?? null;
-    if (!$requestData) die("Transfer talebi bulunamadı!");
-
-    $linesQuery = "InventoryTransferRequests({$docEntry})/InventoryTransferRequestLines";
-    $linesData = $sap->get($linesQuery);
-    $linesResponse = $linesData['response'] ?? null;
-    $rawLines = (isset($linesResponse['value']) && is_array($linesResponse['value'])) ? $linesResponse['value'] : ($linesResponse ?? []);
-    
-    foreach ($rawLines as $rl) {
-        $lines[] = array_merge($rl, ['U_ASB2B_STATUS' => $requestData['U_ASB2B_STATUS'] ?? '0']);
-    }
+if ($uAsOwnr === '' || $branch === '') {
+    die("Session bilgileri eksik. Lütfen tekrar giriş yapın.");
 }
 
-// STATUS kontrolü
-$initialDbStatus = $requestData['U_ASB2B_STATUS'] ?? '0';
-if ($initialDbStatus == '4') {
-    $_SESSION['error_message'] = "Bu transfer zaten tamamlanmış!";
+$docEntry  = (int)($_GET['docEntry'] ?? 0);
+$itemCode  = trim((string)($_GET['itemCode'] ?? ''));
+$lineNum   = ($_GET['lineNum'] ?? '');
+$lineNum   = ($lineNum === '' ? null : (int)$lineNum);
+
+if ($docEntry <= 0 || $itemCode === '' || $lineNum === null) {
+    // Bu sayfa satır bazlı çalışır.
     header("Location: Transferler.php?view=incoming");
     exit;
 }
 
-$fromWarehouse = $requestData['FromWarehouse'] ?? '';
-$toWarehouse   = $requestData['ToWarehouse']   ?? '';
-$allLines = $lines;
+/* ------------------------
+ * 1) View'den Header + Satırlar
+ * ---------------------- */
+$viewRows = getRequestLinesFromView($sap, $docEntry);
+if (empty($viewRows)) {
+    $_SESSION['error_message'] = "Transfer talebi bulunamadı (View boş)!";
+    header("Location: Transferler.php?view=incoming");
+    exit;
+}
 
-// Filtreleme
-if ((!empty($filterItemCode) || $filterLineNum !== '') && !empty($lines)) {
-    $lines = array_values(array_filter($lines, function($line) use ($filterItemCode, $filterLineNum) {
-        $itemCode = $line['ItemCode'] ?? '';
-        $lineNum  = isset($line['LineNum']) ? (string)$line['LineNum'] : '';
-        $matchItem = !empty($filterItemCode) ? ($itemCode === $filterItemCode) : true;
-        $matchLine = ($filterLineNum !== '') ? ($lineNum === (string)$filterLineNum) : true;
-        return $matchItem && $matchLine;
-    }));
+$headerRow = $viewRows[0];
+
+// Header alanlar
+$docDate = formatDate($headerRow['DocDate'] ?? null);
+$dueDate = formatDate($headerRow['DocDueDate'] ?? null);
+
+$fromWarehouse = (string)($headerRow['FromWhsCode'] ?? '');
+$toWarehouse   = (string)($headerRow['WhsCode'] ?? '');
+$headerStatus  = (string)($headerRow['U_ASB2B_STATUS'] ?? '0');
+
+// Seçilen satırı bul
+$selected = null;
+foreach ($viewRows as $r) {
+    $rItem = (string)($r['ItemCode'] ?? '');
+    $rLine = (int)($r['LineNum'] ?? -1);
+    if ($rItem === $itemCode && $rLine === $lineNum) {
+        $selected = $r;
+        break;
+    }
+}
+
+if (!$selected) {
+    $_SESSION['error_message'] = "Satır bulunamadı! (DocEntry={$docEntry}, ItemCode={$itemCode}, LineNum={$lineNum})";
+    header("Location: Transferler.php?view=incoming");
+    exit;
+}
+
+// Satır alanları
+$itemName     = (string)($selected['Dscription'] ?? $itemCode);
+$requestedQty = (float)($selected['Quantity'] ?? 0);
+$currentLineStatus = (string)($selected['U_ASB2B_STATUS'] ?? '0');
+
+// Zaten tamamlandıysa sayfadan çık
+if ($currentLineStatus === '4') {
+    $_SESSION['error_message'] = "Bu satır zaten tamamlanmış!";
+    header("Location: Transferler.php?view=incoming");
+    exit;
 }
 
 /* ------------------------
- * 2) DEPOLAR
+ * 2) Depo Mantığı (Mevcut yaklaşımı koru)
  * ---------------------- */
-$sevkiyatDepo = $toWarehouse;
+$sevkiyatDepo    = $toWarehouse;
 $targetWarehouse = str_replace('-1', '-0', $sevkiyatDepo);
 
-if ($targetWarehouse === $sevkiyatDepo || empty($targetWarehouse)) {
+// -1 -> -0 dönüşmüyorsa (beklenmeyen format), sistemdeki MAIN flag'den bul
+if ($targetWarehouse === $sevkiyatDepo || $targetWarehouse === '') {
     $targetWarehouse = findWarehouse($sap, $uAsOwnr, $branch, "U_ASB2B_MAIN eq '1'");
-    if (empty($targetWarehouse)) die("Hedef depo (Ana Depo) bulunamadı! Sevkiyat Depo: {$sevkiyatDepo}");
+    if (!$targetWarehouse) {
+        $_SESSION['error_message'] = "Hedef depo (Ana Depo) bulunamadı!";
+        header("Location: Transferler.php?view=incoming");
+        exit;
+    }
     $sevkiyatDepoCheck = findWarehouse($sap, $uAsOwnr, $branch, "U_ASB2B_MAIN eq '2'");
-    if (!empty($sevkiyatDepoCheck)) $sevkiyatDepo = $sevkiyatDepoCheck;
+    if ($sevkiyatDepoCheck) $sevkiyatDepo = $sevkiyatDepoCheck;
 }
 
 $fireZayiWarehouse = findWarehouse($sap, $uAsOwnr, $branch, "U_ASB2B_MAIN eq '3'");
-if (empty($fireZayiWarehouse)) {
+if (!$fireZayiWarehouse) {
     $fireZayiWarehouse = findWarehouse($sap, $uAsOwnr, $branch, "U_ASB2B_FIREZAYI eq 'Y'");
 }
 
 /* ------------------------
- * 3) POST: TESLİM AL İŞLEMİ
+ * 3) Sevk / Önceki Teslim hesapları
  * ---------------------- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'teslim_al') {
-    header('Content-Type: application/json');
+// ST1: Birden fazla yöntemle ara
+$st1Headers = findST1Documents($sap, $docEntry, $sevkiyatDepo);
 
-    // Taze veri
-    $freshRequestData  = $sap->get("InventoryTransferRequests({$docEntry})");
-    $freshInfo  = $freshRequestData['response'] ?? null;
-    $initialDbStatus = $freshInfo['U_ASB2B_STATUS'] ?? '0';
-    if ($initialDbStatus == '4') {
-        echo json_encode(['success' => false, 'message' => 'Bu transfer zaten tamamlanmış!']);
-        exit;
-    }
+// ST2: U_ASB2B_QutMaster = docEntry AND FromWarehouse = sevkiyatDepo AND ToWarehouse = targetWarehouse
+$st2Headers = getStockTransfersByFilter(
+    $sap,
+    "U_ASB2B_QutMaster eq {$docEntry} and FromWarehouse eq '{$sevkiyatDepo}' and ToWarehouse eq '{$targetWarehouse}'"
+);
 
-    if (empty($lines)) {
-        echo json_encode(['success' => false, 'message' => 'Transfer satırları bulunamadı!']);
-        exit;
-    }
+$shippedQtyRaw   = sumQtyForLineFromStockTransfers($sap, $st1Headers, $itemCode, $lineNum);
+$deliveredQtyRaw = sumQtyForLineFromStockTransfers($sap, $st2Headers, $itemCode, $lineNum);
 
-    // --- SEVK HESAPLAMA ---
-    $docEntryInt  = (int)$docEntry;
-    $allStList    = findStockTransfersForRequest($sap, $docEntryInt);
+$remainingToDeliver = max(0.0, $shippedQtyRaw - $deliveredQtyRaw);
+
+/* ------------------------
+ * 4) POST: Teslim Al (SADECE bu satır)
+ * ---------------------- */
+$alertError = null;
+$alertSuccess = null;
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'teslim_al') {
+
+    // Aynı anda biri basarsa diye taze hesap
+    // ST1: Birden fazla yöntemle ara
+    $st1Headers = findST1Documents($sap, $docEntry, $sevkiyatDepo);
     
-    $sevkMiktarMap = [];
-    $prevTeslimatMap = [];
+    // ST2: U_ASB2B_QutMaster ile
+    $st2Headers = getStockTransfersByFilter(
+        $sap,
+        "U_ASB2B_QutMaster eq {$docEntry} and FromWarehouse eq '{$sevkiyatDepo}' and ToWarehouse eq '{$targetWarehouse}'"
+    );
 
-    foreach ($allStList as $stInfo) {
-        $stFrom = $stInfo['FromWarehouse'] ?? '';
-        $stTo   = $stInfo['ToWarehouse']   ?? '';
-        $stDoc  = $stInfo['DocEntry']      ?? null;
-        if (!$stDoc) continue;
+    $shippedQtyRaw   = sumQtyForLineFromStockTransfers($sap, $st1Headers, $itemCode, $lineNum);
+    $deliveredQtyRaw = sumQtyForLineFromStockTransfers($sap, $st2Headers, $itemCode, $lineNum);
+    $remainingToDeliver = max(0.0, $shippedQtyRaw - $deliveredQtyRaw);
 
-        $isST1 = ($stTo === $sevkiyatDepo); 
-        $isST2 = ($stFrom === $sevkiyatDepo && $stTo === $targetWarehouse); 
-
-        if (!$isST1 && !$isST2) continue;
-
-        $stLines = getStockTransferLines($sap, (int)$stDoc);
-        foreach ($stLines as $stLine) {
-            $itemCode = $stLine['ItemCode'] ?? '';
-            $qty      = (float)($stLine['Quantity'] ?? 0);
-            if ($itemCode === '' || $qty <= 0) continue;
-
-            $lost    = trim($stLine['U_ASB2B_LOST']    ?? '');
-            $damaged = trim($stLine['U_ASB2B_Damaged'] ?? '');
-            if (($lost !== '' && $lost !== '-') || ($damaged !== '' && $damaged !== '-')) continue;
-
-            if ($isST1) {
-                if (!isset($sevkMiktarMap[$itemCode])) $sevkMiktarMap[$itemCode] = 0;
-                $sevkMiktarMap[$itemCode] += $qty;
-            } elseif ($isST2) {
-                if (!isset($prevTeslimatMap[$itemCode])) $prevTeslimatMap[$itemCode] = 0;
-                $prevTeslimatMap[$itemCode] += $qty;
+    if ($shippedQtyRaw <= 0) {
+        // Debug: Tüm ST1'leri kontrol et
+        $debugInfo = [];
+        $debugInfo[] = "Aranan Sevkiyat Depo: {$sevkiyatDepo}";
+        $debugInfo[] = "Bulunan ST1 belge sayısı: " . count($st1Headers);
+        
+        // Bulunan ST1'lerin detayları
+        foreach ($st1Headers as $st1) {
+            $st1Doc = (int)($st1['DocEntry'] ?? 0);
+            if ($st1Doc > 0) {
+                $st1HeaderToWhs = (string)($st1['ToWarehouse'] ?? '');
+                $st1Lines = getStockTransferLines($sap, $st1Doc);
+                $debugInfo[] = "ST1 DocEntry: {$st1Doc}, Header ToWarehouse: {$st1HeaderToWhs}, Satır sayısı: " . count($st1Lines);
+                foreach ($st1Lines as $ln) {
+                    $it = (string)($ln['ItemCode'] ?? '');
+                    $bl = (int)($ln['BaseLine'] ?? -1);
+                    $qty = (float)($ln['Quantity'] ?? 0);
+                    $lineToWhs = (string)($ln['WarehouseCode'] ?? '');
+                    if ($it === $itemCode) {
+                        $debugInfo[] = "  - ItemCode: {$it}, BaseLine: {$bl}, Quantity: {$qty}, Line ToWarehouse: {$lineToWhs}";
+                    }
+                }
             }
         }
-    }
-
-    // --- AKILLI FALLBACK: Stok Nakli Bulunamadıysa Satır Durumuna Bak ---
-    foreach ($lines as $line) {
-        $itemCode = $line['ItemCode'] ?? '';
-        if ($itemCode === '') continue;
         
-        $currentSevk = $sevkMiktarMap[$itemCode] ?? 0;
-        
-        // Eğer sevk 0 ise ama Satır Durumu '3' (Sevk Edildi) ise -> Sevk var kabul et
-        // Bu durum ST belgesi UDF ile bulunamadığında hayat kurtarır
-        if ($currentSevk == 0) {
-            $lineStatus = $line['U_ASB2B_STATUS'] ?? '0';
-            // DÜZELTME: Durum 3 (Sevk) VEYA 4 (Tamamlandı) ise sevk var say
-            if ($lineStatus == '3' || $lineStatus == '4') {
-                $sevkMiktarMap[$itemCode] = floatval($line['Quantity'] ?? 0);
+        // Eğer hiç ST1 bulunamadıysa, U_ASB2B_QutMaster ile tüm ST'leri kontrol et (ToWarehouse filtresi olmadan)
+        if (empty($st1Headers)) {
+            $allSTs = getStockTransfersByFilter($sap, "U_ASB2B_QutMaster eq {$docEntry}");
+            $debugInfo[] = "\nU_ASB2B_QutMaster ile bulunan tüm ST belgeleri (ToWarehouse filtresi olmadan): " . count($allSTs);
+            foreach ($allSTs as $st) {
+                $stDoc = (int)($st['DocEntry'] ?? 0);
+                $stHeaderToWhs = (string)($st['ToWarehouse'] ?? '');
+                $stHeaderFromWhs = (string)($st['FromWarehouse'] ?? '');
+                $debugInfo[] = "  - ST DocEntry: {$stDoc}, FromWarehouse: {$stHeaderFromWhs}, ToWarehouse: {$stHeaderToWhs}";
+                if ($stDoc > 0) {
+                    $stLines = getStockTransferLines($sap, $stDoc);
+                    foreach ($stLines as $ln) {
+                        $it = (string)($ln['ItemCode'] ?? '');
+                        $lineToWhs = (string)($ln['WarehouseCode'] ?? '');
+                        if ($it === $itemCode) {
+                            $debugInfo[] = "    * ItemCode: {$it}, Line ToWarehouse: {$lineToWhs}";
+                        }
+                    }
+                }
             }
         }
-    }
-
-    // --- PAYLOAD HAZIRLIĞI ---
-    $transferLines = [];
-    $headerComments = [];
-    $currentDeliveryMap = [];
-
-    foreach ($lines as $index => $line) {
-        $itemCode = $line['ItemCode'] ?? '';
-        if ($itemCode === '') continue;
-
-        $baseQty  = floatval($line['BaseQty'] ?? 1.0);
-        $sevkRaw  = $sevkMiktarMap[$itemCode] ?? 0;
-        $sevkMiktari = $baseQty > 0 ? ($sevkRaw / $baseQty) : $sevkRaw;
         
-        $talepRaw = floatval($line['Quantity'] ?? 0);
-        $talepMiktar = $baseQty > 0 ? ($talepRaw / $baseQty) : $talepRaw;
-        
-        $eksikFazlaQty = floatval($_POST['eksik_fazla'][$index] ?? 0);
-        $kusurluQty    = max(0.0, floatval($_POST['kusurlu'][$index] ?? 0));
-        $not           = trim($_POST['not'][$index] ?? '');
-        $itemName      = $line['ItemDescription'] ?? $itemCode;
-
-        if ($kusurluQty > 0) {
-            $commentParts   = ["Kusurlu: {$kusurluQty}"];
-            if (!empty($not)) $commentParts[] = "Not: {$not}";
-            $headerComments[] = "{$itemCode} ({$itemName}): " . implode(", ", $commentParts);
-        }
-
-        // 1. NORMAL TRANSFER
-        $normalTransferMiktar = max(0.0, $sevkMiktari);
-        
-        if ($normalTransferMiktar > 0) {
-            $qtyToSend = $normalTransferMiktar * $baseQty;
-            $transferLines[] = [
-                'ItemCode'         => $itemCode,
-                'Quantity'         => $qtyToSend,
-                'FromWarehouseCode'=> $sevkiyatDepo,
-                'WarehouseCode'    => $targetWarehouse,
-                
-                // 🔥 BAĞLANTI HARİTASI 🔥
-                'BaseType'         => 1250000001,
-                'BaseEntry'        => (int)$docEntry,
-                'BaseLine'         => (int)($line['LineNum'] ?? 0)
-            ];
-            
-            if (!isset($currentDeliveryMap[$itemCode])) $currentDeliveryMap[$itemCode] = 0;
-            $currentDeliveryMap[$itemCode] += $qtyToSend;
-        }
-
-        /* 2. Eksik/Fazla
-        if ($eksikFazlaQty != 0) {
-            $eksikFazlaMiktar = abs($eksikFazlaQty);
-            $eksikFazlaLine   = [
-                'ItemCode'         => $itemCode,
-                'Quantity'         => $eksikFazlaMiktar * $baseQty,
-                'FromWarehouseCode'=> $targetWarehouse,
-                'WarehouseCode'    => $sevkiyatDepo,
-            ];
-            if ($eksikFazlaQty < 0) {
-                $eksikFazlaLine['U_ASB2B_LOST']    = '2';
-                $eksikFazlaLine['U_ASB2B_Damaged'] = 'E';
-            } else {
-                $eksikFazlaLine['U_ASB2B_LOST'] = '1';
-            }
-            $eksikFazlaLine['U_ASB2B_Comments'] = ($eksikFazlaQty < 0 ? "Eksik" : "Fazla") . ": {$eksikFazlaMiktar} | {$not}";
-            $transferLines[] = $eksikFazlaLine;
-        }*/
-
-        // 3. Kusurlu
-        if ($kusurluQty > 0) {
-            if (empty($fireZayiWarehouse)) {
-                echo json_encode(['success' => false, 'message' => 'Fire & Zayi deposu bulunamadı!']);
-                exit;
-            }
-            $fireZayiLine = [
-                'ItemCode'         => $itemCode,
-                'Quantity'         => $kusurluQty * $baseQty,
-                'FromWarehouseCode'=> $targetWarehouse,
-                'WarehouseCode'    => $fireZayiWarehouse,
-                'U_ASB2B_Damaged'  => 'K',
-                'U_ASB2B_Comments' => "Kusurlu: {$kusurluQty} | {$not}"
-            ];
-            $transferLines[] = $fireZayiLine;
-        }
-    }
-
-    if (empty($transferLines)) {
-        echo json_encode(['success' => false, 'message' => 'İşlenecek miktar yok. (Sevk edilmiş ürün bulunamadı)']);
-        exit;
-    }
-
-    // --- STATÜ HESAPLAMA ---
-    
-    // Header Fire/Zayi flag
-    $headerLost = null;
-    foreach ($transferLines as $line) {
-        $lost    = $line['U_ASB2B_LOST']    ?? null;
-        $damaged = $line['U_ASB2B_Damaged'] ?? null;
-        if ($lost == '1' || $lost == '2') {
-            if ($headerLost === null || $headerLost == '2') {
-                $headerLost = $lost;
-            }
-        } elseif ($damaged == 'K' || $damaged == 'E') {
-            if ($headerLost === null) {
-                $headerLost = '2';
-            }
-        }
-    }
-    
-    $linesToUpdate = [];
-    $lineStatuses = [];
-    
-    foreach ($allLines as $line) {
-        $itemCode = $line['ItemCode'] ?? '';
-        $lineNum  = $line['LineNum'];
-        if ($itemCode === '') continue;
-
-        // ÖNEMLİ: Eğer bu satır zaten tamamlanmışsa (status 4), onu olduğu gibi koru
-        // Çünkü daha önce tamamlanmış satırlar için ST belgeleri bulunamayabilir
-        $currentLineStatus = $line['U_ASB2B_STATUS'] ?? '0';
-        if ($currentLineStatus == '4') {
-            // Bu satır zaten tamamlanmış, status'ünü koru
-            $lnStat = '4';
-            $lineStatuses[] = $lnStat;
-            $linesToUpdate[] = [
-                'LineNum' => $lineNum,
-                'U_ASB2B_STATUS' => $lnStat
-            ];
-            continue; // Bu satır için hesaplama yapma, bir sonrakine geç
-        }
-
-        $baseQty = floatval($line['BaseQty'] ?? 1.0);
-        
-        $sevkRaw = $sevkMiktarMap[$itemCode] ?? 0;
-        
-        $prevRaw = $prevTeslimatMap[$itemCode] ?? 0;
-        
-        // DÜZELTME: Eğer ST belgesi bulunamadıysa (prevRaw=0) ama satır zaten '4' ise,
-        // demek ki bu ürün daha önce tam teslim alınmış. Miktarı manuel doldur.
-        if ($prevRaw == 0 && $currentLineStatus == '4') {
-             $prevRaw = floatval($line['Quantity'] ?? 0);
-        }
-
-        $currRaw = $currentDeliveryMap[$itemCode] ?? 0;
-        $totalDeliveredRaw = $prevRaw + $currRaw;
-
-        $sevkQty = $baseQty > 0 ? ($sevkRaw / $baseQty) : $sevkRaw;
-        $delivQty = $baseQty > 0 ? ($totalDeliveredRaw / $baseQty) : $totalDeliveredRaw;
-
-        if ($delivQty >= $sevkQty && $sevkQty > 0) {
-            $lnStat = '4'; // Tamamlandı
-        } elseif ($sevkQty > 0) {
-            $lnStat = '3'; // Hala eksik var
-        } else {
-            $lnStat = '1';
-        }
-        
-        $lineStatuses[] = $lnStat;
-        $linesToUpdate[] = [
-            'LineNum' => $lineNum,
-            'U_ASB2B_STATUS' => $lnStat
-        ];
-    }
-
-    $headerStatus = '1';
-    if (in_array('4', $lineStatuses) && !in_array('3', $lineStatuses) && !in_array('1', $lineStatuses)) {
-        $headerStatus = '4';
-    } elseif (in_array('3', $lineStatuses) || in_array('4', $lineStatuses)) {
-        $headerStatus = '3';
-    }
-
-    // 1. DURUMU GÜNCELLE
-    $updatePayload = [
-        'U_ASB2B_STATUS' => $headerStatus,
-        'StockTransferLines' => $linesToUpdate
-    ];
-    $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
-
-    // 2. TRANSFERİ YAP
-    $stockTransferPayload = [
-        'FromWarehouse'   => $sevkiyatDepo,
-        'ToWarehouse'     => $targetWarehouse,
-        'DocDate'         => $freshInfo['DocDate'] ?? date('Y-m-d'),
-        'Comments'        => !empty($headerComments) ? implode(" | ", $headerComments) : '',
-        'U_ASB2B_BRAN'    => $branch,
-        'U_AS_OWNR'       => $uAsOwnr,
-        'U_ASB2B_STATUS'  => '4',
-        'U_ASB2B_TYPE'    => 'TRANSFER',
-        'U_ASB2B_User'    => $_SESSION["UserName"] ?? '',
-        'U_ASB2B_QutMaster'=> (int)$docEntry,
-        'StockTransferLines' => $transferLines,
-    ];
-    if ($headerLost !== null) {
-        $stockTransferPayload['U_ASB2B_LOST'] = $headerLost;
-    }
-
-    $result = $sap->post('StockTransfers', $stockTransferPayload);
-
-    if ($result['status'] == 200 || $result['status'] == 201) {
-        if ($headerStatus == '4') {
-            $sap->post("InventoryTransferRequests({$docEntry})/Close", []);
-        }
-        $_SESSION['success_message'] = "Transfer başarıyla teslim alındı!";
-        header('Location: Transferler.php?view=incoming');
-        exit;
+        $alertError = "❌ Bu satır için sevk (ST1) bulunamadı. Teslim alma yapılamaz.\n\nDetay:\n- DocEntry: {$docEntry}\n- ItemCode: {$itemCode}\n- LineNum: {$lineNum}\n- Sevkiyat Depo: {$sevkiyatDepo}\n\nDebug Bilgisi:\n" . implode("\n", $debugInfo) . "\n\nNot: ST1 belgesi henüz oluşturulmamış olabilir. Lütfen önce 'Onayla' işlemini yapın.";
+    } elseif ($remainingToDeliver <= 0) {
+        $alertError = "❌ Bu satır için teslim edilecek kalan miktar yok.\n\nDetay:\n- Sevk Miktarı: {$shippedQtyRaw}\n- Teslim Edilen: {$deliveredQtyRaw}\n- Kalan: {$remainingToDeliver}";
     } else {
-        // Rollback Header Status
-        $sap->patch("InventoryTransferRequests({$docEntry})", ['U_ASB2B_STATUS' => $initialDbStatus]);
+        $eksikFazla = (float)($_POST['eksik_fazla'] ?? 0);
+        $kusurlu    = max(0.0, (float)($_POST['kusurlu'] ?? 0));
+        $not        = trim((string)($_POST['not'] ?? ''));
 
-        $errorMsg = 'Teslim alma başarısız! HTTP ' . ($result['status'] ?? 'NO STATUS');
-        if (isset($result['response']['error'])) {
-            $errorMsg .= ' - ' . json_encode($result['response']['error']);
+        $physicalQty = max(0.0, $requestedQty + $eksikFazla);
+
+        // Server-side güvenlik: kalan sevki aşma
+        $eps = 0.00001;
+        if ($physicalQty - $remainingToDeliver > $eps) {
+            $alertError = "❌ Fiziksel miktar, kalan sevk miktarını aşamaz!\n\nDetay:\n- Fiziksel Miktar: {$physicalQty}\n- Kalan Sevk: {$remainingToDeliver}\n- Fark: " . ($physicalQty - $remainingToDeliver);
+        } elseif ($physicalQty <= 0) {
+            $alertError = "❌ Fiziksel miktar 0 olamaz.\n\nDetay:\n- Talep: {$requestedQty}\n- Eksik/Fazla: {$eksikFazla}\n- Fiziksel: {$physicalQty}";
+        } elseif ($kusurlu - $physicalQty > $eps) {
+            $alertError = "❌ Kusurlu miktar fiziksel miktarı aşamaz.\n\nDetay:\n- Fiziksel: {$physicalQty}\n- Kusurlu: {$kusurlu}";
+        } elseif ($kusurlu > 0 && !$fireZayiWarehouse) {
+            $alertError = "❌ Fire & Zayi deposu bulunamadı!\n\nDetay:\n- U_AS_OWNR: {$uAsOwnr}\n- Branch: {$branch}";
         }
-        $_SESSION['error_message'] = $errorMsg;
-        header('Location: Transferler.php?view=incoming');
-        exit;
+
+        if (!$alertError) {
+            // Normal teslim (target'a girecek net)
+            $netToTarget = max(0.0, $physicalQty - $kusurlu);
+
+            $transferLines = [];
+
+            if ($netToTarget > 0) {
+                $transferLines[] = [
+                    'ItemCode'          => $itemCode,
+                    'Quantity'          => $netToTarget,
+                    'FromWarehouseCode' => $sevkiyatDepo,
+                    'WarehouseCode'     => $targetWarehouse
+                ];
+            }
+
+            // Kusurlu varsa fire/zayi'ye çıkar
+            if ($kusurlu > 0) {
+                $transferLines[] = [
+                    'ItemCode'          => $itemCode,
+                    'Quantity'          => $kusurlu,
+                    'FromWarehouseCode' => $targetWarehouse,
+                    'WarehouseCode'     => $fireZayiWarehouse,
+                    'U_ASB2B_Damaged'   => 'K',
+                    'U_ASB2B_Comments'  => "Kusurlu: {$kusurlu}" . ($not !== '' ? " | {$not}" : '')
+                ];
+            }
+
+            if (empty($transferLines)) {
+                $alertError = "❌ İşlenecek miktar yok.\n\nDetay:\n- Net To Target: {$netToTarget}\n- Kusurlu: {$kusurlu}";
+            } else {
+                // ÖNCE StockTransfer oluştur (belge açıkken)
+                // 1) ST2 oluştur
+                $stockTransferPayload = [
+                    'FromWarehouse'      => $sevkiyatDepo,
+                    'ToWarehouse'        => $targetWarehouse,
+                    'DocDate'            => date('Y-m-d'),
+                    'Comments'           => "Teslim Alma - ITR: {$docEntry} | {$itemCode} | Line: {$lineNum}" . ($not !== '' ? " | {$not}" : ''),
+                    'U_ASB2B_BRAN'       => $branch,
+                    'U_AS_OWNR'          => $uAsOwnr,
+                    'U_ASB2B_STATUS'     => '4',
+                    'U_ASB2B_TYPE'       => 'TRANSFER',
+                    'U_ASB2B_User'       => $_SESSION["UserName"] ?? '',
+                    'U_ASB2B_QutMaster'  => (int)$docEntry,
+                    'StockTransferLines' => $transferLines,
+                    // 🔥 EKLENDİ: DocumentReferences (Danışman tavsiyesi)
+                    'DocumentReferences' => [
+                        [
+                            'RefDocEntr' => (int)$docEntry,
+                            // Belge tipi (Obje Tipi): 1250000001 
+                            'RefObjType' => 1250000001 
+                        ]
+                    ]
+                ];
+
+                $postRes = $sap->post('StockTransfers', $stockTransferPayload);
+                $postStatus = (int)($postRes['status'] ?? 0);
+
+                if ($postStatus == 200 || $postStatus == 201) {
+                    
+                    // 2) StockTransfer başarıyla oluşturuldu, şimdi status güncelle
+                    // 🔥 ÖNEMLİ: Yeni oluşturulan ST2'yi de dahil etmek için ST2'leri yeniden çek
+                    $st2HeadersFresh = getStockTransfersByFilter(
+                        $sap,
+                        "U_ASB2B_QutMaster eq {$docEntry} and FromWarehouse eq '{$sevkiyatDepo}' and ToWarehouse eq '{$targetWarehouse}'"
+                    );
+                    $deliveredQtyRawFresh = sumQtyForLineFromStockTransfers($sap, $st2HeadersFresh, $itemCode, $lineNum);
+                    
+                    // Bu satırın yeni status'u: bu işlemden sonra toplam teslim >= sevk ise 4, değilse 3
+                    $newLineStatus = ($deliveredQtyRawFresh + $eps >= $shippedQtyRaw) ? '4' : '3';
+
+                    // 🔥 DEBUG: Hesaplama bilgileri
+                    $debugStatusInfo = [
+                        "Sevk Miktarı (ST1): {$shippedQtyRaw}",
+                        "Önceki Teslim (ST2 - eski): {$deliveredQtyRaw}",
+                        "Yeni Teslim (ST2 - fresh): {$deliveredQtyRawFresh}",
+                        "Bu İşlem Miktarı: {$physicalQty}",
+                        "Hesaplanan Satır Status: {$newLineStatus}"
+                    ];
+
+                    /**
+                     * KRİTİK: Diğer satırlara dokunma.
+                     * Header status'u ise, view'den mevcut satır status'lerini alıp sadece bu satırı güncelleyerek hesapla.
+                     * NOT: View'i yeniden çekiyoruz çünkü önceki işlemlerden sonra güncel olmayabilir.
+                     */
+                    $freshViewRows = getRequestLinesFromView($sap, $docEntry);
+                    $allStatuses = [];
+                    foreach ($freshViewRows as $r) {
+                        $ln = (int)($r['LineNum'] ?? -1);
+                        if ($ln < 0) continue;
+                        $allStatuses[$ln] = (string)($r['U_ASB2B_STATUS'] ?? '0');
+                    }
+                    $allStatuses[$lineNum] = $newLineStatus;
+
+                    $computedHeaderStatus = '1';
+                    $has3or4 = false;
+                    $all4 = true;
+                    foreach ($allStatuses as $st) {
+                        if ($st === '3' || $st === '4') $has3or4 = true;
+                        if ($st !== '4') $all4 = false;
+                    }
+                    if ($all4) $computedHeaderStatus = '4';
+                    else if ($has3or4) $computedHeaderStatus = '3';
+
+                    // 🔥 DEBUG: Tüm satır status'leri
+                    $debugStatusInfo[] = "Tüm Satır Status'leri: " . json_encode($allStatuses, JSON_UNESCAPED_UNICODE);
+                    $debugStatusInfo[] = "Hesaplanan Header Status: {$computedHeaderStatus}";
+
+                    // ITR güncelle: SADECE LineNum + Header status
+                    $updatePayload = [
+                        'U_ASB2B_STATUS' => $computedHeaderStatus,
+                        'StockTransferLines' => [
+                            [
+                                'LineNum'        => $lineNum,
+                                'U_ASB2B_STATUS' => $newLineStatus
+                            ]
+                        ]
+                    ];
+                    
+                    // 🔥 DEBUG: PATCH payload
+                    error_log("[TRANSFER-TESLIMAL] PATCH Payload: " . json_encode($updatePayload, JSON_UNESCAPED_UNICODE));
+                    
+                    $patchRes = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
+                    $patchStatus = (int)($patchRes['status'] ?? 0);
+
+                    // 🔥 DEBUG: PATCH sonucu
+                    error_log("[TRANSFER-TESLIMAL] PATCH Response: HTTP {$patchStatus} | " . json_encode($patchRes['response'] ?? [], JSON_UNESCAPED_UNICODE));
+
+                    // PATCH sonucu kontrol
+                    if ($patchStatus >= 400) {
+                        $alertError = "❌ Status güncellenemedi!\n\nDetay:\n- HTTP Status: {$patchStatus}\n- Response: " . json_encode($patchRes['response'] ?? [], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+                    } elseif (isset($patchRes['response']['error'])) {
+                        $alertError = "❌ Status güncelleme hatası!\n\nDetay:\n- Error: " . json_encode($patchRes['response']['error'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+                    } else {
+                        // Hepsi tamamlandıysa SAP tarafında Close
+                        if ($computedHeaderStatus === '4') {
+                            $closeRes = $sap->post("InventoryTransferRequests({$docEntry})/Close", []);
+                            $closeStatus = (int)($closeRes['status'] ?? 0);
+                            if ($closeStatus >= 400) {
+                                error_log("[TRANSFER-TESLIMAL] Close işlemi başarısız: HTTP {$closeStatus}");
+                            }
+                        }
+
+                        $alertSuccess = "✅ Satır başarıyla teslim alındı!\n\nDetay:\n- ItemCode: {$itemCode}\n- LineNum: {$lineNum}\n- Satır Status: {$newLineStatus}\n- Header Status: {$computedHeaderStatus}\n- StockTransfer oluşturuldu (HTTP {$postStatus})\n\nDebug:\n" . implode("\n", $debugStatusInfo);
+                    }
+                } else {
+                    // StockTransfer oluşturulamadı
+                    $errMsg = "❌ StockTransfer (ST2) oluşturulamadı!\n\nDetay:\n- HTTP Status: {$postStatus}";
+                    if (isset($postRes['response']['error'])) {
+                        $errMsg .= "\n- Error: " . json_encode($postRes['response']['error'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+                    }
+                    if (isset($postRes['response'])) {
+                        $errMsg .= "\n- Full Response: " . json_encode($postRes['response'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+                    }
+                    $errMsg .= "\n\nPayload:\n" . json_encode($stockTransferPayload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+                    $alertError = $errMsg;
+                }
+            }
+        }
     }
 }
 
-// 4) EKRAN ÖNCESİ VERİ HAZIRLIĞI
-$docEntryInt  = (int)$docEntry;
-$sevkMiktarMap = buildSevkMiktarMapFromSt1($sap, $docEntryInt, $toWarehouse ?: $sevkiyatDepo);
+/* ------------------------
+ * 5) Ekran değerleri
+ * ---------------------- */
+$sevkQty = $remainingToDeliver; // Bu sayfa "bu satır için kalan sevk" mantığıyla çalışır
+$eksikFazlaDefault = 0;
 
-foreach ($lines as &$line) {
-    $baseQty  = floatval($line['BaseQty']   ?? 1.0);
-    $quantity = floatval($line['Quantity']  ?? 0);
-    $itemCode = $line['ItemCode']          ?? '';
-
-    $line['_BaseQty']      = $baseQty;
-    $line['_RequestedQty'] = $baseQty > 0 ? ($quantity / $baseQty) : $quantity;
-
-    $sevkQtyRaw = $sevkMiktarMap[$itemCode] ?? null;
-    
-    // --- AKILLI FALLBACK (EKRAN İÇİN DE) ---
-    if ($sevkQtyRaw === null || $sevkQtyRaw == 0) {
-        // ST bulunamadı, satır durumuna bak
-        $lineStatus = $line['U_ASB2B_STATUS'] ?? '0';
-        if ($lineStatus == '3') {
-            $sevkQtyRaw = $quantity; // Sevk edildi görünüyor, miktar var varsay
-        } else {
-            $sevkQtyRaw = 0;
-        }
-    }
-    
-    $line['_SevkQty'] = $baseQty > 0 ? ($sevkQtyRaw / $baseQty) : $sevkQtyRaw;
-}
-unset($line);
 ?>
 <!DOCTYPE html>
 <html lang="tr">
@@ -555,36 +589,26 @@ unset($line);
     <title>Transfer Teslim Al - MINOA</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: #f5f7fa; color: #2c3e50; line-height: 1.6; }
-        .main-content { width: 100%; background: whitesmoke; padding: 0; min-height: 100vh; }
-        .page-header { background: white; padding: 20px 2rem; border-radius: 0 0 0 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; margin: 0; position: sticky; top: 0; z-index: 100; height: 80px; box-sizing: border-box; }
-        .page-header h2 { color: #1e40af; font-size: 1.75rem; font-weight: 600; }
-        .btn { padding: 0.75rem 1.5rem; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 500; cursor: pointer; transition: all 0.3s ease; text-decoration: none; display: inline-block; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background: #f5f7fa; color: #2c3e50; }
+        .main-content { width: 100%; min-height: 100vh; background: whitesmoke; }
+        .page-header { background: white; padding: 20px 2rem; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; z-index:10; }
+        .page-header h2 { color:#1e40af; font-size:1.4rem; font-weight:700; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 1.5rem; margin: 24px 32px; }
+        .btn { padding: 0.75rem 1.25rem; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; }
         .btn-primary { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; }
-        .btn-primary:hover { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); }
         .btn-secondary { background: white; color: #3b82f6; border: 2px solid #3b82f6; }
-        .btn-secondary:hover { background: #eff6ff; transform: translateY(-2px); }
-        .content-wrapper { padding: 24px 32px; }
-        .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 2rem; margin: 24px 32px 2rem 32px; }
-        .data-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-        .data-table thead { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; }
-        .data-table th { padding: 1rem; text-align: left; font-weight: 600; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.5px; }
-        .data-table th:nth-child(n+3) { text-align: center; }
-        .data-table tbody tr { border-bottom: 1px solid #e5e7eb; transition: background-color 0.2s; }
-        .data-table tbody tr:hover { background-color: #f8fafc; }
-        .data-table td { padding: 1rem; font-size: 0.95rem; }
-        .data-table td:nth-child(n+3) { text-align: center; }
-        .quantity-controls { display: flex; gap: 0.5rem; align-items: center; justify-content: center; }
-        .qty-btn { padding: 0.5rem 1rem; border: 2px solid #3b82f6; background: white; color: #3b82f6; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 1rem; min-width: 40px; transition: all 0.2s; }
-        .qty-btn:hover { background: #3b82f6; color: white; transform: scale(1.05); }
-        .qty-input { width: 100px; text-align: center; padding: 0.5rem; border: 2px solid #e5e7eb; border-radius: 6px; font-size: 0.95rem; transition: border-color 0.2s; }
-        .qty-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); }
-        .qty-input[readonly] { background-color: #f3f4f6; color: #6b7280; }
-        input[name^="eksik_fazla"] { font-weight: 500; }
-        .eksik-fazla-negatif { color: #dc2626 !important; }
-        .eksik-fazla-pozitif { color: #16a34a !important; }
-        .eksik-fazla-sifir { color: #6b7280 !important; }
-        .form-actions { margin-top: 2rem; text-align: right; display: flex; gap: 1rem; justify-content: flex-end; }
+        table { width:100%; border-collapse: collapse; margin-top: 12px; }
+        thead { background: #2563eb; color: white; }
+        th, td { padding: 12px; border-bottom: 1px solid #e5e7eb; }
+        th:nth-child(n+3), td:nth-child(n+3) { text-align:center; }
+        .qty-input { width: 110px; text-align: center; padding: 0.5rem; border: 2px solid #e5e7eb; border-radius: 6px; }
+        .qty-input[readonly] { background:#f3f4f6; }
+        .controls { display:flex; gap:8px; justify-content:center; align-items:center; }
+        .qty-btn { width: 42px; height: 38px; border: 2px solid #3b82f6; background: white; color:#3b82f6; border-radius: 6px; font-weight:900; cursor:pointer; }
+        .form-actions { display:flex; gap:12px; justify-content:flex-end; margin-top: 16px; }
+        .eksik-neg { color:#dc2626 !important; }
+        .eksik-pos { color:#16a34a !important; }
+        .eksik-zero{ color:#6b7280 !important; }
     </style>
 </head>
 <body>
@@ -592,158 +616,154 @@ unset($line);
 
 <main class="main-content">
     <header class="page-header">
-        <h2>Teslim Al - Transfer No: <?= htmlspecialchars($docEntry) ?></h2>
+        <h2>Teslim Al - Transfer No: <?= htmlspecialchars((string)$docEntry) ?> | <?= htmlspecialchars($itemCode) ?> (Line <?= (int)$lineNum ?>)</h2>
         <button class="btn btn-secondary" onclick="window.location.href='Transferler.php?view=incoming'">← Geri Dön</button>
     </header>
 
-    <?php if (empty($lines)): ?>
-        <div class="card">
-            <p style="color: #ef4444; font-weight: 600; margin-bottom: 1rem;">⚠️ Transfer satırları bulunamadı!</p>
+    <div class="card">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">
+            <div><div style="font-size:12px;color:#6b7280;font-weight:700;">Gönderen Depo</div><div style="font-weight:700;"><?= htmlspecialchars($fromWarehouse) ?></div></div>
+            <div><div style="font-size:12px;color:#6b7280;font-weight:700;">Hedef (ITR)</div><div style="font-weight:700;"><?= htmlspecialchars($toWarehouse) ?></div></div>
+            <div><div style="font-size:12px;color:#6b7280;font-weight:700;">Tarih / Vade</div><div style="font-weight:700;"><?= $docDate ?> / <?= $dueDate ?></div></div>
+            <div><div style="font-size:12px;color:#6b7280;font-weight:700;">Depo Akışı</div><div style="font-weight:700;"><?= htmlspecialchars($sevkiyatDepo) ?> → <?= htmlspecialchars($targetWarehouse) ?></div></div>
         </div>
-    <?php else: ?>
-        <div class="card">
-            <h3 style="margin-bottom: 1rem; color: #1e40af;">Transfer Bilgileri</h3>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem;">
-                <div><div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; margin-bottom: 0.25rem;">Transfer No</div><div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= htmlspecialchars($docEntry) ?></div></div>
-                <div><div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; margin-bottom: 0.25rem;">Gönderen Şube</div><div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= htmlspecialchars($fromWarehouse) ?><?= !empty($fromWhsName) ? ' / ' . htmlspecialchars($fromWhsName) : '' ?></div></div>
-                <div><div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; margin-bottom: 0.25rem;">Transfer Tarihi</div><div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= $docDate ?></div></div>
-                <div><div style="font-size: 0.75rem; font-weight: 600; color: #6b7280; margin-bottom: 0.25rem;">Vade Tarihi</div><div style="font-size: 1rem; color: #1f2937; font-weight: 500;"><?= $dueDate ?></div></div>
-            </div>
-        </div>
+    </div>
 
-        <form method="POST" action="" onsubmit="return validateForm()">
-            <input type="hidden" name="action" value="teslim_al">
-            <div class="card">
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Kalem Kodu</th>
-                            <th>Kalem Tanımı</th>
-                            <th>Talep</th>
-                            <th>Sevk</th>
-                            <th>Eksik/Fazla</th>
-                            <th>Kusurlu</th>
-                            <th>Fiziksel</th>
-                            <th>Not</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach ($lines as $index => $line):
-                        $itemCode = $line['ItemCode'] ?? '';
-                        $itemName = $line['ItemDescription'] ?? '-';
-                        $baseQty = floatval($line['_BaseQty'] ?? 1.0);
-                        $requestedQty = floatval($line['_RequestedQty'] ?? 0);
-                        $sevkQty = floatval($line['_SevkQty'] ?? 0);
-                        $uomCode = $line['UoMCode'] ?? 'AD';
-                        $eksikFazlaOtomatik = $sevkQty - $requestedQty;
-                    ?>
-                        <tr>
-                            <td><?= htmlspecialchars($itemCode) ?></td>
-                            <td><?= htmlspecialchars($itemName) ?></td>
-                            <td><div style="display:flex;justify-content:center;gap:4px"><input type="number" id="talep_<?= $index ?>" value="<?= htmlspecialchars($requestedQty) ?>" readonly step="0.01" class="qty-input"><span><?= $uomCode ?></span></div></td>
-                            <td><div style="display:flex;justify-content:center;gap:4px"><input type="number" id="sevk_<?= $index ?>" value="<?= htmlspecialchars($sevkQty) ?>" readonly step="0.01" class="qty-input"><span><?= $uomCode ?></span></div></td>
-                            <td><div class="quantity-controls"><button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, -1)">-</button><input type="number" name="eksik_fazla[<?= $index ?>]" id="eksik_<?= $index ?>" value="<?= htmlspecialchars($eksikFazlaOtomatik) ?>" step="0.01" class="qty-input" onchange="calculatePhysical(<?= $index ?>)" oninput="updateEksikFazlaColor(this); calculatePhysical(<?= $index ?>)"><button type="button" class="qty-btn" onclick="changeEksikFazla(<?= $index ?>, 1)">+</button></div></td>
-                            <td><div class="quantity-controls"><button type="button" class="qty-btn" onclick="changeKusurlu(<?= $index ?>, -1)">-</button><input type="number" name="kusurlu[<?= $index ?>]" id="kusurlu_<?= $index ?>" value="0" min="0" step="0.01" class="qty-input" onchange="calculatePhysical(<?= $index ?>)" oninput="calculatePhysical(<?= $index ?>)"><button type="button" class="qty-btn" onclick="changeKusurlu(<?= $index ?>, 1)">+</button></div></td>
-                            <td><div style="display:flex;justify-content:center;gap:4px"><input type="text" id="fiziksel_<?= $index ?>" value="0" readonly class="qty-input"><span><?= $uomCode ?></span></div></td>
-                            <td><input type="text" name="not[<?= $index ?>]" placeholder="Not" style="width:100%;padding:0.5rem;border:1px solid #d1d5db;border-radius:6px"></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-                <div class="form-actions">
-                    <button type="button" class="btn btn-secondary" onclick="window.location.href='Transferler.php?view=incoming'">İptal</button>
-                    <button type="submit" class="btn btn-primary">✓ Teslim Al / Onayla</button>
-                </div>
+    <form method="POST" action="" onsubmit="return validateForm();">
+        <input type="hidden" name="action" value="teslim_al">
+
+        <div class="card">
+            <h3 style="color:#1e40af;margin-bottom:10px;"><?= htmlspecialchars($itemName) ?></h3>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Kalem Kodu</th>
+                        <th>Kalem Tanımı</th>
+                        <th>Talep</th>
+                        <th>Kalan Sevk</th>
+                        <th>Eksik/Fazla</th>
+                        <th>Kusurlu</th>
+                        <th>Fiziksel</th>
+                        <th>Not</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><?= htmlspecialchars($itemCode) ?></td>
+                        <td><?= htmlspecialchars($itemName) ?></td>
+                        <td>
+                            <div class="controls">
+                                <input type="number" id="talep" value="<?= htmlspecialchars((string)$requestedQty) ?>" readonly step="0.01" class="qty-input">
+                                <span>AD</span>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="controls">
+                                <input type="number" id="sevk" value="<?= htmlspecialchars((string)$sevkQty) ?>" readonly step="0.01" class="qty-input">
+                                <span>AD</span>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="controls">
+                                <button type="button" class="qty-btn" onclick="changeEksikFazla(-1)">-</button>
+                                <input type="number" name="eksik_fazla" id="eksik" value="<?= htmlspecialchars((string)$eksikFazlaDefault) ?>" step="0.01" class="qty-input" oninput="updateEksikColor(); calculatePhysical();">
+                                <button type="button" class="qty-btn" onclick="changeEksikFazla(1)">+</button>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="controls">
+                                <button type="button" class="qty-btn" onclick="changeKusurlu(-1)">-</button>
+                                <input type="number" name="kusurlu" id="kusurlu" value="0" min="0" step="0.01" class="qty-input" oninput="calculatePhysical();">
+                                <button type="button" class="qty-btn" onclick="changeKusurlu(1)">+</button>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="controls">
+                                <input type="text" id="fiziksel" value="0" readonly class="qty-input">
+                                <span>AD</span>
+                            </div>
+                        </td>
+                        <td>
+                            <input type="text" name="not" placeholder="Not" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;">
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="form-actions">
+                <button type="button" class="btn btn-secondary" onclick="window.location.href='Transferler.php?view=incoming'">İptal</button>
+                <button type="submit" class="btn btn-primary">✓ Teslim Al / Onayla</button>
             </div>
-        </form>
-    <?php endif; ?>
+        </div>
+    </form>
 </main>
+
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-    const eksikFazlaInputs = document.querySelectorAll('input[name^="eksik_fazla"]');
-    eksikFazlaInputs.forEach(input => {
-        const index = input.id.replace('eksik_', '');
-        updateEksikFazlaColor(input);
-        calculatePhysical(parseInt(index));
-    });
-    const sevkInputs = document.querySelectorAll('input[id^="sevk_"]');
-    sevkInputs.forEach(sevkInput => {
-        const index = sevkInput.id.replace('sevk_', '');
-        calculatePhysical(parseInt(index));
-    });
-});
-function changeEksikFazla(index, delta) {
-    const input = document.getElementById('eksik_' + index);
-    if (!input) return;
-    let value = parseFloat(input.value) || 0;
-    value += delta;
-    input.value = value;
-    updateEksikFazlaColor(input);
-    calculatePhysical(index);
+function changeEksikFazla(delta) {
+    const i = document.getElementById('eksik');
+    i.value = (parseFloat(i.value) || 0) + delta;
+    updateEksikColor();
+    calculatePhysical();
 }
-function updateEksikFazlaColor(input) {
-    if (!input) return;
-    const value = parseFloat(input.value) || 0;
-    input.classList.remove('eksik-fazla-negatif', 'eksik-fazla-pozitif', 'eksik-fazla-sifir');
-    if (value < 0) input.classList.add('eksik-fazla-negatif');
-    else if (value > 0) input.classList.add('eksik-fazla-pozitif');
-    else input.classList.add('eksik-fazla-sifir');
+
+function changeKusurlu(delta) {
+    const k = document.getElementById('kusurlu');
+    let v = (parseFloat(k.value) || 0) + delta;
+    if (v < 0) v = 0;
+    k.value = v;
+    calculatePhysical();
 }
-function changeKusurlu(index, delta) {
-    const input = document.getElementById('kusurlu_' + index);
-    if (!input) return;
-    const talepInput = document.getElementById('talep_' + index);
-    const eksikFazlaInput = document.getElementById('eksik_' + index);
-    if (!talepInput || !eksikFazlaInput) return;
-    const talep = parseFloat(talepInput.value) || 0;
-    const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
-    const fizikselMiktar = Math.max(0, talep + eksikFazla);
-    let value = parseFloat(input.value) || 0;
-    value += delta;
-    if (value < 0) value = 0;
-    if (value > fizikselMiktar) value = fizikselMiktar;
-    input.value = value;
-    calculatePhysical(index);
+
+function updateEksikColor() {
+    const i = document.getElementById('eksik');
+    const v = parseFloat(i.value) || 0;
+    i.classList.remove('eksik-neg','eksik-pos','eksik-zero');
+    if (v < 0) i.classList.add('eksik-neg');
+    else if (v > 0) i.classList.add('eksik-pos');
+    else i.classList.add('eksik-zero');
 }
-function calculatePhysical(index) {
-    const talepInput = document.getElementById('talep_' + index);
-    const sevkInput = document.getElementById('sevk_' + index);
-    const eksikFazlaInput = document.getElementById('eksik_' + index);
-    const kusurluInput = document.getElementById('kusurlu_' + index);
-    const fizikselInput = document.getElementById('fiziksel_' + index);
-    if (!talepInput || !sevkInput || !eksikFazlaInput || !kusurluInput || !fizikselInput) return;
-    const talep = parseFloat(talepInput.value) || 0;
-    const sevk = parseFloat(sevkInput.value) || 0;
-    const eksikFazla = parseFloat(eksikFazlaInput.value) || 0;
-    let kusurlu = parseFloat(kusurluInput.value) || 0;
-    let fiziksel = talep + eksikFazla;
+
+function calculatePhysical() {
+    const talep = parseFloat(document.getElementById('talep').value) || 0;
+    const eksik = parseFloat(document.getElementById('eksik').value) || 0;
+    const kusurlu = parseFloat(document.getElementById('kusurlu').value) || 0;
+
+    let fiziksel = talep + eksik;
     if (fiziksel < 0) fiziksel = 0;
+
     if (kusurlu > fiziksel) {
-        kusurlu = fiziksel;
-        kusurluInput.value = kusurlu;
+        document.getElementById('kusurlu').value = fiziksel;
     }
-    let formattedValue;
-    if (fiziksel == Math.floor(fiziksel)) formattedValue = Math.floor(fiziksel).toString();
-    else formattedValue = fiziksel.toFixed(2).replace('.', ',').replace(/0+$/, '').replace(/,$/, '');
-    fizikselInput.value = formattedValue;
+
+    document.getElementById('fiziksel').value = (Math.floor(fiziksel) === fiziksel) ? String(Math.floor(fiziksel)) : fiziksel.toFixed(2);
 }
+
 function validateForm() {
-    let hasQuantity = false;
-    const eksikFazlaInputs = document.querySelectorAll('input[name^="eksik_fazla"]');
-    const sevkInputs = document.querySelectorAll('input[id^="sevk_"]');
-    sevkInputs.forEach((sevkInput, index) => {
-        const talepInput = document.getElementById('talep_' + index);
-        const eksikFazla = parseFloat(eksikFazlaInputs[index].value) || 0;
-        const talep = parseFloat(talepInput?.value || 0) || 0;
-        const fiziksel = talep + eksikFazla;
-        if (fiziksel > 0) hasQuantity = true;
-    });
-    if (!hasQuantity) {
-        alert('Lütfen en az bir kalem için teslim alın!');
+    const talep = parseFloat(document.getElementById('talep').value) || 0;
+    const eksik = parseFloat(document.getElementById('eksik').value) || 0;
+    const fiziksel = talep + eksik;
+    if (fiziksel <= 0) {
+        alert('Fiziksel miktar 0 olamaz!');
         return false;
     }
     return true;
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+    updateEksikColor();
+    calculatePhysical();
+    
+    <?php if ($alertError !== null): ?>
+    alert(<?= json_encode($alertError, JSON_UNESCAPED_UNICODE) ?>);
+    <?php endif; ?>
+    
+    <?php if ($alertSuccess !== null): ?>
+    if (confirm(<?= json_encode($alertSuccess, JSON_UNESCAPED_UNICODE) ?> + "\n\nListe sayfasına dönmek ister misiniz?")) {
+        window.location.href = 'Transferler.php?view=incoming';
+    }
+    <?php endif; ?>
+});
 </script>
 </body>
 </html>

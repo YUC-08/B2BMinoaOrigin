@@ -1462,7 +1462,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             </div>
                         </td>
                         <td>
-                            <button class="btn btn-success btn-small" 
+                            <button class="btn btn-primary btn-small" 
                                     onclick="addToCart('${itemCode}', ${index})">
                                 Sepete Ekle
                             </button>
