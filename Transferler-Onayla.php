@@ -216,10 +216,42 @@ if ($action === 'approve' && $newStatus === '3') {
     // Ancak basitlik adına şimdilik böyle bırakıyoruz. 
     
 } else {
-    // REJECT (İPTAL) DURUMU
-    $updatePayload = ['U_ASB2B_STATUS' => $newStatus];
+    // =============================================================================
+    // REJECT (SATIR BAZINDA CLOSE) 
+    // =============================================================================
+    $linesToClose = [];
+
+    if (!empty($cartLines) && is_array($cartLines)) {
+        foreach ($cartLines as $line) {
+            $lineNum = (int)($line['LineNum'] ?? -1);
+            if ($lineNum >= 0) {
+                $linesToClose[] = [
+                    'LineNum' => $lineNum,
+                    'U_ASB2B_STATUS' => '5',
+                    
+                ];
+            }
+        }
+    }
+
+    if (empty($linesToClose)) {
+        header('Content-Type: application/json');
+        echo json_encode([
+            'success' => false,
+            'message' => 'Kapatılacak satır seçilmedi (lines boş / geçersiz).'
+        ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        exit;
+    }
+
+    $updatePayload = [
+                  
+        'StockTransferLines' => $linesToClose
+    ];
+
     $result = $sap->patch("InventoryTransferRequests({$docEntry})", $updatePayload);
 }
+
+
 
 // SONUÇ DÖNDÜRME
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {

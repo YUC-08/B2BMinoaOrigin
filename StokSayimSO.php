@@ -237,87 +237,184 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
         exit;
     }
     
-    // Debug bilgisini response'a ekle
+    // Debug bilgisini response'a ekle - DETAYLI
     $debugInfo['warehouseProperty'] = $warehouseProperty;
     $debugInfo['filter'] = $filter;
     $debugInfo['query'] = $itemsQuery;
+    $debugInfo['queryEncoded'] = urlencode($filter);
     $debugInfo['itemsCount'] = count($items);
+    $debugInfo['skip'] = $skip;
+    $debugInfo['top'] = $top;
+    $debugInfo['search'] = $search;
+    $debugInfo['responseStatus'] = $itemsData['status'] ?? 'NO STATUS';
+    
+    // ItemCode'ları listele (90231 ve 90232 kontrolü için)
+    $itemCodes = [];
+    $itemCodesDetailed = [];
+    foreach ($items as $item) {
+        $code = $item['ItemCode'] ?? '';
+        if (!empty($code)) {
+            $itemCodes[] = $code;
+            $itemCodesDetailed[] = [
+                'ItemCode' => $code,
+                'ItemName' => $item['ItemName'] ?? '',
+                'Warehouse' => $item[$warehouseProperty] ?? '',
+                'OnHand' => $item['OnHand'] ?? '',
+                'IsCommited' => $item['IsCommited'] ?? '',
+                'OnOrder' => $item['OnOrder'] ?? ''
+            ];
+        }
+    }
+    $debugInfo['itemCodes'] = $itemCodes;
+    $debugInfo['itemCodesDetailed'] = $itemCodesDetailed;
+    $debugInfo['has90231'] = in_array('90231', $itemCodes);
+    $debugInfo['has90232'] = in_array('90232', $itemCodes);
+    $debugInfo['count90231'] = count(array_filter($itemCodes, function($c) { return $c === '90231'; }));
+    $debugInfo['rawResponse'] = $itemsData['response'] ?? null;
+    
+    // Duplicate'leri temizle (ItemCode bazında)
+    $seenItemCodes = [];
+    $uniqueItems = [];
+    foreach ($items as $item) {
+        $itemCode = $item['ItemCode'] ?? '';
+        if (!empty($itemCode) && !isset($seenItemCodes[$itemCode])) {
+            $seenItemCodes[$itemCode] = true;
+            $uniqueItems[] = $item;
+        }
+    }
+    $items = $uniqueItems;
+    $debugInfo['itemsAfterDedup'] = count($items);
+    $debugInfo['duplicatesRemoved'] = count($itemsData['response']['value'] ?? []) - count($items);
     
     // Her item için UoM bilgilerini çek
-    foreach ($items as &$item) {
+    $processedItems = [];
+    $debugInfo['uomErrors'] = [];
+    foreach ($items as $item) {
         $itemCode = $item['ItemCode'] ?? '';
-        if (!empty($itemCode)) {
-            $itemDetailQuery = "Items('{$itemCode}')?\$select=ItemCode,InventoryUOM,UoMGroupEntry";
-            $itemDetailData = $sap->get($itemDetailQuery);
-            if (($itemDetailData['status'] ?? 0) == 200) {
-                $itemDetail = $itemDetailData['response'] ?? $itemDetailData;
-                $item['InventoryUOM'] = $itemDetail['InventoryUOM'] ?? '';
-                $item['UoMGroupEntry'] = $itemDetail['UoMGroupEntry'] ?? '';
-                
-                // UoM listesini çek
-                if (!empty($itemDetail['UoMGroupEntry'])) {
-                    // Direkt collection path kullan (expand yok)
-                    $uomGroupQuery = "UoMGroups({$itemDetail['UoMGroupEntry']})/UoMGroupDefinitionCollection";
-                    $uomGroupData = $sap->get($uomGroupQuery);
-                    if (($uomGroupData['status'] ?? 0) == 200) {
-                        $uomGroupResponse = $uomGroupData['response'] ?? $uomGroupData;
-                        $uomList = [];
-                        
-                        // Farklı response yapılarını kontrol et
-                        $collection = [];
-                        if (isset($uomGroupResponse['value']) && is_array($uomGroupResponse['value'])) {
-                            $collection = $uomGroupResponse['value'];
-                        } elseif (isset($uomGroupResponse['UoMGroupDefinitionCollection']) && is_array($uomGroupResponse['UoMGroupDefinitionCollection'])) {
-                            $collection = $uomGroupResponse['UoMGroupDefinitionCollection'];
-                        } elseif (is_array($uomGroupResponse) && !isset($uomGroupResponse['error'])) {
-                            $collection = $uomGroupResponse;
+        if (empty($itemCode)) {
+            // ItemCode boşsa bile ekle
+            $processedItems[] = $item;
+            $debugInfo['uomErrors'][] = [
+                'ItemCode' => '',
+                'error' => 'ItemCode boş',
+                'status' => 'N/A'
+            ];
+            continue;
+        }
+        
+        $itemDetailQuery = "Items('{$itemCode}')?\$select=ItemCode,InventoryUOM,UoMGroupEntry";
+        $itemDetailData = $sap->get($itemDetailQuery);
+        
+        // Debug: Her item için sorgu sonucunu logla
+        $debugInfo['itemDetailQueries'][] = [
+            'ItemCode' => $itemCode,
+            'query' => $itemDetailQuery,
+            'status' => $itemDetailData['status'] ?? 'NO STATUS',
+            'hasResponse' => !empty($itemDetailData['response']),
+            'error' => $itemDetailData['response']['error'] ?? null,
+            'response' => $itemDetailData['response'] ?? null
+        ];
+        
+        if (($itemDetailData['status'] ?? 0) == 200) {
+            $itemDetail = $itemDetailData['response'] ?? $itemDetailData;
+            $item['InventoryUOM'] = $itemDetail['InventoryUOM'] ?? '';
+            $item['UoMGroupEntry'] = $itemDetail['UoMGroupEntry'] ?? '';
+            
+            // UoM listesini çek
+            if (!empty($itemDetail['UoMGroupEntry'])) {
+                // Direkt collection path kullan (expand yok)
+                $uomGroupQuery = "UoMGroups({$itemDetail['UoMGroupEntry']})/UoMGroupDefinitionCollection";
+                $uomGroupData = $sap->get($uomGroupQuery);
+                if (($uomGroupData['status'] ?? 0) == 200) {
+                    $uomGroupResponse = $uomGroupData['response'] ?? $uomGroupData;
+                    $uomList = [];
+                    
+                    // Farklı response yapılarını kontrol et
+                    $collection = [];
+                    if (isset($uomGroupResponse['value']) && is_array($uomGroupResponse['value'])) {
+                        $collection = $uomGroupResponse['value'];
+                    } elseif (isset($uomGroupResponse['UoMGroupDefinitionCollection']) && is_array($uomGroupResponse['UoMGroupDefinitionCollection'])) {
+                        $collection = $uomGroupResponse['UoMGroupDefinitionCollection'];
+                    } elseif (is_array($uomGroupResponse) && !isset($uomGroupResponse['error'])) {
+                        $collection = $uomGroupResponse;
+                    }
+                    
+                    if (!empty($collection)) {
+                        foreach ($collection as $uomDef) {
+                            // Farklı property adlarını kontrol et
+                            $uomEntry = $uomDef['UoMEntry'] ?? $uomDef['AlternateUoM'] ?? $uomDef['UoMEntry'] ?? '';
+                            $uomCode = $uomDef['UoMCode'] ?? $uomDef['UoMCode'] ?? '';
+                            $baseQty = $uomDef['BaseQty'] ?? $uomDef['BaseQuantity'] ?? 1;
+                            
+                            // UoMEntry boş değilse ekle
+                            if (!empty($uomEntry)) {
+                                $uomList[] = [
+                                    'UoMEntry' => $uomEntry,
+                                    'UoMCode' => $uomCode,
+                                    'BaseQty' => $baseQty
+                                ];
+                            }
                         }
-                        
+                    }
+                    
+                    // Eğer UoMList boşsa ve InventoryUOM varsa, InventoryUOM'u kullan
+                    if (empty($uomList) && !empty($itemDetail['InventoryUOM'])) {
+                        $inventoryUOM = $itemDetail['InventoryUOM'];
+                        // Collection'dan InventoryUOM ile eşleşeni bul
                         if (!empty($collection)) {
                             foreach ($collection as $uomDef) {
-                                // Farklı property adlarını kontrol et
-                                $uomEntry = $uomDef['UoMEntry'] ?? $uomDef['AlternateUoM'] ?? $uomDef['UoMEntry'] ?? '';
-                                $uomCode = $uomDef['UoMCode'] ?? $uomDef['UoMCode'] ?? '';
-                                $baseQty = $uomDef['BaseQty'] ?? $uomDef['BaseQuantity'] ?? 1;
-                                
-                                // UoMEntry boş değilse ekle
-                                if (!empty($uomEntry)) {
+                                $uomCode = $uomDef['UoMCode'] ?? '';
+                                $uomEntry = $uomDef['UoMEntry'] ?? '';
+                                // InventoryUOM ile eşleşen veya herhangi bir geçerli UoMEntry bul
+                                if (!empty($uomEntry) && ($uomCode === $inventoryUOM || empty($uomList))) {
                                     $uomList[] = [
                                         'UoMEntry' => $uomEntry,
-                                        'UoMCode' => $uomCode,
-                                        'BaseQty' => $baseQty
+                                        'UoMCode' => $uomCode ?: $inventoryUOM,
+                                        'BaseQty' => $uomDef['BaseQty'] ?? 1
                                     ];
+                                    break;
                                 }
                             }
                         }
-                        
-                        // Eğer UoMList boşsa ve InventoryUOM varsa, InventoryUOM'u kullan
-                        if (empty($uomList) && !empty($itemDetail['InventoryUOM'])) {
-                            $inventoryUOM = $itemDetail['InventoryUOM'];
-                            // Collection'dan InventoryUOM ile eşleşeni bul
-                            if (!empty($collection)) {
-                                foreach ($collection as $uomDef) {
-                                    $uomCode = $uomDef['UoMCode'] ?? '';
-                                    $uomEntry = $uomDef['UoMEntry'] ?? '';
-                                    // InventoryUOM ile eşleşen veya herhangi bir geçerli UoMEntry bul
-                                    if (!empty($uomEntry) && ($uomCode === $inventoryUOM || empty($uomList))) {
-                                        $uomList[] = [
-                                            'UoMEntry' => $uomEntry,
-                                            'UoMCode' => $uomCode ?: $inventoryUOM,
-                                            'BaseQty' => $uomDef['BaseQty'] ?? 1
-                                        ];
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        $item['UoMList'] = $uomList;
                     }
+                    
+                    $item['UoMList'] = $uomList;
                 }
+            }
+            
+            // Item'ı processedItems'e ekle (başarılı olsun olmasın)
+            $processedItems[] = $item;
+        } else {
+            // UoM bilgisi çekilemedi ama item'ı ekle
+            $processedItems[] = $item;
+            $errorDetails = [
+                'ItemCode' => $itemCode,
+                'error' => 'Items() sorgusu başarısız',
+                'status' => $itemDetailData['status'] ?? 'NO STATUS',
+                'query' => $itemDetailQuery,
+                'response' => $itemDetailData['response'] ?? null,
+                'errorMessage' => isset($itemDetailData['response']['error']['message']['value']) 
+                    ? $itemDetailData['response']['error']['message']['value'] 
+                    : (isset($itemDetailData['response']['error']['message']) 
+                        ? $itemDetailData['response']['error']['message'] 
+                        : 'Bilinmeyen hata')
+            ];
+            $debugInfo['uomErrors'][] = $errorDetails;
+            
+            // Özel log: 90232 için detaylı bilgi
+            if ($itemCode === '90232') {
+                error_log("=== 90232 UoM SORGUSU BAŞARISIZ ===");
+                error_log("Query: " . $itemDetailQuery);
+                error_log("Status: " . ($itemDetailData['status'] ?? 'NULL'));
+                error_log("Response: " . json_encode($itemDetailData['response'] ?? []));
+                error_log("Error: " . json_encode($itemDetailData['response']['error'] ?? []));
             }
         }
     }
+    
+    // Processed items'ı kullan
+    $items = $processedItems;
+    $debugInfo['itemsAfterUoM'] = count($items);
     
     // Debug: UoMList'leri kontrol et
     $debugInfo['uomListCheck'] = [];
@@ -1139,6 +1236,171 @@ function formatDate($dateString) {
             return num.toString().replace('.', ',');
         }
 
+        function showDebugInfo(debug, fullData) {
+            // Debug paneli oluştur veya güncelle
+            let debugPanel = document.getElementById('debugPanel');
+            if (!debugPanel) {
+                debugPanel = document.createElement('div');
+                debugPanel.id = 'debugPanel';
+                debugPanel.style.cssText = 'position: fixed; bottom: 20px; right: 20px; width: 700px; max-height: 80vh; background: #fff; border: 3px solid #3b82f6; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); z-index: 10000; overflow: hidden; display: none;';
+                document.body.appendChild(debugPanel);
+            }
+            
+            const header = document.createElement('div');
+            header.style.cssText = 'background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; padding: 16px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 16px;';
+            header.innerHTML = `
+                <span>🔍 DEBUG BİLGİLERİ (Stok Sayım)</span>
+                <button onclick="document.getElementById('debugPanel').style.display='none'" style="background: transparent; border: none; color: white; font-size: 20px; cursor: pointer; font-weight: bold;">✕</button>
+            `;
+            
+            const content = document.createElement('div');
+            content.style.cssText = 'padding: 20px; max-height: calc(80vh - 70px); overflow-y: auto; font-family: "Courier New", monospace; font-size: 12px; background: #f8fafc;';
+            
+            let html = '<div style="margin-bottom: 20px;">';
+            
+            // Temel Bilgiler
+            html += '<div style="margin-bottom: 16px; padding: 12px; background: #e0f2fe; border-radius: 8px; border-left: 4px solid #0369a1;">';
+            html += '<div style="font-weight: 700; margin-bottom: 8px; color: #0369a1; font-size: 14px;">📋 TEMEL BİLGİLER:</div>';
+            html += `<div style="margin-bottom: 4px;"><strong>Depo Kodu:</strong> <span style="background: #fff; padding: 2px 8px; border-radius: 4px;">${debug.warehouseCode || 'N/A'}</span></div>`;
+            html += `<div style="margin-bottom: 4px;"><strong>Warehouse Property:</strong> <span style="background: #fff; padding: 2px 8px; border-radius: 4px;">${debug.warehouseProperty || 'N/A'}</span></div>`;
+            html += `<div style="margin-bottom: 4px;"><strong>Toplam Ürün (İlk):</strong> <span style="background: #fff; padding: 2px 8px; border-radius: 4px;">${debug.itemsCount || 0}</span></div>`;
+            if (debug.duplicatesRemoved !== undefined) {
+                html += `<div style="margin-bottom: 4px;"><strong>Backend Duplicate Temizlendi:</strong> <span style="background: ${debug.duplicatesRemoved > 0 ? '#fee2e2' : '#d1fae5'}; padding: 2px 8px; border-radius: 4px; color: ${debug.duplicatesRemoved > 0 ? '#dc2626' : '#059669'}; font-weight: 700;">${debug.duplicatesRemoved || 0}</span></div>`;
+                html += `<div style="margin-bottom: 4px;"><strong>Backend Duplicate Temizleme Sonrası:</strong> <span style="background: #fff; padding: 2px 8px; border-radius: 4px;">${debug.itemsAfterDedup || 0}</span></div>`;
+            }
+            if (debug.itemsAfterUoM !== undefined) {
+                html += `<div style="margin-bottom: 4px;"><strong>UoM İşleme Sonrası:</strong> <span style="background: ${debug.itemsAfterUoM === debug.itemsAfterDedup ? '#d1fae5' : '#fee2e2'}; padding: 2px 8px; border-radius: 4px; color: ${debug.itemsAfterUoM === debug.itemsAfterDedup ? '#059669' : '#dc2626'}; font-weight: 700;">${debug.itemsAfterUoM || 0}</span></div>`;
+            }
+            if (debug.frontendDuplicatesRemoved !== undefined) {
+                html += `<div style="margin-bottom: 4px;"><strong>Frontend Duplicate Temizlendi:</strong> <span style="background: ${debug.frontendDuplicatesRemoved > 0 ? '#fee2e2' : '#d1fae5'}; padding: 2px 8px; border-radius: 4px; color: ${debug.frontendDuplicatesRemoved > 0 ? '#dc2626' : '#059669'}; font-weight: 700;">${debug.frontendDuplicatesRemoved || 0}</span></div>`;
+                html += `<div style="margin-bottom: 4px;"><strong>Frontend Unique Count:</strong> <span style="background: #fff; padding: 2px 8px; border-radius: 4px;">${debug.frontendUniqueCount || 0}</span></div>`;
+            }
+            html += `<div style="margin-bottom: 4px;"><strong>Skip:</strong> ${debug.skip || 0} | <strong>Top:</strong> ${debug.top || 25}</div>`;
+            html += `<div style="margin-bottom: 4px;"><strong>Arama:</strong> "${debug.search || ''}"</div>`;
+            html += `<div style="margin-bottom: 4px;"><strong>Response Status:</strong> <span style="background: ${debug.responseStatus === 200 ? '#d1fae5' : '#fee2e2'}; padding: 2px 8px; border-radius: 4px;">${debug.responseStatus || 'N/A'}</span></div>`;
+            if (debug.uomErrors && debug.uomErrors.length > 0) {
+                html += `<div style="margin-top: 8px; padding: 8px; background: #fee2e2; border-radius: 4px; color: #dc2626;"><strong>⚠️ UoM Hataları:</strong> ${debug.uomErrors.length} adet</div>`;
+            }
+            html += '</div>';
+            
+            // 90231 ve 90232 Kontrolü
+            html += '<div style="margin-bottom: 16px; padding: 12px; background: ' + (debug.has90231 && debug.count90231 > 1 ? '#fee2e2' : debug.has90232 ? '#d1fae5' : '#fef3c7') + '; border-radius: 8px; border-left: 4px solid ' + (debug.has90231 && debug.count90231 > 1 ? '#dc2626' : debug.has90232 ? '#059669' : '#d97706') + ';">';
+            html += '<div style="font-weight: 700; margin-bottom: 8px; color: ' + (debug.has90231 && debug.count90231 > 1 ? '#dc2626' : debug.has90232 ? '#059669' : '#d97706') + '; font-size: 14px;">🔍 90231/90232 KONTROLÜ:</div>';
+            html += `<div style="margin-bottom: 4px;"><strong>90231 Var mı?:</strong> <span style="background: #fff; padding: 2px 8px; border-radius: 4px; color: ${debug.has90231 ? '#dc2626' : '#059669'}; font-weight: 700;">${debug.has90231 ? '✅ EVET' : '❌ HAYIR'}</span></div>`;
+            html += `<div style="margin-bottom: 4px;"><strong>90231 Sayısı:</strong> <span style="background: #fff; padding: 2px 8px; border-radius: 4px; color: ${debug.count90231 > 1 ? '#dc2626' : '#059669'}; font-weight: 700;">${debug.count90231 || 0}</span> ${debug.count90231 > 1 ? '⚠️ İKİ KEZ VAR!' : ''}</div>`;
+            html += `<div style="margin-bottom: 4px;"><strong>90232 Var mı?:</strong> <span style="background: #fff; padding: 2px 8px; border-radius: 4px; color: ${debug.has90232 ? '#059669' : '#dc2626'}; font-weight: 700;">${debug.has90232 ? '✅ EVET' : '❌ HAYIR'}</span></div>`;
+            html += '</div>';
+            
+            // Filtre ve Query
+            html += '<div style="margin-bottom: 16px; padding: 12px; background: #f3e8ff; border-radius: 8px; border-left: 4px solid #7c3aed;">';
+            html += '<div style="font-weight: 700; margin-bottom: 8px; color: #7c3aed; font-size: 14px;">🔗 SORGULAR:</div>';
+            html += `<div style="margin-bottom: 8px;"><strong>Filter:</strong> <code style="background: #fff; padding: 4px 8px; border-radius: 4px; display: block; margin-top: 4px; word-break: break-all;">${debug.filter || 'N/A'}</code></div>`;
+            html += `<div style="margin-bottom: 8px;"><strong>Query:</strong> <code style="background: #fff; padding: 4px 8px; border-radius: 4px; display: block; margin-top: 4px; word-break: break-all;">${debug.query || 'N/A'}</code></div>`;
+            html += '</div>';
+            
+            // ItemCode Listesi
+            if (debug.itemCodes && debug.itemCodes.length > 0) {
+                html += '<div style="margin-bottom: 16px; padding: 12px; background: #ecfdf5; border-radius: 8px; border-left: 4px solid #10b981;">';
+                html += '<div style="font-weight: 700; margin-bottom: 8px; color: #059669; font-size: 14px;">📦 GELEN ÜRÜN KODLARI (Toplam: ' + debug.itemCodes.length + '):</div>';
+                html += '<div style="background: #fff; padding: 8px; border-radius: 4px; max-height: 200px; overflow-y: auto;">';
+                debug.itemCodes.forEach((code, idx) => {
+                    const is90231 = code === '90231';
+                    const is90232 = code === '90232';
+                    html += `<div style="padding: 4px; margin-bottom: 2px; background: ${is90231 ? '#fee2e2' : is90232 ? '#d1fae5' : '#f3f4f6'}; border-radius: 4px; ${is90231 || is90232 ? 'font-weight: 700;' : ''}">${idx + 1}. ${code}${is90231 ? ' ⚠️' : ''}${is90232 ? ' ✅' : ''}</div>`;
+                });
+                html += '</div>';
+                html += '</div>';
+            }
+            
+            // Detaylı ItemCode Bilgileri
+            if (debug.itemCodesDetailed && debug.itemCodesDetailed.length > 0) {
+                html += '<details style="margin-bottom: 16px; padding: 12px; background: #fff7ed; border-radius: 8px; border-left: 4px solid #f59e0b;">';
+                html += '<summary style="font-weight: 700; color: #d97706; font-size: 14px; cursor: pointer; margin-bottom: 8px;">📊 DETAYLI ÜRÜN BİLGİLERİ (Tıkla)</summary>';
+                html += '<div style="background: #fff; padding: 8px; border-radius: 4px; max-height: 300px; overflow-y: auto;">';
+                html += '<pre style="margin: 0; font-size: 11px; white-space: pre-wrap;">' + JSON.stringify(debug.itemCodesDetailed, null, 2) + '</pre>';
+                html += '</div>';
+                html += '</details>';
+            }
+            
+            // ItemDetail Queries (Her item için sorgu sonuçları)
+            if (debug.itemDetailQueries && debug.itemDetailQueries.length > 0) {
+                html += '<details style="margin-bottom: 16px; padding: 12px; background: #fef3c7; border-radius: 8px; border-left: 4px solid #d97706;">';
+                html += '<summary style="font-weight: 700; color: #d97706; font-size: 14px; cursor: pointer; margin-bottom: 8px;">🔍 HER İTEM İÇİN Items() SORGUSU SONUÇLARI (Tıkla)</summary>';
+                html += '<div style="background: #fff; padding: 8px; border-radius: 4px; max-height: 400px; overflow-y: auto; margin-top: 8px;">';
+                debug.itemDetailQueries.forEach((query, idx) => {
+                    const isSuccess = query.status === 200;
+                    html += `<div style="margin-bottom: 8px; padding: 8px; background: ${isSuccess ? '#d1fae5' : '#fee2e2'}; border-radius: 4px; border-left: 4px solid ${isSuccess ? '#059669' : '#dc2626'}">`;
+                    html += `<div style="font-weight: 700; margin-bottom: 4px; color: ${isSuccess ? '#059669' : '#dc2626'}">${idx + 1}. ItemCode: ${query.ItemCode || 'N/A'}</div>`;
+                    html += `<div style="margin-bottom: 2px;"><strong>Query:</strong> <code style="background: #fff; padding: 2px 6px; border-radius: 3px; font-size: 10px;">${query.query || 'N/A'}</code></div>`;
+                    html += `<div style="margin-bottom: 2px;"><strong>Status:</strong> <span style="background: ${isSuccess ? '#86efac' : '#fecaca'}; padding: 2px 6px; border-radius: 3px;">${query.status || 'N/A'}</span></div>`;
+                    if (query.error) {
+                        html += `<div style="margin-bottom: 2px; color: #dc2626;"><strong>Error:</strong> ${JSON.stringify(query.error)}</div>`;
+                    }
+                    if (query.errorMessage) {
+                        html += `<div style="margin-bottom: 2px; color: #dc2626;"><strong>Error Message:</strong> ${query.errorMessage}</div>`;
+                    }
+                    html += '</div>';
+                });
+                html += '</div>';
+                html += '</details>';
+            }
+            
+            // UoM Errors
+            if (debug.uomErrors && debug.uomErrors.length > 0) {
+                html += '<div style="margin-bottom: 16px; padding: 12px; background: #fee2e2; border-radius: 8px; border-left: 4px solid #dc2626;">';
+                html += '<div style="font-weight: 700; margin-bottom: 8px; color: #dc2626; font-size: 14px;">⚠️ UoM İŞLEME HATALARI:</div>';
+                debug.uomErrors.forEach((err, idx) => {
+                    html += `<div style="margin-bottom: 6px; padding: 6px; background: #fff; border-radius: 4px;">`;
+                    html += `<div><strong>ItemCode:</strong> ${err.ItemCode || 'N/A'}</div>`;
+                    html += `<div><strong>Hata:</strong> ${err.error || 'N/A'}</div>`;
+                    html += `<div><strong>Status:</strong> ${err.status || 'N/A'}</div>`;
+                    if (err.query) {
+                        html += `<div><strong>Query:</strong> <code style="background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 10px;">${err.query}</code></div>`;
+                    }
+                    if (err.errorMessage) {
+                        html += `<div style="color: #dc2626;"><strong>Error Message:</strong> ${err.errorMessage}</div>`;
+                    }
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+            
+            // Raw Response
+            if (debug.rawResponse) {
+                html += '<details style="margin-bottom: 16px; padding: 12px; background: #fef2f2; border-radius: 8px; border-left: 4px solid #ef4444;">';
+                html += '<summary style="font-weight: 700; color: #dc2626; font-size: 14px; cursor: pointer; margin-bottom: 8px;">📥 RAW RESPONSE (Tıkla)</summary>';
+                html += '<div style="background: #fff; padding: 8px; border-radius: 4px; max-height: 300px; overflow-y: auto;">';
+                html += '<pre style="margin: 0; font-size: 10px; white-space: pre-wrap; word-break: break-all;">' + JSON.stringify(debug.rawResponse, null, 2) + '</pre>';
+                html += '</div>';
+                html += '</details>';
+            }
+            
+            // Full Debug Object
+            html += '<details style="margin-bottom: 16px;">';
+            html += '<summary style="font-weight: 700; color: #6b7280; font-size: 13px; cursor: pointer;">🔧 TÜM DEBUG OBJESİ (Tıkla)</summary>';
+            html += '<div style="background: #fff; padding: 8px; border-radius: 4px; margin-top: 8px; max-height: 400px; overflow-y: auto;">';
+            html += '<pre style="margin: 0; font-size: 10px; white-space: pre-wrap;">' + JSON.stringify(debug, null, 2) + '</pre>';
+            html += '</div>';
+            html += '</details>';
+            
+            html += '</div>';
+            
+            content.innerHTML = html;
+            
+            // Panel içeriğini güncelle
+            debugPanel.innerHTML = '';
+            debugPanel.appendChild(header);
+            debugPanel.appendChild(content);
+            debugPanel.style.display = 'block';
+            
+            // Header'a tıklanınca aç/kapat
+            header.onclick = function(e) {
+                if (e.target.tagName !== 'BUTTON') {
+                    content.style.display = content.style.display === 'none' ? 'block' : 'none';
+                }
+            };
+        }
+
         function loadItems() {
             const warehouseCode = document.getElementById('warehouseCode').value;
             if (!warehouseCode) {
@@ -1164,13 +1426,47 @@ function formatDate($dateString) {
                 .then(data => {
                     tbody.innerHTML = '';
                     
+                    // Debug bilgilerini göster
+                    showDebugInfo(data.debug || {}, data);
+                    
                     if (data.error) {
                         tbody.innerHTML = '<tr><td colspan="6" class="empty-message" style="color: #ef4444;">Hata: ' + data.error + '</td></tr>';
                         return;
                     }
                     
                     if (data.data && data.data.length > 0) {
+                        // Frontend'de duplicate kontrolü
+                        const seenItemCodes = new Set();
+                        const uniqueItems = [];
+                        
                         data.data.forEach(item => {
+                            const itemCode = item.ItemCode || '';
+                            if (itemCode && !seenItemCodes.has(itemCode)) {
+                                seenItemCodes.add(itemCode);
+                                uniqueItems.push(item);
+                            } else if (itemCode && seenItemCodes.has(itemCode)) {
+                                console.warn('Duplicate item detected:', itemCode);
+                            }
+                        });
+                        
+                        // Debug bilgisi güncelle
+                        if (data.debug) {
+                            data.debug.frontendDuplicatesRemoved = data.data.length - uniqueItems.length;
+                            data.debug.frontendUniqueCount = uniqueItems.length;
+                            showDebugInfo(data.debug, data);
+                        }
+                        
+                        // Debug: Frontend'de gelen item'ları logla
+                        console.log('Frontend - Gelen item sayısı:', data.data.length);
+                        console.log('Frontend - Unique item sayısı:', uniqueItems.length);
+                        console.log('Frontend - ItemCodes:', uniqueItems.map(i => i.ItemCode));
+                        
+                        uniqueItems.forEach((item, idx) => {
+                            // Debug: Her item için log
+                            if (item.ItemCode === '90232') {
+                                console.log('90232 bulundu! Index:', idx, 'Item:', item);
+                            }
+                            
                             const row = document.createElement('tr');
                             const uomList = item.UoMList || [];
                             const hasMultipleUoM = uomList.length > 1;

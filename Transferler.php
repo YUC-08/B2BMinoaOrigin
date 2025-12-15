@@ -1200,7 +1200,7 @@ input[type="checkbox"]:focus {
     // B) Belge açık ama BU SATIR kapalıysa -> BU SATIR SEVK EDİLDİ
     // C) Belge açık ve satır açıksa -> ONAY BEKLİYOR (Kısmi kalanlar için)
     
-    if ($status != '5' && $status != '4') {
+    /*if ($status != '5' && $status != '4') {
         if ($sapDocStatus === 'bost_Close' || $sapDocStatus === 'C') {
             $status = '3'; // Belge kapalı, hepsi gitti
         } elseif ($sapLineStatus === 'bost_Close' || $sapLineStatus === 'C') {
@@ -1212,7 +1212,7 @@ input[type="checkbox"]:focus {
                 $status = '0'; // Kısmi kalanlar bekliyor görünsün
             }
         }
-    }
+    }*/
 
     $statusText = getStatusText($status);
     $statusClass = getStatusClass($status);
@@ -1264,10 +1264,21 @@ input[type="checkbox"]:focus {
                                                 <button class="btn-icon btn-view">👁️ Detay</button>
                                             </a>
                                             <?php if ($canApprove): ?>
-                                                <a href="Transferler-Onayla.php?docEntry=<?= urlencode($row['DocEntry']) ?>&action=reject">
-                                                    <button class="btn-icon" style="background: #fee2e2; color: #991b1b; border: 1px solid #fecaca;">✗ İptal</button>
-                                                </a>
-                                            <?php endif; ?>
+  <form method="post" action="Transferler-Onayla.php"
+        onsubmit="return confirm('Bu satırı iptal (close) etmek istediğinizden emin misiniz?')"
+        style="display:inline;">
+    <input type="hidden" name="docEntry" value="<?= htmlspecialchars($row['DocEntry']) ?>">
+    <input type="hidden" name="action" value="reject">
+    <input type="hidden" name="lines"
+           value='<?= htmlspecialchars(json_encode([["LineNum" => (int)$row["LineNum"]]])) ?>'>
+
+    <button type="submit" class="btn-icon"
+            style="background: #fee2e2; color: #991b1b; border: 1px solid #fecaca;">
+      ✗ İptal
+    </button>
+  </form>
+<?php endif; ?>
+
                                         </div>
                                     </td>
                                 </tr>

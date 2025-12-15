@@ -441,7 +441,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'U_ASB2B_TYPE' => 'MAIN',
             'U_ASB2B_User' => $_SESSION["UserName"] ?? '',
             'U_ASB2B_QutMaster' => (int)$doc, // InventoryTransferRequest DocEntry
-            'StockTransferLines' => $transferLines
+            'StockTransferLines' => $transferLines,
+            'DocumentReferences' => [
+                [
+                    'RefDocEntr' => (int)$doc,
+                    'RefObjType' => 1250000001
+                ]
+            ]
         ];
 
         
