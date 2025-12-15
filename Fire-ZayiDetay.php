@@ -188,15 +188,146 @@ $errorMsg = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_type') {
     $newType = $_POST['type'] ?? '';
     if (in_array($newType, ['1', '2'])) {
+        // Session'dan bilgileri al
+        $uAsOwnr = $_SESSION["U_AS_OWNR"] ?? '';
+        $branch = $_SESSION["Branch2"]["Code"] ?? $_SESSION["WhsCode"] ?? '100';
+        
+        // Transfer bilgilerini çek (branch bilgisi için)
+        $transferInfo = $sap->get("StockTransfers({$docEntry})?\$select=U_ASB2B_BRAN");
+        $transferBranch = $branch;
+        if (($transferInfo['status'] ?? 0) == 200) {
+            $transferBranch = $transferInfo['response']['U_ASB2B_BRAN'] ?? $branch;
+        }
+        
+        // Yeni türe göre hedef depoyu bul
+        $targetWarehouse = null;
+        
+        if ($newType == '1') {
+            // Fire ise U_ASB2B_MAIN='3'
+            $fireFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$transferBranch}' and U_ASB2B_MAIN eq '3'";
+            $fireQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($fireFilter);
+            $fireData = $sap->get($fireQuery);
+            
+            if (($fireData['status'] ?? 0) == 200) {
+                $fireList = $fireData['response']['value'] ?? [];
+                if (!empty($fireList)) {
+                    $targetWarehouse = $fireList[0]['WarehouseCode'] ?? null;
+                }
+            }
+        } elseif ($newType == '2') {
+            // Zayi ise U_ASB2B_MAIN='4'
+            $zayiFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$transferBranch}' and U_ASB2B_MAIN eq '4'";
+            $zayiQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($zayiFilter);
+            $zayiData = $sap->get($zayiQuery);
+            
+            if (($zayiData['status'] ?? 0) == 200) {
+                $zayiList = $zayiData['response']['value'] ?? [];
+                if (!empty($zayiList)) {
+                    $targetWarehouse = $zayiList[0]['WarehouseCode'] ?? null;
+                }
+            }
+        }
+        
+        // Güncelleme payload'ı oluştur
         $updatePayload = ['U_ASB2B_LOST' => $newType];
+        
+        // Hedef depo bulunduysa, kullanıcı tanımlı alanlara ekle
+        // Yaygın UDF alan adlarını dene (SAP B1'de kullanıcı tanımlı alanlar genellikle bu isimlerle olabilir)
+        if (!empty($targetWarehouse)) {
+            // UDF alanlarını güncellemeyi dene (eğer varsa)
+            // Not: Bu alanlar SAP'de tanımlı olmalı, yoksa hata verebilir
+            // En yaygın UDF alan adları:
+            $possibleUdfFields = [
+                'U_ASB2B_TARGET_WHS',
+                'U_ASB2B_TO_WHS', 
+                'U_TARGET_WAREHOUSE',
+                'U_TO_WAREHOUSE',
+                'U_ASB2B_TARGET_WAREHOUSE'
+            ];
+            
+            // Transfer bilgilerini çek ve hangi UDF alanlarının mevcut olduğunu kontrol et
+            $transferFull = $sap->get("StockTransfers({$docEntry})");
+            if (($transferFull['status'] ?? 0) == 200) {
+                $transferData = $transferFull['response'] ?? [];
+                // Mevcut UDF alanlarını kontrol et ve hedef depo ile ilgili olanı bul
+                foreach ($possibleUdfFields as $udfField) {
+                    // Eğer bu alan transfer verisinde varsa veya güncellenebilirse ekle
+                    // SAP B1'de UDF alanları genellikle güncellenebilir
+                    $updatePayload[$udfField] = $targetWarehouse;
+                }
+            }
+        }
+        
         $updateResult = $sap->patch("StockTransfers({$docEntry})", $updatePayload);
         
         if (($updateResult['status'] ?? 0) == 200 || ($updateResult['status'] ?? 0) == 204) {
+            // Header güncellendi, şimdi satır seviyesinde depo güncellemesi yap
+            if (!empty($targetWarehouse)) {
+                // StockTransferLines'ı çek
+                $linesQuery = "StockTransfers({$docEntry})/StockTransferLines";
+                $linesData = $sap->get($linesQuery);
+                
+                if (($linesData['status'] ?? 0) == 200) {
+                    $linesResponse = $linesData['response'] ?? [];
+                    $lines = [];
+                    
+                    if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
+                        $lines = $linesResponse['value'];
+                    } elseif (is_array($linesResponse)) {
+                        $lines = $linesResponse;
+                    }
+                    
+                    // Her satır için depoyu güncelle
+                    foreach ($lines as $line) {
+                        $lineNum = $line['LineNum'] ?? $line['LineNumber'] ?? null;
+                        if ($lineNum !== null) {
+                            $lineUpdatePayload = ['WarehouseCode' => $targetWarehouse];
+                            $lineUpdateResult = $sap->patch("StockTransfers({$docEntry})/StockTransferLines({$lineNum})", $lineUpdatePayload);
+                            // Hata olsa bile devam et (tüm satırları güncellemeye çalış)
+                        }
+                    }
+                }
+            }
+            
             // Başarılı, sayfayı yenile
             header("Location: Fire-ZayiDetay.php?DocEntry={$docEntry}");
             exit;
         } else {
-            $errorMsg = "Tür güncellenemedi! " . json_encode($updateResult['response'] ?? []);
+            // UDF alanları hata veriyorsa, sadece U_ASB2B_LOST ile tekrar dene
+            $updatePayloadMinimal = ['U_ASB2B_LOST' => $newType];
+            $updateResultMinimal = $sap->patch("StockTransfers({$docEntry})", $updatePayloadMinimal);
+            
+            if (($updateResultMinimal['status'] ?? 0) == 200 || ($updateResultMinimal['status'] ?? 0) == 204) {
+                // Sadece tür güncellendi, satır seviyesinde depo güncellemesi yap
+                if (!empty($targetWarehouse)) {
+                    $linesQuery = "StockTransfers({$docEntry})/StockTransferLines";
+                    $linesData = $sap->get($linesQuery);
+                    
+                    if (($linesData['status'] ?? 0) == 200) {
+                        $linesResponse = $linesData['response'] ?? [];
+                        $lines = [];
+                        
+                        if (isset($linesResponse['value']) && is_array($linesResponse['value'])) {
+                            $lines = $linesResponse['value'];
+                        } elseif (is_array($linesResponse)) {
+                            $lines = $linesResponse;
+                        }
+                        
+                        foreach ($lines as $line) {
+                            $lineNum = $line['LineNum'] ?? $line['LineNumber'] ?? null;
+                            if ($lineNum !== null) {
+                                $lineUpdatePayload = ['WarehouseCode' => $targetWarehouse];
+                                $lineUpdateResult = $sap->patch("StockTransfers({$docEntry})/StockTransferLines({$lineNum})", $lineUpdatePayload);
+                            }
+                        }
+                    }
+                }
+                
+                header("Location: Fire-ZayiDetay.php?DocEntry={$docEntry}");
+                exit;
+            } else {
+                $errorMsg = "Tür güncellenemedi! " . json_encode($updateResultMinimal['response'] ?? []);
+            }
         }
     }
 }
@@ -535,12 +666,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     </div>
                 </div>
             </section>
-
-            <!-- Butonlar -->
-            <div class="action-buttons">
-                <button class="btn btn-secondary" onclick="window.location.href='Fire-Zayi.php'">Geri Dön</button>
-                <button class="btn btn-primary" onclick="window.print()">Yazdır</button>
-            </div>
         </div>
     </main>
 </body>

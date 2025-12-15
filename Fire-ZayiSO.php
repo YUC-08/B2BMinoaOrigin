@@ -29,6 +29,37 @@ if (($fromWarehouseData['status'] ?? 0) == 200) {
     }
 }
 
+// Fire ve Zayi depolarını çek (sayfa yüklendiğinde JavaScript'e aktarmak için)
+$fireWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '3'";
+$fireWarehouseQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fireWarehouseFilter);
+$fireWarehouseData = $sap->get($fireWarehouseQuery);
+$fireWarehouse = null;
+$fireWarehouseName = null;
+if (($fireWarehouseData['status'] ?? 0) == 200) {
+    $fireList = $fireWarehouseData['response']['value'] ?? [];
+    if (!empty($fireList)) {
+        $fireWarehouse = $fireList[0]['WarehouseCode'] ?? null;
+        $fireWarehouseName = $fireList[0]['WarehouseName'] ?? null;
+    }
+}
+
+// Zayi deposu (artık BRAN dolu olduğu için fire ile aynı mantık)
+$zayiWarehouseFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$branch}' and U_ASB2B_MAIN eq '4'";
+$zayiWarehouseQuery  = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($zayiWarehouseFilter);
+$zayiWarehouseData   = $sap->get($zayiWarehouseQuery);
+
+$zayiWarehouse = null;
+$zayiWarehouseName = null;
+
+if (($zayiWarehouseData['status'] ?? 0) == 200) {
+    $zayiList = $zayiWarehouseData['response']['value'] ?? [];
+    if (!empty($zayiList)) {
+        $zayiWarehouse     = $zayiList[0]['WarehouseCode'] ?? null;
+        $zayiWarehouseName = $zayiList[0]['WarehouseName'] ?? null;
+    }
+}
+
+
 // AJAX: Gideceği Depo listesi getir (Fire veya Zayi'ye göre)
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'] === 'targetWarehouses') {
     header('Content-Type: application/json');
@@ -317,8 +348,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     header('Content-Type: application/json');
     
     $fromWarehouse = trim($_POST['fromWarehouse'] ?? '');
-    $toWarehouse = trim($_POST['toWarehouse'] ?? '');
-    $lostType = trim($_POST['lostType'] ?? '');
     $docDate = trim($_POST['docDate'] ?? date('Y-m-d'));
     $comments = trim($_POST['comments'] ?? '');
     $lines = isset($_POST['lines']) ? json_decode($_POST['lines'], true) : [];
@@ -354,125 +383,210 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
     
-    // Eğer Zayi deposu bulunamadıysa, kullanıcının seçtiği "Gideceği Depo" değerini kullan
-    if (empty($zayiWarehouse) && !empty($toWarehouse)) {
-        $zayiWarehouse = $toWarehouse;
-    }
-    
-    // Eğer Fire deposu bulunamadıysa, kullanıcının seçtiği "Gideceği Depo" değerini kullan
-    if (empty($fireWarehouse) && !empty($toWarehouse)) {
-        $fireWarehouse = $toWarehouse;
-    }
-    
-    // StockTransferLines oluştur - Her item için hem Fire hem Zayi satırları
-    $stockTransferLines = [];
+    // Fire ve Zayi item'larını ayır
+    $fireLines = [];
+    $zayiLines = [];
     $hasFire = false;
     $hasZayi = false;
+    $missingWarehouses = [];
+    
+    // ItemName bilgilerini saklamak için
+    $itemNames = [];
     
     foreach ($lines as $line) {
         $itemCode = $line['ItemCode'] ?? '';
-        $fireQty = floatval($line['FireQty'] ?? 0);
-        $zayiQty = floatval($line['ZayiQty'] ?? 0);
+        $itemName = $line['ItemName'] ?? '';
+        $type = $line['Type'] ?? '';
+        $quantity = floatval($line['Quantity'] ?? 0);
         $uomEntry = $line['UoMEntry'] ?? null;
         $uomCode = $line['UoMCode'] ?? '';
         
-        if (empty($itemCode)) {
+        if (empty($itemCode) || $quantity === 0) {
             continue;
         }
         
-        // Fire miktarı varsa Fire deposuna satır ekle
-        // Eğer Fire deposu bulunamadıysa ama kullanıcı "Gideceği Depo" seçtiyse onu kullan
-        $targetFireWarehouse = !empty($fireWarehouse) ? $fireWarehouse : $toWarehouse;
-        if ($fireQty > 0 && !empty($targetFireWarehouse)) {
-            $fireLineData = [
-                'ItemCode' => $itemCode,
-                'Quantity' => $fireQty,
-                'FromWarehouseCode' => $fromWarehouse,
-                'WarehouseCode' => $targetFireWarehouse,
-                'U_ASB2B_LOST' => '1' // Fire
-            ];
-            
-            if (!empty($uomEntry)) {
-                $fireLineData['UoMEntry'] = intval($uomEntry);
-            }
-            if (!empty($uomCode)) {
-                $fireLineData['UoMCode'] = $uomCode;
-            }
-            
-            $stockTransferLines[] = $fireLineData;
-            $hasFire = true;
+        // ItemName'i sakla
+        if (!empty($itemName)) {
+            $itemNames[$itemCode] = $itemName;
         }
         
-        // Zayi miktarı varsa Zayi deposuna satır ekle
-        // Eğer Zayi deposu bulunamadıysa ama kullanıcı "Gideceği Depo" seçtiyse onu kullan
-        $targetZayiWarehouse = !empty($zayiWarehouse) ? $zayiWarehouse : $toWarehouse;
-        if ($zayiQty > 0 && !empty($targetZayiWarehouse)) {
-            $zayiLineData = [
-                'ItemCode' => $itemCode,
-                'Quantity' => $zayiQty,
-                'FromWarehouseCode' => $fromWarehouse,
-                'WarehouseCode' => $targetZayiWarehouse,
-                'U_ASB2B_LOST' => '2' // Zayi
-            ];
-            
-            if (!empty($uomEntry)) {
-                $zayiLineData['UoMEntry'] = intval($uomEntry);
+        $lineData = [
+            'ItemCode' => $itemCode,
+            'Quantity' => $quantity,
+            'FromWarehouseCode' => $fromWarehouse,
+            'UoMEntry' => !empty($uomEntry) ? intval($uomEntry) : null,
+            'UoMCode' => $uomCode
+        ];
+        
+        if (!empty($uomEntry)) {
+            $lineData['UoMEntry'] = intval($uomEntry);
+        }
+        if (!empty($uomCode)) {
+            $lineData['UoMCode'] = $uomCode;
+        }
+        
+        if ($type === 'fire') {
+            if (empty($fireWarehouse)) {
+                $missingWarehouses[] = 'fire';
+            } else {
+                $lineData['WarehouseCode'] = $fireWarehouse;
+                $lineData['U_ASB2B_LOST'] = '1'; // Fire
+                $fireLines[] = $lineData;
+                $hasFire = true;
             }
-            if (!empty($uomCode)) {
-                $zayiLineData['UoMCode'] = $uomCode;
+        } elseif ($type === 'zayi') {
+            if (empty($zayiWarehouse)) {
+                $missingWarehouses[] = 'zayi';
+            } else {
+                $lineData['WarehouseCode'] = $zayiWarehouse;
+                $lineData['U_ASB2B_LOST'] = '2'; // Zayi
+                $zayiLines[] = $lineData;
+                $hasZayi = true;
             }
-            
-            $stockTransferLines[] = $zayiLineData;
-            $hasZayi = true;
         }
     }
     
-    if (empty($stockTransferLines)) {
+    // Eksik depo kontrolü
+    if (in_array('fire', $missingWarehouses) && in_array('zayi', $missingWarehouses)) {
+        echo json_encode(['success' => false, 'message' => 'Bu şubenin fire deposu ve zayi deposu bulunamadı.']);
+        exit;
+    } elseif (in_array('fire', $missingWarehouses)) {
+        echo json_encode(['success' => false, 'message' => 'Bu şubenin fire deposu bulunamadı.']);
+        exit;
+    } elseif (in_array('zayi', $missingWarehouses)) {
+        echo json_encode(['success' => false, 'message' => 'Bu şubenin zayi deposu bulunamadı.']);
+        exit;
+    }
+    
+    if (empty($fireLines) && empty($zayiLines)) {
         echo json_encode(['success' => false, 'message' => 'Geçerli satır bulunamadı. Fire veya Zayi miktarı giriniz.']);
         exit;
     }
     
-    // Header U_ASB2B_LOST: Fire öncelikli
-    $headerLost = $hasFire ? '1' : ($hasZayi ? '2' : '1');
+    $createdDocs = [];
+    $errors = [];
     
-    // Header ToWarehouse: Fire varsa Fire deposu, yoksa Zayi deposu
-    $headerToWarehouse = $hasFire ? $fireWarehouse : ($hasZayi ? $zayiWarehouse : $toWarehouse);
-    
-    // StockTransfers payload
-    $payload = [
-        'U_ASB2B_TYPE' => 'TRANSFER',
-        'U_ASB2B_LOST' => $headerLost,
-        'U_AS_OWNR' => $uAsOwnr,
-        'U_ASB2B_BRAN' => $branch,
-        'DocDate' => $docDate,
-        'FromWarehouse' => $fromWarehouse,
-        'ToWarehouse' => $headerToWarehouse,
-        'StockTransferLines' => $stockTransferLines
-    ];
-    
-    if (!empty($comments)) {
-        $payload['Comments'] = $comments;
+    // Fire belgesi oluştur
+    if (!empty($fireLines)) {
+        // Açıklama oluştur: "X adet eksik fire" formatında
+        $fireComments = [];
+        foreach ($fireLines as $line) {
+            $itemCode = $line['ItemCode'] ?? '';
+            $qty = $line['Quantity'] ?? 0;
+            $itemName = $itemNames[$itemCode] ?? '';
+            if (!empty($itemName)) {
+                $fireComments[] = "{$itemCode} ({$itemName}): {$qty} adet eksik fire";
+            } else {
+                $fireComments[] = "{$itemCode}: {$qty} adet eksik fire";
+            }
+        }
+        $fireCommentsText = '[TRANSFER] ' . implode(' | ', $fireComments);
+        if (!empty($comments)) {
+            $fireCommentsText = $comments . ' ' . $fireCommentsText;
+        }
+        
+        $firePayload = [
+            'U_ASB2B_TYPE' => 'TRANSFER',
+            'U_ASB2B_LOST' => '1', // Fire
+            'U_AS_OWNR' => $uAsOwnr,
+            'U_ASB2B_BRAN' => $branch,
+            'DocDate' => $docDate,
+            'FromWarehouse' => $fromWarehouse,
+            'ToWarehouse' => $fireWarehouse,
+            'StockTransferLines' => $fireLines,
+            'Comments' => $fireCommentsText
+        ];
+        
+        $fireResult = $sap->post('StockTransfers', $firePayload);
+        
+        if (($fireResult['status'] ?? 0) == 200 || ($fireResult['status'] ?? 0) == 201) {
+            $fireDocEntry = $fireResult['response']['DocEntry'] ?? null;
+            $createdDocs[] = ['type' => 'fire', 'docEntry' => $fireDocEntry];
+        } else {
+            $errorMsg = 'Fire belgesi oluşturulamadı: HTTP ' . ($fireResult['status'] ?? 'NO STATUS');
+            if (isset($fireResult['response']['error'])) {
+                $error = $fireResult['response']['error'];
+                $errorMsg .= ' - ' . ($error['message']['value'] ?? $error['message'] ?? json_encode($error));
+            }
+            $errors[] = $errorMsg;
+        }
     }
     
-    $result = $sap->post('StockTransfers', $payload);
-    
-    if (($result['status'] ?? 0) == 200 || ($result['status'] ?? 0) == 201) {
-        $docEntry = $result['response']['DocEntry'] ?? null;
-        echo json_encode([
-            'success' => true, 
-            'message' => 'Fire/Zayi belgesi başarıyla oluşturuldu!',
-            'docEntry' => $docEntry
-        ]);
-    } else {
-        $errorMsg = 'Belge oluşturulamadı: HTTP ' . ($result['status'] ?? 'NO STATUS');
-        if (isset($result['response']['error'])) {
-            $error = $result['response']['error'];
-            $errorMsg .= ' - ' . ($error['message']['value'] ?? $error['message'] ?? json_encode($error));
+    // Zayi belgesi oluştur
+    if (!empty($zayiLines)) {
+        // Açıklama oluştur: "X adet eksik zayi" formatında
+        $zayiComments = [];
+        foreach ($zayiLines as $line) {
+            $itemCode = $line['ItemCode'] ?? '';
+            $qty = $line['Quantity'] ?? 0;
+            $itemName = $itemNames[$itemCode] ?? '';
+            if (!empty($itemName)) {
+                $zayiComments[] = "{$itemCode} ({$itemName}): {$qty} adet eksik zayi";
+            } else {
+                $zayiComments[] = "{$itemCode}: {$qty} adet eksik zayi";
+            }
         }
+        $zayiCommentsText = '[TRANSFER] ' . implode(' | ', $zayiComments);
+        if (!empty($comments)) {
+            $zayiCommentsText = $comments . ' ' . $zayiCommentsText;
+        }
+        
+        $zayiPayload = [
+            'U_ASB2B_TYPE' => 'TRANSFER',
+            'U_ASB2B_LOST' => '2', // Zayi
+            'U_AS_OWNR' => $uAsOwnr,
+            'U_ASB2B_BRAN' => $branch,
+            'DocDate' => $docDate,
+            'FromWarehouse' => $fromWarehouse,
+            'ToWarehouse' => $zayiWarehouse,
+            'StockTransferLines' => $zayiLines,
+            'Comments' => $zayiCommentsText
+        ];
+        
+        $zayiResult = $sap->post('StockTransfers', $zayiPayload);
+        
+        if (($zayiResult['status'] ?? 0) == 200 || ($zayiResult['status'] ?? 0) == 201) {
+            $zayiDocEntry = $zayiResult['response']['DocEntry'] ?? null;
+            $createdDocs[] = ['type' => 'zayi', 'docEntry' => $zayiDocEntry];
+        } else {
+            $errorMsg = 'Zayi belgesi oluşturulamadı: HTTP ' . ($zayiResult['status'] ?? 'NO STATUS');
+            if (isset($zayiResult['response']['error'])) {
+                $error = $zayiResult['response']['error'];
+                $errorMsg .= ' - ' . ($error['message']['value'] ?? $error['message'] ?? json_encode($error));
+            }
+            $errors[] = $errorMsg;
+        }
+    }
+    
+    // Sonuç döndür
+    if (!empty($createdDocs)) {
+        $messages = [];
+        foreach ($createdDocs as $doc) {
+            $typeName = $doc['type'] === 'fire' ? 'Fire' : 'Zayi';
+            $messages[] = "{$typeName} belgesi oluşturuldu (DocEntry: {$doc['docEntry']})";
+        }
+        
+        $firstDocEntry = $createdDocs[0]['docEntry'];
+        
+        if (!empty($errors)) {
+            echo json_encode([
+                'success' => true,
+                'message' => implode('. ', $messages) . '. Hatalar: ' . implode('; ', $errors),
+                'docEntry' => $firstDocEntry,
+                'createdDocs' => $createdDocs
+            ]);
+        } else {
+            echo json_encode([
+                'success' => true,
+                'message' => implode('. ', $messages),
+                'docEntry' => $firstDocEntry,
+                'createdDocs' => $createdDocs
+            ]);
+        }
+    } else {
         echo json_encode([
-            'success' => false, 
-            'message' => $errorMsg,
-            'debug' => $result
+            'success' => false,
+            'message' => 'Hiçbir belge oluşturulamadı. ' . implode('; ', $errors)
         ]);
     }
     exit;
@@ -843,9 +957,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             gap: 12px;
         }
 
+        .show-entries {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #4b5563;
+            font-size: 0.9rem;
+        }
+
+        .entries-select {
+            padding: 0.5rem 0.75rem;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            background: white;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .entries-select:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+
         .search-box {
             display: flex;
-            gap: 8px;
+            gap: 0.5rem;
             align-items: center;
         }
 
@@ -862,6 +999,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             outline: none;
             border-color: #3b82f6;
             box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 1rem;
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #e5e7eb;
+        }
+
+        .pagination button {
+            padding: 0.5rem 1rem;
+            font-size: 0.9rem;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pagination #pageInfo {
+            color: #4b5563;
+            font-size: 0.9rem;
         }
 
         .data-table {
@@ -1012,6 +1174,160 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
             box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
         }
+
+        /* Sepet Button Styles */
+        .page-header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .sepet-btn {
+            position: relative;
+        }
+
+        .sepet-badge {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: #dc2626;
+            color: white;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border: 2px solid white;
+        }
+
+        /* Layout Container */
+        .main-layout-container {
+            display: flex;
+            gap: 24px;
+        }
+
+        .main-content-left {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .main-layout-container.sepet-open .main-content-left {
+            flex: 0 0 calc(100% - 444px);
+        }
+
+        .main-content-right.sepet-panel {
+            flex: 0 0 420px;
+            min-width: 400px;
+            max-width: 420px;
+            display: none;
+            flex-direction: column;
+            overflow-y: auto;
+            max-height: calc(100vh - 120px);
+        }
+
+        .main-layout-container.sepet-open .main-content-right.sepet-panel {
+            display: flex;
+        }
+
+        .main-content-right.sepet-panel .card {
+            margin: 0;
+        }
+
+        .sepet-panel {
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        /* Sepet Item Styles */
+        .sepet-item {
+            padding: 16px;
+            background: #f9fafb;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            border: 1px solid #e5e7eb;
+        }
+
+        .sepet-item-info {
+            flex: 1;
+        }
+
+        .sepet-item-name {
+            font-weight: 600;
+            color: #1f2937;
+            margin-bottom: 8px;
+            font-size: 0.95rem;
+        }
+
+        .sepet-item-details {
+            font-size: 0.85rem;
+            color: #6b7280;
+            margin-bottom: 4px;
+        }
+
+        .sepet-item-qty {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            margin-top: 8px;
+        }
+
+        .sepet-item-qty input {
+            width: 80px;
+            padding: 6px 10px;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+
+        .remove-sepet-btn {
+            padding: 6px 12px;
+            background: #fee2e2;
+            color: #dc2626;
+            border: 1px solid #fecaca;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .remove-sepet-btn:hover {
+            background: #fecaca;
+        }
+
+        .empty-message {
+            text-align: center;
+            padding: 40px;
+            color: #6b7280;
+            font-style: italic;
+        }
+
+        .card {
+            margin-bottom: 2rem;
+        }
+
+        .card:last-child {
+            margin-bottom: 0;
+        }
     </style>
 </head>
 <body>
@@ -1019,14 +1335,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     <main class="main-content">
         <header class="page-header">
             <h2>Yeni Fire/Zayi Ekle</h2>
-            <button class="btn btn-secondary" onclick="window.location.href='Fire-Zayi.php'">← Geri Dön</button>
+            <div class="page-header-actions">
+                <button class="btn btn-primary sepet-btn" id="sepetToggleBtn" onclick="toggleSepet()" style="position: relative;">
+                    🛒 Sepet
+                    <span class="sepet-badge" id="sepetBadge" style="display: none;">0</span>
+                </button>
+                <button class="btn btn-secondary" onclick="window.location.href='Fire-Zayi.php'">← Geri Dön</button>
+            </div>
         </header>
 
         <div class="content-wrapper">
-            <section class="card">
-                <div class="card-header">
-                    <h3>Üst Bilgiler</h3>
-                </div>
+            <div class="main-layout-container" id="mainLayoutContainer">
+                <div class="main-content-left">
+                    <section class="card">
+                        <div class="card-header">
+                            <h3>Üst Bilgiler</h3>
+                        </div>
                 <div class="card-body">
                     <form id="fireZayiForm">
                         <div class="form-grid">
@@ -1048,34 +1372,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                     </div>
                                 </div>
                                 <input type="hidden" id="fromWarehouse" name="fromWarehouse" required>
-                            </div>
-
-                            <!-- Fire/Zayi Türü -->
-                            <div class="form-group">
-                                <label class="form-label required">Fire/Zayi Türü</label>
-                                <div class="toggle-group">
-                                    <div class="toggle-option">
-                                        <input type="radio" id="lostTypeFire" name="lostType" value="1" required>
-                                        <label for="lostTypeFire" class="fire">Fire</label>
-                                    </div>
-                                    <div class="toggle-option">
-                                        <input type="radio" id="lostTypeZayi" name="lostType" value="2" required>
-                                        <label for="lostTypeZayi" class="zayi">Zayi</label>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Gideceği Depo -->
-                            <div class="form-group">
-                                <label class="form-label required" for="toWarehouse">Gideceği Depo</label>
-                                <div class="single-select-container">
-                                    <div class="single-select-input disabled" id="toWarehouseInput" onclick="if(!this.classList.contains('disabled')) toggleDropdown('toWarehouse')">
-                                        <input type="text" id="toWarehouseInputText" value="Önce Fire/Zayi türünü seçiniz" readonly>
-                                        <span class="dropdown-arrow">▼</span>
-                                    </div>
-                                    <div class="single-select-dropdown" id="toWarehouseDropdown"></div>
-                                </div>
-                                <input type="hidden" id="toWarehouse" name="toWarehouse" required>
                             </div>
 
                             <!-- Tarih -->
@@ -1102,8 +1398,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 </div>
                 <div class="card-body">
                     <div class="table-controls">
+                        <div class="show-entries">
+                            Sayfada 
+                            <select class="entries-select" id="entriesPerPage" onchange="updatePageSize()">
+                                <option value="25" selected>25</option>
+                                <option value="50">50</option>
+                                <option value="75">75</option>
+                            </select>
+                            kayıt göster
+                        </div>
                         <div class="search-box">
-                            <input type="text" id="productSearch" class="search-input" placeholder="Ürün kodu veya adı ile ara..." oninput="searchProducts()">
+                            <input type="text" 
+                                   class="search-input" 
+                                   id="productSearch" 
+                                   placeholder="Ürün kodu veya adına göre ara..." 
+                                   onkeyup="if(event.key==='Enter') loadProducts()">
+                            <button class="btn btn-secondary" onclick="loadProducts()">🔍</button>
                         </div>
                     </div>
 
@@ -1114,9 +1424,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                     <th>Ürün Kodu</th>
                                     <th>Ürün Adı</th>
                                     <th>Depo</th>
-                                    <th>Birim</th>
                                     <th>Fire Miktarı</th>
                                     <th>Zayi Miktarı</th>
+                                    <th>Birim</th>
                                     <th>İşlem</th>
                                 </tr>
                             </thead>
@@ -1129,47 +1439,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             </tbody>
                         </table>
                     </div>
+
+                    <div class="pagination">
+                        <button class="btn btn-secondary" id="prevBtn" onclick="changePage(-1)" disabled>← Önceki</button>
+                        <span id="pageInfo">Sayfa 1</span>
+                        <button class="btn btn-secondary" id="nextBtn" onclick="changePage(1)" disabled>Sonraki →</button>
+                    </div>
                 </div>
             </section>
 
-            <!-- Sepet -->
-            <section class="card cart-section" id="cartSection" style="display: none;">
-                <div class="card-header">
-                    <h3>Sepet</h3>
                 </div>
-                <div class="card-body">
-                    <div style="overflow-x: auto;">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>Ürün Kodu</th>
-                                    <th>Ürün Adı</th>
-                                    <th>Çıkış Depo</th>
-                                    <th>Hedef Depo</th>
-                                    <th>Birim</th>
-                                    <th class="text-right">Fire Miktar</th>
-                                    <th class="text-right">Zayi Miktar</th>
-                                    <th>İşlem</th>
-                                </tr>
-                            </thead>
-                            <tbody id="cartTableBody">
-                                <tr>
-                                    <td colspan="8" class="empty-message">Sepet boş</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                    <!-- Butonlar Sepet Altında -->
-                    <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; padding-top: 24px; border-top: 2px solid #f3f4f6;">
-                        <button type="button" class="btn btn-secondary" onclick="window.location.href='Fire-Zayi.php'">İptal</button>
-                        <button type="button" class="btn btn-primary" id="saveBtn" disabled onclick="saveFireZayi()">Kaydet</button>
+
+                <!-- Sepet Panel (Sağ Taraf) -->
+                <div class="main-content-right sepet-panel" id="sepetPanel">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Sepet</h3>
+                        </div>
+                        <div class="card-body">
+                            <div id="cartTableBody">
+                                <div class="empty-message">Sepet boş - Ürün seçiniz</div>
+                            </div>
+                            <!-- Butonlar Sepet Altında -->
+                            <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; padding-top: 24px; border-top: 2px solid #f3f4f6;">
+                                <button type="button" class="btn btn-secondary" onclick="window.location.href='Fire-Zayi.php'">İptal</button>
+                                <button type="button" class="btn btn-primary" id="saveBtn" disabled onclick="saveFireZayi()">Kaydet</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </section>
+            </div>
         </div>
     </main>
 
     <script>
+        // Fire ve Zayi depo bilgileri (PHP'den aktarılan)
+        const fireWarehouse = <?= json_encode($fireWarehouse) ?>;
+        const fireWarehouseName = <?= json_encode($fireWarehouseName) ?>;
+        const zayiWarehouse = <?= json_encode($zayiWarehouse) ?>;
+        const zayiWarehouseName = <?= json_encode($zayiWarehouseName) ?>;
+        
+        // Çıkış depo bilgilerini saklamak için
+        let fromWarehouseName = '';
+        
+        // Debug: Depo bilgilerini kontrol et
+        console.log('Fire Warehouse:', fireWarehouse, fireWarehouseName);
+        console.log('Zayi Warehouse:', zayiWarehouse, zayiWarehouseName);
+        
         // Single Select Functions
         function toggleDropdown(id) {
             const dropdown = document.getElementById(id + 'Dropdown');
@@ -1210,9 +1526,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             
             // Event trigger
             if (id === 'fromWarehouse') {
+                // Depo adını sakla
+                if (text.includes(' - ')) {
+                    fromWarehouseName = text.split(' - ').slice(1).join(' - ');
+                } else {
+                    fromWarehouseName = '';
+                }
                 handleFromWarehouseChange(value);
-            } else if (id === 'toWarehouse') {
-                updateSaveButton();
             }
         }
 
@@ -1225,104 +1545,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         });
 
         const fromWarehouseInput = document.getElementById('fromWarehouse');
-        const toWarehouseInput = document.getElementById('toWarehouse');
-        const lostTypeRadios = document.querySelectorAll('input[name="lostType"]');
         const saveBtn = document.getElementById('saveBtn');
         const form = document.getElementById('fireZayiForm');
-
-        // Sayfa yüklendiğinde seçili Fire/Zayi türü varsa depo listesini yükle
-        const initialLostType = document.querySelector('input[name="lostType"]:checked')?.value;
-        if (initialLostType) {
-            loadTargetWarehouses(initialLostType);
-        }
-
-        // Fire/Zayi türü değiştiğinde gideceği depo listesini güncelle
-        lostTypeRadios.forEach(radio => {
-            radio.addEventListener('change', function() {
-                const lostType = this.value;
-                if (lostType) {
-                    loadTargetWarehouses(lostType);
-                } else {
-                    const toWarehouseInputText = document.getElementById('toWarehouseInputText');
-                    const toWarehouseInputDiv = document.getElementById('toWarehouseInput');
-                    const toWarehouseDropdown = document.getElementById('toWarehouseDropdown');
-                    toWarehouseInputText.value = 'Önce Fire/Zayi türünü seçiniz';
-                    toWarehouseInputDiv.classList.add('disabled');
-                    toWarehouseDropdown.innerHTML = '';
-                    toWarehouseInput.value = '';
-                    updateSaveButton();
-                }
-            });
-        });
-
-        // Gideceği depo listesini yükle
-        function loadTargetWarehouses(lostType) {
-            const toWarehouseDropdown = document.getElementById('toWarehouseDropdown');
-            const toWarehouseInputDiv = document.getElementById('toWarehouseInput');
-            const toWarehouseInputText = document.getElementById('toWarehouseInputText');
-            
-            toWarehouseInputDiv.classList.add('disabled');
-            toWarehouseInputText.value = 'Yükleniyor...';
-            toWarehouseDropdown.innerHTML = '';
-
-            const fromWarehouse = fromWarehouseInput.value;
-            const url = `?ajax=targetWarehouses&lostType=${lostType}${fromWarehouse ? '&fromWarehouse=' + encodeURIComponent(fromWarehouse) : ''}`;
-            
-            fetch(url)
-                .then(res => res.json())
-                .then(data => {
-                    toWarehouseDropdown.innerHTML = '';
-                    
-                    if (data.error) {
-                        console.error('Depo yükleme hatası:', data.error, data.debug);
-                        toWarehouseInputText.value = `Hata: ${data.error}`;
-                        toWarehouseInputDiv.classList.remove('disabled');
-                        updateSaveButton();
-                        return;
-                    }
-
-                    if (data.data && Array.isArray(data.data) && data.data.length > 0) {
-                        // "Depo seçiniz" option'ı ekle
-                        const defaultOption = document.createElement('div');
-                        defaultOption.className = 'single-select-option';
-                        defaultOption.dataset.value = '';
-                        defaultOption.textContent = 'Depo seçiniz';
-                        defaultOption.onclick = () => selectWarehouse('toWarehouse', '', 'Depo seçiniz');
-                        toWarehouseDropdown.appendChild(defaultOption);
-                        
-                        data.data.forEach(whs => {
-                            const option = document.createElement('div');
-                            option.className = 'single-select-option';
-                            option.dataset.value = whs.WarehouseCode || whs.WarehouseCode;
-                            const whsName = whs.WarehouseName || '';
-                            option.textContent = whsName ? `${whs.WarehouseCode} - ${whsName}` : whs.WarehouseCode;
-                            option.onclick = () => selectWarehouse('toWarehouse', whs.WarehouseCode, whsName ? `${whs.WarehouseCode} - ${whsName}` : whs.WarehouseCode);
-                            toWarehouseDropdown.appendChild(option);
-                        });
-                        
-                        // Eğer tek depo varsa otomatik seç
-                        if (data.data.length === 1) {
-                            const firstWhs = data.data[0];
-                            const whsName = firstWhs.WarehouseName || '';
-                            selectWarehouse('toWarehouse', firstWhs.WarehouseCode, whsName ? `${firstWhs.WarehouseCode} - ${whsName}` : firstWhs.WarehouseCode);
-                        } else {
-                            toWarehouseInputText.value = 'Depo seçiniz';
-                        }
-                    } else {
-                        console.warn('Depo bulunamadı:', data.debug);
-                        toWarehouseInputText.value = 'Depo bulunamadı';
-                    }
-                    
-                    toWarehouseInputDiv.classList.remove('disabled');
-                    updateSaveButton();
-                })
-                .catch(err => {
-                    console.error('Fetch hatası:', err);
-                    toWarehouseInputText.value = 'Yükleme hatası';
-                    toWarehouseInputDiv.classList.remove('disabled');
-                    updateSaveButton();
-                });
-        }
 
         function handleFromWarehouseChange(value) {
             if (value) {
@@ -1337,40 +1561,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // Form validasyonu - Kaydet butonunu aktif/pasif yap
         function updateSaveButton() {
             const fromWarehouse = fromWarehouseInput.value;
-            const lostType = document.querySelector('input[name="lostType"]:checked')?.value;
-            const toWarehouse = toWarehouseInput.value;
-            const toWarehouseInputDiv = document.getElementById('toWarehouseInput');
-            const isDisabled = toWarehouseInputDiv.classList.contains('disabled');
             
-            if (fromWarehouse && lostType && toWarehouse && !isDisabled && cart.length > 0) {
+            if (fromWarehouse && cart.length > 0) {
                 saveBtn.disabled = false;
             } else {
                 saveBtn.disabled = true;
             }
         }
 
-        // Form alanları değiştiğinde kontrol et
-        lostTypeRadios.forEach(radio => {
-            radio.addEventListener('change', updateSaveButton);
-        });
-
         let productList = [];
-        let searchTimeout = null;
         let cart = [];
+        let currentPage = 0;
+        let hasMore = false;
+        let pageSize = 25;
+
+        // Sayfa boyutunu güncelle
+        function updatePageSize() {
+            pageSize = parseInt(document.getElementById('entriesPerPage').value) || 25;
+            currentPage = 0;
+            loadProducts();
+        }
+
+        // Sayfa değiştir
+        function changePage(delta) {
+            if (delta > 0 && hasMore) {
+                currentPage++;
+                loadProducts();
+            } else if (delta < 0 && currentPage > 0) {
+                currentPage--;
+                loadProducts();
+            }
+        }
+
+        // Pagination bilgisini güncelle
+        function updatePagination() {
+            const prevBtn = document.getElementById('prevBtn');
+            const nextBtn = document.getElementById('nextBtn');
+            const pageInfo = document.getElementById('pageInfo');
+            
+            prevBtn.disabled = currentPage === 0;
+            nextBtn.disabled = !hasMore;
+            pageInfo.textContent = `Sayfa ${currentPage + 1}`;
+        }
 
         // Ürün listesini yükle
-        function loadProducts(search = '') {
+        function loadProducts() {
             const warehouseCode = fromWarehouseInput.value;
-            if (!warehouseCode) return;
+            if (!warehouseCode) {
+                const tbody = document.getElementById('productTableBody');
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #6b7280;">Önce çıkış deposunu seçiniz</td></tr>';
+                return;
+            }
 
             const tbody = document.getElementById('productTableBody');
             tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px;">Yükleniyor...</td></tr>';
 
+            const search = document.getElementById('productSearch').value.trim();
+            const skip = currentPage * pageSize;
+
             const params = new URLSearchParams({
                 ajax: 'items',
                 warehouseCode: warehouseCode,
-                top: 100,
-                skip: 0
+                top: pageSize,
+                skip: skip
             });
 
             if (search) {
@@ -1381,7 +1634,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 .then(res => res.json())
                 .then(data => {
                     productList = data.data || [];
+                    hasMore = (data.count || 0) >= pageSize;
                     renderProductTable();
+                    updatePagination();
                 })
                 .catch(err => {
                     console.error('Hata:', err);
@@ -1392,7 +1647,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         // Ürün tablosunu render et
         function renderProductTable() {
             const tbody = document.getElementById('productTableBody');
-            const lostType = document.querySelector('input[name="lostType"]:checked')?.value;
 
             if (productList.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #6b7280;">Ürün bulunamadı</td></tr>';
@@ -1419,48 +1673,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     uomHtml = `<span>${inventoryUOM || 'AD'}</span>`;
                 }
 
-                // Fire ve Zayi miktar input'ları - belge türüne göre disabled
-                const fireDisabled = lostType !== '1' ? 'disabled' : '';
-                const zayiDisabled = lostType !== '2' ? 'disabled' : '';
-
+                // Fire ve Zayi miktar input'ları her zaman aktif
                 return `
                     <tr data-item-code="${itemCode}" data-item-index="${index}">
                         <td><strong>${itemCode}</strong></td>
                         <td>${itemName}</td>
                         <td>${whsCode}</td>
-                        <td>${uomHtml}</td>
                         <td>
                             <div class="quantity-controls">
-                                <button type="button" class="qty-btn" onclick="changeItemQuantity('${itemCode}', 'fire', -1)" ${fireDisabled}>−</button>
+                                <button type="button" class="qty-btn" onclick="changeItemQuantity('${itemCode}', 'fire', -1)">−</button>
                                 <input type="number" 
                                        class="qty-input" 
                                        id="fireQty-${itemCode}" 
                                        data-item-code="${itemCode}"
                                        data-type="fire"
-                                       min="0" 
+                                       min="0"
                                        step="0.01" 
                                        value="0"
-                                       ${fireDisabled}
+                                       oninput="if(this.value < 0) this.value = 0;"
                                        onchange="updateItemQuantity('${itemCode}', 'fire', this.value)">
-                                <button type="button" class="qty-btn" onclick="changeItemQuantity('${itemCode}', 'fire', 1)" ${fireDisabled}>+</button>
+                                <button type="button" class="qty-btn" onclick="changeItemQuantity('${itemCode}', 'fire', 1)">+</button>
                             </div>
                         </td>
                         <td>
                             <div class="quantity-controls">
-                                <button type="button" class="qty-btn" onclick="changeItemQuantity('${itemCode}', 'zayi', -1)" ${zayiDisabled}>−</button>
+                                <button type="button" class="qty-btn" onclick="changeItemQuantity('${itemCode}', 'zayi', -1)">−</button>
                                 <input type="number" 
                                        class="qty-input" 
                                        id="zayiQty-${itemCode}" 
                                        data-item-code="${itemCode}"
                                        data-type="zayi"
-                                       min="0" 
+                                       min="0"
                                        step="0.01" 
                                        value="0"
-                                       ${zayiDisabled}
+                                       oninput="if(this.value < 0) this.value = 0;"
                                        onchange="updateItemQuantity('${itemCode}', 'zayi', this.value)">
-                                <button type="button" class="qty-btn" onclick="changeItemQuantity('${itemCode}', 'zayi', 1)" ${zayiDisabled}>+</button>
+                                <button type="button" class="qty-btn" onclick="changeItemQuantity('${itemCode}', 'zayi', 1)">+</button>
                             </div>
                         </td>
+                        <td>${uomHtml}</td>
                         <td>
                             <button class="btn btn-primary btn-small" 
                                     onclick="addToCart('${itemCode}', ${index})">
@@ -1472,37 +1723,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }).join('');
         }
 
-        // Fire/Zayi türü değiştiğinde miktar input'larını güncelle
-        lostTypeRadios.forEach(radio => {
-            radio.addEventListener('change', function() {
-                const lostType = this.value;
-                // Tüm miktar input'larını ve butonlarını güncelle
-                document.querySelectorAll('.qty-input').forEach(input => {
-                    if (input.dataset.type === 'fire') {
-                        input.disabled = lostType !== '1';
-                        if (lostType !== '1') input.value = '0';
-                        // Butonları da disable et
-                        const controls = input.closest('.quantity-controls');
-                        if (controls) {
-                            controls.querySelectorAll('.qty-btn').forEach(btn => {
-                                btn.disabled = lostType !== '1';
-                            });
-                        }
-                    } else if (input.dataset.type === 'zayi') {
-                        input.disabled = lostType !== '2';
-                        if (lostType !== '2') input.value = '0';
-                        // Butonları da disable et
-                        const controls = input.closest('.quantity-controls');
-                        if (controls) {
-                            controls.querySelectorAll('.qty-btn').forEach(btn => {
-                                btn.disabled = lostType !== '2';
-                            });
-                        }
-                    }
-                });
-                renderProductTable();
-            });
-        });
 
         // Miktar değiştir (+ ve - butonları)
         function changeItemQuantity(itemCode, type, delta) {
@@ -1512,22 +1732,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             let value = parseFloat(input.value) || 0;
             value += delta;
             if (value < 0) value = 0;
-            input.value = value;
+            // Tam sayı ise tam sayı olarak göster, değilse virgüllü göster
+            input.value = value % 1 === 0 ? value.toString() : value.toFixed(2);
             updateItemQuantity(itemCode, type, value);
         }
 
         // Miktar güncelle
         function updateItemQuantity(itemCode, type, value) {
-            // Sadece değeri güncelle, sepete ekleme yapma
+            // Negatif değer kontrolü
+            const input = document.getElementById(`${type}Qty-${itemCode}`);
+            if (input) {
+                let numValue = parseFloat(value) || 0;
+                if (numValue < 0) {
+                    numValue = 0;
+                }
+                // Tam sayı ise tam sayı olarak göster, değilse virgüllü göster
+                input.value = numValue % 1 === 0 ? numValue.toString() : numValue.toFixed(2);
+            }
         }
 
         // Ürün arama
         function searchProducts() {
-            clearTimeout(searchTimeout);
-            searchTimeout = setTimeout(() => {
-                const search = document.getElementById('productSearch').value.trim();
-                loadProducts(search);
-            }, 300);
+            currentPage = 0;
+            loadProducts();
         }
 
         // Sepete ekle
@@ -1535,15 +1762,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const item = productList[index];
             if (!item || item.ItemCode !== itemCode) return;
 
-            const lostType = document.querySelector('input[name="lostType"]:checked')?.value;
             const fireQty = parseFloat(document.getElementById(`fireQty-${itemCode}`)?.value || 0);
             const zayiQty = parseFloat(document.getElementById(`zayiQty-${itemCode}`)?.value || 0);
             
-            // Belge türüne göre miktar seç
-            const quantity = lostType === '1' ? fireQty : zayiQty;
-
-            if (quantity <= 0) {
-                alert('Lütfen miktar giriniz');
+            // Negatif değer kontrolü
+            if (fireQty < 0 || zayiQty < 0) {
+                alert('Negatif değer giremezsiniz. Lütfen 0 veya pozitif bir değer giriniz.');
+                return;
+            }
+            
+            // Fire veya Zayi miktarından en az biri 0'dan büyük olmalı
+            if (fireQty <= 0 && zayiQty <= 0) {
+                alert('Lütfen Fire veya Zayi miktarı giriniz');
                 return;
             }
             
@@ -1577,28 +1807,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 uomCode = item.InventoryUOM || 'AD';
             }
 
-            // Aynı ürün sepette var mı kontrol et
-            const existingIndex = cart.findIndex(c => c.ItemCode === itemCode && c.UoMCode === uomCode);
+            // Fire ve Zayi'yi ayrı cart item'ları olarak ekle
+            // Eğer Fire miktarı varsa (pozitif veya negatif), Fire için ayrı bir item oluştur
+            if (fireQty !== 0) {
+                const fireCartItem = {
+                    ItemCode: item.ItemCode,
+                    ItemName: item.ItemName,
+                    FromWarehouse: fromWarehouseInput.value,
+                    UoMEntry: uomEntry,
+                    UoMCode: uomCode,
+                    BaseQty: baseQty,
+                    Type: 'fire',
+                    Quantity: fireQty,
+                    UnitPrice: 0
+                };
+                
+                // Aynı ürün ve tip sepette var mı kontrol et
+                const existingFireIndex = cart.findIndex(c => 
+                    c.ItemCode === itemCode && 
+                    c.UoMCode === uomCode && 
+                    c.Type === 'fire'
+                );
+                
+                if (existingFireIndex >= 0) {
+                    cart[existingFireIndex] = fireCartItem;
+                } else {
+                    cart.push(fireCartItem);
+                }
+            }
             
-            const cartItem = {
-                ItemCode: item.ItemCode,
-                ItemName: item.ItemName,
-                FromWarehouse: fromWarehouseInput.value,
-                ToWarehouse: toWarehouseInput.value,
-                UoMEntry: uomEntry,
-                UoMCode: uomCode,
-                BaseQty: baseQty,
-                FireQty: fireQty,
-                ZayiQty: zayiQty,
-                UnitPrice: 0
-            };
-
-            if (existingIndex >= 0) {
-                // Mevcut satırı güncelle
-                cart[existingIndex] = cartItem;
-            } else {
-                // Yeni satır ekle
-                cart.push(cartItem);
+            // Eğer Zayi miktarı varsa (pozitif veya negatif), Zayi için ayrı bir item oluştur
+            if (zayiQty !== 0) {
+                const zayiCartItem = {
+                    ItemCode: item.ItemCode,
+                    ItemName: item.ItemName,
+                    FromWarehouse: fromWarehouseInput.value,
+                    UoMEntry: uomEntry,
+                    UoMCode: uomCode,
+                    BaseQty: baseQty,
+                    Type: 'zayi',
+                    Quantity: zayiQty,
+                    UnitPrice: 0
+                };
+                
+                // Aynı ürün ve tip sepette var mı kontrol et
+                const existingZayiIndex = cart.findIndex(c => 
+                    c.ItemCode === itemCode && 
+                    c.UoMCode === uomCode && 
+                    c.Type === 'zayi'
+                );
+                
+                if (existingZayiIndex >= 0) {
+                    cart[existingZayiIndex] = zayiCartItem;
+                } else {
+                    cart.push(zayiCartItem);
+                }
             }
 
             // Input'ları sıfırla
@@ -1609,94 +1872,174 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
             updateCartTable();
             updateSaveButton();
+            // Sepeti otomatik aç
+            if (cart.length > 0) {
+                const panel = document.getElementById('sepetPanel');
+                const container = document.getElementById('mainLayoutContainer');
+                if (panel.style.display === 'none' || !container.classList.contains('sepet-open')) {
+                    panel.style.display = 'flex';
+                    container.classList.add('sepet-open');
+                }
+            }
         }
 
-        // Sepeti render et (StokSayimSO.php mantığı)
+        // Sepeti render et (Card-based yapı - Fire ve Zayi grupları ile)
         function updateCartTable() {
-            const tbody = document.getElementById('cartTableBody');
-            const lostType = document.querySelector('input[name="lostType"]:checked')?.value;
+            const cartBody = document.getElementById('cartTableBody');
             
             if (cart.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="empty-message">Sepet boş - Ürün seçiniz</td></tr>';
-                document.getElementById('cartSection').style.display = 'none';
+                cartBody.innerHTML = '<div class="empty-message">Sepet boş - Ürün seçiniz</div>';
+                updateCartBadge();
                 return;
             }
 
-            document.getElementById('cartSection').style.display = 'block';
-            tbody.innerHTML = '';
+            cartBody.innerHTML = '';
 
-            cart.forEach((item, index) => {
-                const row = document.createElement('tr');
-                row.setAttribute('data-item-code', item.ItemCode);
-                
-                const fireQty = parseFloat(item.FireQty || 0);
-                const zayiQty = parseFloat(item.ZayiQty || 0);
+            // Fire ve Zayi item'larını ayır
+            const fireItems = cart.filter(item => item.Type === 'fire');
+            const zayiItems = cart.filter(item => item.Type === 'zayi');
 
-                const fireDisabled = lostType !== '1' ? 'disabled' : '';
-                const zayiDisabled = lostType !== '2' ? 'disabled' : '';
+            // FIRE başlığı ve item'ları
+            if (fireItems.length > 0) {
+                const fireHeader = document.createElement('div');
+                fireHeader.className = 'sepet-group-header';
+                fireHeader.style.cssText = 'font-size: 1.1rem; font-weight: 600; color: #dc2626; margin: 1rem 0 0.5rem 0; padding-bottom: 0.5rem; border-bottom: 2px solid #dc2626;';
+                fireHeader.textContent = '🔥 FIRE';
+                cartBody.appendChild(fireHeader);
 
-                row.innerHTML = `
-                    <td><strong>${item.ItemCode}</strong></td>
-                    <td>${item.ItemName}</td>
-                    <td>${item.FromWarehouse}</td>
-                    <td>${item.ToWarehouse}</td>
-                    <td>${item.UoMCode || 'AD'}</td>
-                    <td class="text-right">
-                        <div class="quantity-controls">
-                            <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 'fire', -1)" ${fireDisabled}>−</button>
-                            <input type="number" 
-                                   class="qty-input" 
-                                   value="${fireQty.toFixed(2)}"
-                                   min="0" 
-                                   step="0.01"
-                                   onchange="updateCartQuantity(${index}, 'fire', this.value)"
-                                   ${fireDisabled}>
-                            <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 'fire', 1)" ${fireDisabled}>+</button>
+                fireItems.forEach((item, fireIndex) => {
+                    const originalIndex = cart.indexOf(item);
+                    const qty = parseFloat(item.Quantity || 0);
+                    const qtyText = `${qty.toFixed(2)} adet eksik fire`;
+                    
+                    // Çıkış depo bilgisini oluştur
+                    const fromWarehouseDisplay = fromWarehouseName 
+                        ? `${item.FromWarehouse} - ${fromWarehouseName}`
+                        : item.FromWarehouse;
+                    
+                    // Gideceği depo bilgisini oluştur
+                    const targetWarehouseDisplay = fireWarehouseName 
+                        ? `${fireWarehouse} - ${fireWarehouseName}`
+                        : fireWarehouse;
+
+                    const sepetItem = document.createElement('div');
+                    sepetItem.className = 'sepet-item';
+                    sepetItem.setAttribute('data-item-code', item.ItemCode);
+                    sepetItem.setAttribute('data-type', 'fire');
+                    
+                    sepetItem.innerHTML = `
+                        <div class="sepet-item-info">
+                            <div class="sepet-item-name">${item.ItemCode} - ${item.ItemName}</div>
+                            <div class="sepet-item-details">Çıkış: ${fromWarehouseDisplay}</div>
+                            <div class="sepet-item-details">Gideceği: Fire: ${targetWarehouseDisplay}</div>
+                            <div class="sepet-item-details">Birim: ${item.UoMCode || 'AD'}</div>
+                            <div class="sepet-item-qty">
+                                <label style="font-size: 0.85rem; color: #6b7280; min-width: 60px;">Fire:</label>
+                                <button type="button" class="qty-btn" onclick="changeCartQuantity(${originalIndex}, 'fire', -1)">−</button>
+                                <input type="number" 
+                                       class="qty-input" 
+                                       value="${qty === 0 ? '0' : (qty % 1 === 0 ? qty.toString() : qty.toFixed(2))}"
+                                       min="0"
+                                       step="0.01"
+                                       oninput="if(this.value < 0) this.value = 0;"
+                                       onchange="updateCartQuantity(${originalIndex}, 'fire', this.value)">
+                                <button type="button" class="qty-btn" onclick="changeCartQuantity(${originalIndex}, 'fire', 1)">+</button>
+                                <span style="margin-left: 8px; font-size: 0.85rem; color: #dc2626; font-weight: 500;">${qtyText}</span>
+                            </div>
                         </div>
-                    </td>
-                    <td class="text-right">
-                        <div class="quantity-controls">
-                            <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 'zayi', -1)" ${zayiDisabled}>−</button>
-                            <input type="number" 
-                                   class="qty-input" 
-                                   value="${zayiQty.toFixed(2)}"
-                                   min="0" 
-                                   step="0.01"
-                                   onchange="updateCartQuantity(${index}, 'zayi', this.value)"
-                                   ${zayiDisabled}>
-                            <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 'zayi', 1)" ${zayiDisabled}>+</button>
+                        <button class="remove-sepet-btn" onclick="removeFromCart(${originalIndex})">Kaldır</button>
+                    `;
+                    cartBody.appendChild(sepetItem);
+                });
+            }
+
+            // ZAYI başlığı ve item'ları
+            if (zayiItems.length > 0) {
+                const zayiHeader = document.createElement('div');
+                zayiHeader.className = 'sepet-group-header';
+                zayiHeader.style.cssText = 'font-size: 1.1rem; font-weight: 600; color: #f59e0b; margin: 1rem 0 0.5rem 0; padding-bottom: 0.5rem; border-bottom: 2px solid #f59e0b;';
+                zayiHeader.textContent = '⚠️ ZAYI';
+                cartBody.appendChild(zayiHeader);
+
+                zayiItems.forEach((item, zayiIndex) => {
+                    const originalIndex = cart.indexOf(item);
+                    const qty = parseFloat(item.Quantity || 0);
+                    const qtyText = `${qty.toFixed(2)} adet eksik zayi`;
+                    
+                    // Çıkış depo bilgisini oluştur
+                    const fromWarehouseDisplay = fromWarehouseName 
+                        ? `${item.FromWarehouse} - ${fromWarehouseName}`
+                        : item.FromWarehouse;
+                    
+                    // Gideceği depo bilgisini oluştur
+                    const targetWarehouseDisplay = zayiWarehouseName 
+                        ? `${zayiWarehouse} - ${zayiWarehouseName}`
+                        : zayiWarehouse;
+
+                    const sepetItem = document.createElement('div');
+                    sepetItem.className = 'sepet-item';
+                    sepetItem.setAttribute('data-item-code', item.ItemCode);
+                    sepetItem.setAttribute('data-type', 'zayi');
+                    
+                    sepetItem.innerHTML = `
+                        <div class="sepet-item-info">
+                            <div class="sepet-item-name">${item.ItemCode} - ${item.ItemName}</div>
+                            <div class="sepet-item-details">Çıkış: ${fromWarehouseDisplay}</div>
+                            <div class="sepet-item-details">Gideceği: Zayi: ${targetWarehouseDisplay}</div>
+                            <div class="sepet-item-details">Birim: ${item.UoMCode || 'AD'}</div>
+                            <div class="sepet-item-qty">
+                                <label style="font-size: 0.85rem; color: #6b7280; min-width: 60px;">Zayi:</label>
+                                <button type="button" class="qty-btn" onclick="changeCartQuantity(${originalIndex}, 'zayi', -1)">−</button>
+                                <input type="number" 
+                                       class="qty-input" 
+                                       value="${qty === 0 ? '0' : (qty % 1 === 0 ? qty.toString() : qty.toFixed(2))}"
+                                       min="0"
+                                       step="0.01"
+                                       oninput="if(this.value < 0) this.value = 0;"
+                                       onchange="updateCartQuantity(${originalIndex}, 'zayi', this.value)">
+                                <button type="button" class="qty-btn" onclick="changeCartQuantity(${originalIndex}, 'zayi', 1)">+</button>
+                                <span style="margin-left: 8px; font-size: 0.85rem; color: #f59e0b; font-weight: 500;">${qtyText}</span>
+                            </div>
                         </div>
-                    </td>
-                    <td style="text-align: center;">
-                        <button class="btn btn-danger btn-small" onclick="removeFromCart(${index})">Sil</button>
-                    </td>
-                `;
-                tbody.appendChild(row);
-            });
+                        <button class="remove-sepet-btn" onclick="removeFromCart(${originalIndex})">Kaldır</button>
+                    `;
+                    cartBody.appendChild(sepetItem);
+                });
+            }
+            
+            updateCartBadge();
         }
 
         // Sepette miktar değiştir
         function changeCartQuantity(index, type, delta) {
             if (index >= 0 && index < cart.length) {
-                if (type === 'fire') {
-                    cart[index].FireQty = Math.max(0, parseFloat(cart[index].FireQty || 0) + delta);
-                } else if (type === 'zayi') {
-                    cart[index].ZayiQty = Math.max(0, parseFloat(cart[index].ZayiQty || 0) + delta);
+                const item = cart[index];
+                if (item.Type === type) {
+                    let newQty = parseFloat(item.Quantity || 0) + delta;
+                    if (newQty < 0) newQty = 0;
+                    item.Quantity = newQty;
+                    updateCartTable();
+                    updateSaveButton();
                 }
-                updateCartTable();
             }
         }
 
         // Sepette miktar güncelle
-        function updateCartQuantity(index, field, value) {
+        function updateCartQuantity(index, type, value) {
             if (index >= 0 && index < cart.length) {
-                if (field === 'fire' || field === 'zayi') {
-                    cart[index][field === 'fire' ? 'FireQty' : 'ZayiQty'] = parseFloat(value) || 0;
-                } else {
-                    cart[index][field] = parseFloat(value) || 0;
+                const item = cart[index];
+                if (item.Type === type) {
+                    let qty = parseFloat(value) || 0;
+                    if (qty < 0) {
+                        qty = 0;
+                        // Input'u da güncelle
+                        const input = event?.target;
+                        if (input) input.value = '0';
+                    }
+                    item.Quantity = qty;
+                    updateCartTable();
+                    updateSaveButton();
                 }
-                updateCartTable();
-                updateSaveButton();
             }
         }
 
@@ -1719,8 +2062,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const formData = new FormData();
             formData.append('action', 'create');
             formData.append('fromWarehouse', fromWarehouseInput.value);
-            formData.append('toWarehouse', toWarehouseInput.value);
-            formData.append('lostType', document.querySelector('input[name="lostType"]:checked')?.value);
             formData.append('docDate', document.getElementById('docDate').value);
             formData.append('comments', document.getElementById('comments').value);
             formData.append('lines', JSON.stringify(cart));
@@ -1736,11 +2077,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             .then(data => {
                 if (data.success) {
                     alert(data.message);
-                    if (data.docEntry) {
-                        window.location.href = `Fire-ZayiDetay.php?DocEntry=${data.docEntry}`;
-                    } else {
-                        window.location.href = 'Fire-Zayi.php';
-                    }
+                    // Her zaman liste sayfasına yönlendir
+                    window.location.href = 'Fire-Zayi.php';
                 } else {
                     alert('Hata: ' + data.message);
                     saveBtn.disabled = false;
@@ -1755,16 +2093,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             });
         }
 
-        // Fire/Zayi türü değiştiğinde sepeti de güncelle
-        lostTypeRadios.forEach(radio => {
-            radio.addEventListener('change', function() {
-                updateCartTable();
-            });
-        });
+
+        // Sepet panel toggle
+        function toggleSepet() {
+            const panel = document.getElementById('sepetPanel');
+            const container = document.getElementById('mainLayoutContainer');
+            
+            if (panel.style.display === 'none' || !container.classList.contains('sepet-open')) {
+                panel.style.display = 'flex';
+                container.classList.add('sepet-open');
+            } else {
+                panel.style.display = 'none';
+                container.classList.remove('sepet-open');
+            }
+        }
+
+        // Sepet badge güncelle
+        function updateCartBadge() {
+            const badge = document.getElementById('sepetBadge');
+            const count = cart.length;
+            badge.textContent = count;
+            badge.style.display = count > 0 ? 'flex' : 'none';
+        }
 
         // Sayfa yüklendiğinde scroll pozisyonunu sıfırla (navbar kaymasını önle)
         document.addEventListener('DOMContentLoaded', function() {
             window.scrollTo(0, 0);
+            updateCartBadge();
+            
+            // Çıkış depo seçiliyse adını set et
+            const fromWarehouseInputText = document.getElementById('fromWarehouseInputText');
+            if (fromWarehouseInputText && fromWarehouseInputText.value && fromWarehouseInputText.value !== 'Depo seçiniz') {
+                const optionText = fromWarehouseInputText.value;
+                if (optionText.includes(' - ')) {
+                    fromWarehouseName = optionText.split(' - ').slice(1).join(' - ');
+                }
+            }
         });
     </script>
 </body>

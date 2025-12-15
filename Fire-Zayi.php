@@ -58,41 +58,78 @@ if (($transfersData['status'] ?? 0) == 200) {
     }
 }
 
-// Her transfer için doğru Fire/Zayi deposunu bul
+// Depo adlarını saklamak için cache
+$warehouseNames = [];
+
+// Depo adını çek (cache'den veya SAP'den)
+function getWarehouseName($sap, $warehouseCode, &$warehouseNames) {
+    if (empty($warehouseCode)) return '';
+    
+    // Cache'de varsa direkt dön
+    if (isset($warehouseNames[$warehouseCode])) {
+        return $warehouseNames[$warehouseCode];
+    }
+    
+    // SAP'den çek
+    $whsQuery = "Warehouses('{$warehouseCode}')?\$select=WarehouseCode,WarehouseName";
+    $whsData = $sap->get($whsQuery);
+    
+    $whsName = '';
+    if (($whsData['status'] ?? 0) == 200) {
+        $whs = $whsData['response'] ?? [];
+        $whsName = $whs['WarehouseName'] ?? '';
+    }
+    
+    // Cache'e ekle
+    $warehouseNames[$warehouseCode] = $whsName;
+    
+    return $whsName;
+}
+
+// Her transfer için doğru Fire/Zayi deposunu bul ve depo adlarını çek
 foreach ($transfers as &$transfer) {
     $lost = $transfer['U_ASB2B_LOST'] ?? '';
     $transferBranch = $transfer['U_ASB2B_BRAN'] ?? $branch;
     
     $fireZayiWarehouse = '-';
+    $fireZayiWarehouseName = '';
     
     if ($lost == '1') {
         // Fire ise U_ASB2B_MAIN='3'
         $fireFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$transferBranch}' and U_ASB2B_MAIN eq '3'";
-        $fireQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($fireFilter);
+        $fireQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($fireFilter);
         $fireData = $sap->get($fireQuery);
         
         if (($fireData['status'] ?? 0) == 200) {
             $fireList = $fireData['response']['value'] ?? [];
             if (!empty($fireList)) {
                 $fireZayiWarehouse = $fireList[0]['WarehouseCode'] ?? '-';
+                $fireZayiWarehouseName = $fireList[0]['WarehouseName'] ?? '';
             }
         }
     } elseif ($lost == '2') {
         // Zayi ise U_ASB2B_MAIN='4'
         $zayiFilter = "U_AS_OWNR eq '{$uAsOwnr}' and U_ASB2B_BRAN eq '{$transferBranch}' and U_ASB2B_MAIN eq '4'";
-        $zayiQuery = "Warehouses?\$select=WarehouseCode&\$filter=" . urlencode($zayiFilter);
+        $zayiQuery = "Warehouses?\$select=WarehouseCode,WarehouseName&\$filter=" . urlencode($zayiFilter);
         $zayiData = $sap->get($zayiQuery);
         
         if (($zayiData['status'] ?? 0) == 200) {
             $zayiList = $zayiData['response']['value'] ?? [];
             if (!empty($zayiList)) {
                 $fireZayiWarehouse = $zayiList[0]['WarehouseCode'] ?? '-';
+                $fireZayiWarehouseName = $zayiList[0]['WarehouseName'] ?? '';
             }
         }
     }
     
     // Giriş depo olarak Fire/Zayi deposunu set et
     $transfer['_ToWarehouse'] = $fireZayiWarehouse;
+    $transfer['_ToWarehouseName'] = $fireZayiWarehouseName;
+    
+    // Çıkış depo adını çek
+    $fromWarehouse = $transfer['FromWarehouse'] ?? '';
+    $fromWarehouseName = getWarehouseName($sap, $fromWarehouse, $warehouseNames);
+    $transfer['_FromWarehouseName'] = $fromWarehouseName;
 }
 unset($transfer); // Reference'ı temizle
 ?>
@@ -469,14 +506,13 @@ unset($transfer); // Reference'ı temizle
                                 <th>Çıkış Depo</th>
                                 <th>Giriş Depo</th>
                                 <th>Tür</th>
-                                <th>Yazdırıldı</th>
                                 <th>İşlemler</th>
                             </tr>
                         </thead>
                         <tbody id="table-body">
                             <?php if (empty($transfers)): ?>
                             <tr>
-                                <td colspan="8" class="empty-message">Fire/Zayi belgesi bulunamadı</td>
+                                <td colspan="7" class="empty-message">Fire/Zayi belgesi bulunamadı</td>
                             </tr>
                             <?php else: ?>
                             <?php foreach ($transfers as $transfer): ?>
@@ -484,14 +520,33 @@ unset($transfer); // Reference'ı temizle
                                 <td><?= htmlspecialchars($transfer['DocEntry'] ?? '') ?></td>
                                 <td><?= htmlspecialchars($transfer['Series'] ?? '-') ?></td>
                                 <td><?= formatDate($transfer['DocDate'] ?? '') ?></td>
-                                <td><?= htmlspecialchars($transfer['FromWarehouse'] ?? $transfer['FromWhs'] ?? '-') ?></td>
-                                <td><?= htmlspecialchars($transfer['_ToWarehouse'] ?? $transfer['ToWarehouse'] ?? $transfer['ToWhs'] ?? '-') ?></td>
+                                <td>
+                                    <?php 
+                                    $fromWhs = $transfer['FromWarehouse'] ?? $transfer['FromWhs'] ?? '';
+                                    $fromWhsName = $transfer['_FromWarehouseName'] ?? '';
+                                    if (!empty($fromWhsName)) {
+                                        echo htmlspecialchars($fromWhs . ' - ' . $fromWhsName);
+                                    } else {
+                                        echo htmlspecialchars($fromWhs ?: '-');
+                                    }
+                                    ?>
+                                </td>
+                                <td>
+                                    <?php 
+                                    $toWhs = $transfer['_ToWarehouse'] ?? $transfer['ToWarehouse'] ?? $transfer['ToWhs'] ?? '';
+                                    $toWhsName = $transfer['_ToWarehouseName'] ?? '';
+                                    if (!empty($toWhsName)) {
+                                        echo htmlspecialchars($toWhs . ' - ' . $toWhsName);
+                                    } else {
+                                        echo htmlspecialchars($toWhs ?: '-');
+                                    }
+                                    ?>
+                                </td>
                                 <td>
                                     <span class="status-badge <?= getTypeClass($transfer['U_ASB2B_LOST'] ?? '') ?>">
                                         <?= getTypeText($transfer['U_ASB2B_LOST'] ?? '') ?>
                                     </span>
                                 </td>
-                                <td><?= ($transfer['Printed'] ?? 'N') == 'Y' ? 'Evet' : 'Hayır' ?></td>
                                 <td>
                                     <a href="Fire-ZayiDetay.php?DocEntry=<?= $transfer['DocEntry'] ?? '' ?>" class="btn btn-primary">Detay</a>
                                 </td>
@@ -561,26 +616,30 @@ unset($transfer); // Reference'ı temizle
             const pageData = filteredData.slice(start, end);
 
             if (pageData.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="empty-message">Kayıt bulunamadı</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="empty-message">Kayıt bulunamadı</td></tr>';
             } else {
                 tbody.innerHTML = pageData.map(item => {
                     const docDate = item.DocDate ? formatDate(item.DocDate) : '-';
-                    const fromWhs = item.FromWarehouse || item.FromWhs || '-';
-                    const toWhs = item._ToWarehouse || item.ToWarehouse || item.ToWhs || '-';
+                    const fromWhs = item.FromWarehouse || item.FromWhs || '';
+                    const fromWhsName = item._FromWarehouseName || '';
+                    const fromWhsDisplay = fromWhsName ? `${fromWhs} - ${fromWhsName}` : (fromWhs || '-');
+                    
+                    const toWhs = item._ToWarehouse || item.ToWarehouse || item.ToWhs || '';
+                    const toWhsName = item._ToWarehouseName || '';
+                    const toWhsDisplay = toWhsName ? `${toWhs} - ${toWhsName}` : (toWhs || '-');
+                    
                     const lost = item.U_ASB2B_LOST || '';
                     const typeText = lost === '1' ? 'Fire' : lost === '2' ? 'Zayi' : '-';
                     const typeClass = lost === '1' ? 'status-fire' : lost === '2' ? 'status-zayi' : '';
-                    const printed = (item.Printed || 'N') === 'Y' ? 'Evet' : 'Hayır';
 
                     return `
                         <tr>
                             <td>${item.DocEntry || ''}</td>
                             <td>${item.Series || '-'}</td>
                             <td>${docDate}</td>
-                            <td>${fromWhs}</td>
-                            <td>${toWhs}</td>
+                            <td>${fromWhsDisplay}</td>
+                            <td>${toWhsDisplay}</td>
                             <td><span class="status-badge ${typeClass}">${typeText}</span></td>
-                            <td>${printed}</td>
                             <td>
                                 <a href="Fire-ZayiDetay.php?DocEntry=${item.DocEntry || ''}" class="btn btn-primary">Detay</a>
                             </td>

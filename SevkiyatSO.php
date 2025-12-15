@@ -135,6 +135,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax']) && $_GET['ajax'
                     }
                     
                     $item['UoMList'] = $uomList;
+                } else {
+                    // If UoMGroupEntry is -1 or empty, it means the base unit is the only one.
+                    // We still need to represent the base unit if it has an entry/code.
+                    if (!empty($itemDetail['InventoryUOM'])) {
+                         $uomList[] = [
+                            'UoMEntry' => -1, // Special value for base unit
+                            'UoMCode' => $itemDetail['InventoryUOM'],
+                            'BaseQty' => 1.0
+                        ];
+                    }
+                    $item['UoMList'] = $uomList;
                 }
             }
         }
@@ -193,8 +204,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         ];
         
         // UoM bilgisi varsa ekle
-        if (!empty($uomEntry) && $uomEntry != -1) {
-            $line['UoMEntry'] = intval($uomEntry);
+        if ($uomEntry !== null && $uomEntry !== '-1' && $uomEntry !== '') { // Check for null, '-1' and empty string
+             $line['UoMEntry'] = intval($uomEntry);
         }
         if (!empty($uomCode)) {
             $line['UoMCode'] = $uomCode;
@@ -352,6 +363,138 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             font-weight: 600;
             margin: 0;
         }
+        
+        /* Added header actions container for cart button */
+        .page-header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        /* Removed complex animation styles, using simple slideIn like AnadepoSo */
+        /* Added sepet button styles */
+        .sepet-btn {
+            position: relative;
+        }
+
+        .sepet-badge {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: #dc2626;
+            color: white;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border: 2px solid white;
+        }
+
+        /* Simplified layout container matching AnadepoSo */
+        .main-layout-container {
+            display: flex;
+            gap: 24px;
+        }
+
+        .main-content-left {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .main-layout-container.sepet-open .main-content-left {
+            flex: 0 0 calc(100% - 444px);
+        }
+
+        .main-content-right.sepet-panel {
+            flex: 0 0 420px;
+            min-width: 400px;
+            max-width: 420px;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            max-height: calc(100vh - 120px);
+        }
+
+        .main-content-right.sepet-panel .card {
+            margin: 0;
+        }
+
+        /* Simple slideIn animation like AnadepoSo */
+        .sepet-panel {
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        /* Added sepet item styles */
+        .sepet-item {
+            padding: 16px;
+            background: #f9fafb;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            border: 1px solid #e5e7eb;
+        }
+
+        .sepet-item-info {
+            flex: 1;
+        }
+
+        .sepet-item-name {
+            font-weight: 600;
+            color: #1f2937;
+            margin-bottom: 8px;
+            font-size: 0.95rem;
+        }
+
+        .sepet-item-qty {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            margin-top: 8px;
+        }
+
+        .sepet-item-qty input {
+            width: 80px;
+            padding: 6px 10px;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+
+        .remove-sepet-btn {
+            padding: 6px 12px;
+            background: #fee2e2;
+            color: #dc2626;
+            border: 1px solid #fecaca;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .remove-sepet-btn:hover {
+            background: #fecaca;
+        }
 
         .content-wrapper {
             padding: 24px 32px;
@@ -360,6 +503,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             display: flex;
             flex-direction: column;
             gap: 1.5rem;
+            
         }
 
         .card {
@@ -367,6 +511,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             border-radius: 12px;
             padding: 1.5rem;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 2rem;
+        }
+
+        .card:last-child {
             margin-bottom: 0;
         }
 
@@ -585,31 +733,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 16px 0;
-            margin-bottom: 20px;
+            margin-bottom: 1.25rem;
             flex-wrap: wrap;
-            gap: 12px;
+            gap: 1rem;
+        }
+
+        .show-entries {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #4b5563;
+            font-size: 0.9rem;
+        }
+
+        .entries-select {
+            padding: 0.5rem 0.75rem;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            background: white;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .entries-select:focus {
+            outline: none;
+            border-color: #3b82f6;
         }
 
         .search-box {
             display: flex;
-            gap: 8px;
+            gap: 0.5rem;
             align-items: center;
         }
 
         .search-input {
-            padding: 10px 16px;
+            padding: 0.5rem 0.75rem;
             border: 2px solid #e5e7eb;
-            border-radius: 8px;
-            font-size: 14px;
-            min-width: 260px;
-            transition: all 0.25s ease;
+            border-radius: 6px;
+            min-width: 220px;
+            font-size: 0.9rem;
+            transition: border-color 0.2s;
         }
 
         .search-input:focus {
             outline: none;
             border-color: #3b82f6;
-            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+        }
+
+        .data-table-wrapper {
+            overflow-x: auto;
+            border-radius: 8px;
         }
 
         .data-table {
@@ -624,32 +798,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
 
         .data-table th {
-            padding: 1rem;
-            text-align: left;
+            padding: 14px 12px;
+            text-align: center;
             font-weight: 600;
-            font-size: 0.875rem;
             text-transform: uppercase;
+            font-size: 0.8rem;
             letter-spacing: 0.5px;
         }
 
         .data-table tbody tr {
             border-bottom: 1px solid #e5e7eb;
-            transition: background-color 0.2s;
+            transition: background 0.15s;
         }
 
         .data-table tbody tr:hover {
-            background-color: #f8fafc;
+            background: #f9fafb;
         }
 
         .data-table td {
-            padding: 1rem;
-            font-size: 0.95rem;
+            padding: 14px 12px;
+            color: #374151;
+            text-align: center;
+        }
+
+        .text-right {
+            text-align: right;
+        }
+
+        .empty-message {
+            text-align: center !important;
+            padding: 3rem 1rem !important;
+            color: #9ca3af;
+            font-style: italic;
         }
 
         .quantity-controls {
             display: flex;
-            align-items: center;
             gap: 6px;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
         }
 
         .qty-btn {
@@ -659,398 +847,440 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             background: white;
             border-radius: 6px;
             cursor: pointer;
+            font-size: 1.1rem;
             font-weight: 600;
-            color: #1e40af;
-            transition: all 0.2s ease;
+            color: #374151;
+            transition: all 0.2s;
             display: flex;
             align-items: center;
             justify-content: center;
         }
 
         .qty-btn:hover {
-            background: #1e40af;
-            color: white;
-            border-color: #1e40af;
-            transform: scale(1.05);
+            border-color: #3b82f6;
+            color: #3b82f6;
         }
 
         .qty-input {
-            width: 70px;
-            padding: 8px 12px;
+            width: 80px;
+            padding: 6px 10px;
             border: 2px solid #e5e7eb;
             border-radius: 6px;
-            font-size: 14px;
-            font-weight: 500;
             text-align: center;
-            transition: all 0.2s ease;
+            font-size: 0.9rem;
+            transition: border-color 0.2s;
         }
 
         .qty-input:focus {
             outline: none;
             border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-            background: #fafbfc;
         }
 
-        .qty-input:disabled {
-            background: #f3f4f6;
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 0.75rem;
+            align-items: center;
+            margin-top: 1.5rem;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
             cursor: not-allowed;
-            color: #9ca3af;
         }
 
-        .uom-select {
-            padding: 8px 12px;
-            border: 2px solid #e5e7eb;
-            border-radius: 6px;
-            font-size: 14px;
-            min-width: 100px;
-        }
-
-        .uom-select:focus {
-            outline: none;
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        #pageInfo {
+            padding: 0.625rem 1.25rem;
+            color: #374151;
+            font-weight: 500;
         }
 
         .btn-small {
-            padding: 8px 16px;
-            font-size: 13px;
+            padding: 6px 12px;
+            font-size: 0.85rem;
         }
 
         .btn-danger {
-            background: #dc2626;
-            color: white;
+            background: #fee2e2;
+            color: #dc2626;
+            border: 1px solid #fecaca;
         }
 
         .btn-danger:hover {
-            background: #b91c1c;
+            background: #fecaca;
         }
 
-        .empty-message {
-            text-align: center;
-            padding: 3rem;
-            color: #9ca3af;
-            font-size: 14px;
-        }
-
-        .cart-section {
-            display: none;
-        }
-
-        .cart-section.show {
-            display: block;
-        }
     </style>
 </head>
 <body>
-    <?php include 'navbar.php'; ?>
-    <main class="main-content">
+<?php include 'navbar.php'; ?>
+
+    <div class="main-content">
         <header class="page-header">
             <h2>Yeni Sevkiyat Oluştur</h2>
-            <button class="btn btn-secondary" onclick="window.location.href='Sevkiyat.php'">← Geri Dön</button>
+            <!-- Added cart button in header -->
+            <div class="page-header-actions">
+                <button class="btn btn-primary sepet-btn" id="sepetToggleBtn" onclick="toggleSepet()" style="position: relative;">
+                    🛒 Sepet
+                    <span class="sepet-badge" id="sepetBadge" style="display: none;">0</span>
+                </button>
+                <button class="btn btn-secondary" onclick="window.location.href='Sevkiyat.php'">← Geri Dön</button>
+            </div>
         </header>
 
         <div class="content-wrapper">
-            <section class="card">
-                <div class="card-header">
-                    <h3>Üst Bilgiler</h3>
-                </div>
-                <div class="card-body">
-                    <form id="sevkiyatForm">
-                        <div class="form-grid">
-                            <!-- Çıkış Depo -->
-                            <div class="form-group">
-                                <label class="form-label required" for="fromWarehouse">Çıkış Depo</label>
-                                <div class="single-select-container">
-                                    <div class="single-select-input" id="fromWarehouseInput" onclick="toggleDropdown('fromWarehouse')">
-                                        <input type="text" id="fromWarehouseInputText" value="Depo seçiniz" readonly>
-                                        <span class="dropdown-arrow">▼</span>
-                                    </div>
-                                    <div class="single-select-dropdown" id="fromWarehouseDropdown">
-                                        <div class="single-select-option" data-value="" onclick="selectWarehouse('fromWarehouse', '', 'Depo seçiniz')">Depo seçiniz</div>
-                                        <?php foreach ($fromWarehouses as $whs): ?>
-                                        <div class="single-select-option" data-value="<?= htmlspecialchars($whs['WarehouseCode']) ?>" onclick="selectWarehouse('fromWarehouse', '<?= htmlspecialchars($whs['WarehouseCode']) ?>', '<?= htmlspecialchars($whs['WarehouseCode']) ?> - <?= htmlspecialchars($whs['WarehouseName'] ?? '') ?>')">
-                                            <?= htmlspecialchars($whs['WarehouseCode']) ?> - <?= htmlspecialchars($whs['WarehouseName'] ?? '') ?>
+            <!-- Wrapped main content in layout container -->
+            <div class="main-layout-container" id="mainLayoutContainer">
+                <div class="main-content-left">
+                    <!-- Bilgi Kartı -->
+                    <?php if (empty($fromWarehouses) || empty($toWarehouses)): ?>
+                        <div class="alert alert-warning">
+                            <strong>⚠ Uyarı:</strong> Çıkış veya gideceği depo bulunamadı. Lütfen depo ayarlarını kontrol edin.
+                        </div>
+                    <?php endif; ?>
+
+                    <!-- Bilgi Formu -->
+                    <section class="card">
+                        <div class="card-header">
+                            <h3>Sevkiyat Bilgileri</h3>
+                        </div>
+                        <div class="card-body">
+                            <form id="sevkiyatForm">
+                                <div class="form-grid">
+                                    <!-- Çıkış Depo (Seçilebilir) -->
+                                    <div class="form-group">
+                                        <label class="form-label required" for="fromWarehouseInput">Çıkış Depo</label>
+                                        <div class="single-select-container">
+                                            <div class="single-select-input" id="fromWarehouseDisplay" onclick="toggleFromWhsDropdown()">
+                                                <input type="text" 
+                                                       id="fromWarehouseInput" 
+                                                       placeholder="Depo seçiniz" 
+                                                       readonly
+                                                       value="">
+                                                <span class="dropdown-arrow">▼</span>
+                                            </div>
+                                            <div class="single-select-dropdown" id="fromWarehouseDropdown">
+                                                <?php foreach ($fromWarehouses as $whs): ?>
+                                                    <div class="single-select-option" 
+                                                         data-value="<?= htmlspecialchars($whs['WarehouseCode']) ?>"
+                                                         data-name="<?= htmlspecialchars($whs['WarehouseName']) ?>"
+                                                         onclick="selectFromWarehouse('<?= htmlspecialchars($whs['WarehouseCode']) ?>', '<?= htmlspecialchars($whs['WarehouseName']) ?>')">
+                                                        <?= htmlspecialchars($whs['WarehouseCode']) ?> - <?= htmlspecialchars($whs['WarehouseName']) ?>
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
                                         </div>
-                                        <?php endforeach; ?>
+                                        <!-- Hidden input for form submission if needed, but managed by JS -->
+                                        <input type="hidden" id="fromWarehouseSelected" value="">
+                                    </div>
+
+                                    <!-- Gideceği Depo (Seçilebilir) -->
+                                    <div class="form-group">
+                                        <label class="form-label required" for="toWarehouseInput">Gideceği Depo</label>
+                                        <div class="single-select-container">
+                                            <div class="single-select-input" id="toWarehouseDisplay" onclick="toggleToWhsDropdown()">
+                                                <input type="text" 
+                                                       id="toWarehouseInput" 
+                                                       placeholder="Depo seçiniz" 
+                                                       readonly
+                                                       value="">
+                                                <span class="dropdown-arrow">▼</span>
+                                            </div>
+                                            <div class="single-select-dropdown" id="toWarehouseDropdown">
+                                                <?php foreach ($toWarehouses as $whs): ?>
+                                                    <div class="single-select-option" 
+                                                         data-value="<?= htmlspecialchars($whs['WarehouseCode']) ?>"
+                                                         data-name="<?= htmlspecialchars($whs['WarehouseName']) ?>"
+                                                         onclick="selectToWarehouse('<?= htmlspecialchars($whs['WarehouseCode']) ?>', '<?= htmlspecialchars($whs['WarehouseName']) ?>')">
+                                                        <?= htmlspecialchars($whs['WarehouseCode']) ?> - <?= htmlspecialchars($whs['WarehouseName']) ?>
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        </div>
+                                         <!-- Hidden input for form submission if needed, but managed by JS -->
+                                        <input type="hidden" id="toWarehouseSelected" value="">
+                                    </div>
+
+                                    <!-- Tarih -->
+                                    <div class="form-group">
+                                        <label class="form-label" for="docDate">Tarih</label>
+                                        <input type="date" 
+                                               id="docDate" 
+                                               class="form-input"
+                                               value="<?= date('Y-m-d') ?>">
+                                    </div>
+
+                                    <!-- Açıklama -->
+                                    <div class="form-group full-width">
+                                        <label class="form-label" for="comments">Açıklama</label>
+                                        <textarea id="comments" 
+                                                  class="form-input" 
+                                                  rows="3" 
+                                                  placeholder="Sevkiyat ile ilgili notlar..."></textarea>
                                     </div>
                                 </div>
-                                <input type="hidden" id="fromWarehouse" name="fromWarehouse" required>
-                            </div>
+                            </form>
+                        </div>
+                    </section>
 
-                            <!-- Gideceği Depo -->
-                            <div class="form-group">
-                                <label class="form-label required" for="toWarehouse">Gideceği Depo</label>
-                                <div class="single-select-container">
-                                    <div class="single-select-input" id="toWarehouseInput" onclick="toggleDropdown('toWarehouse')">
-                                        <input type="text" id="toWarehouseInputText" value="Depo seçiniz" readonly>
-                                        <span class="dropdown-arrow">▼</span>
-                                    </div>
-                                    <div class="single-select-dropdown" id="toWarehouseDropdown">
-                                        <div class="single-select-option" data-value="" onclick="selectWarehouse('toWarehouse', '', 'Depo seçiniz')">Depo seçiniz</div>
-                                        <?php foreach ($toWarehouses as $whs): ?>
-                                        <div class="single-select-option" data-value="<?= htmlspecialchars($whs['WarehouseCode']) ?>" onclick="selectWarehouse('toWarehouse', '<?= htmlspecialchars($whs['WarehouseCode']) ?>', '<?= htmlspecialchars($whs['WarehouseCode']) ?> - <?= htmlspecialchars($whs['WarehouseName'] ?? '') ?>')">
-                                            <?= htmlspecialchars($whs['WarehouseCode']) ?> - <?= htmlspecialchars($whs['WarehouseName'] ?? '') ?>
-                                        </div>
-                                        <?php endforeach; ?>
-                                    </div>
+                    <!-- Ürün Listesi -->
+                    <section class="card">
+                        <div class="card-header">
+                            <h3>Ürün Listesi</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-controls">
+                                <div class="show-entries">
+                                    Sayfada 
+                                    <select class="entries-select" id="entriesPerPage" onchange="updatePageSize()">
+                                        <option value="25" selected>25</option>
+                                        <option value="50">50</option>
+                                        <option value="75">75</option>
+                                    </select>
+                                    kayıt göster
                                 </div>
-                                <input type="hidden" id="toWarehouse" name="toWarehouse" required>
+                                <div class="search-box">
+                                    <input type="text" 
+                                           class="search-input" 
+                                           id="tableSearch" 
+                                           placeholder="Ara..." 
+                                           onkeyup="if(event.key==='Enter') loadItems()">
+                                    <button class="btn btn-secondary" onclick="loadItems()">🔍</button>
+                                </div>
                             </div>
 
-                            <!-- Tarih -->
-                            <div class="form-group">
-                                <label class="form-label" for="docDate">Tarih</label>
-                                <input type="date" class="form-input" id="docDate" name="docDate" value="<?= date('Y-m-d') ?>">
+                            <div class="data-table-wrapper">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th style="text-align: center;">Ürün Kodu</th>
+                                            <th style="text-align: center;">Ürün Adı</th>
+                                            <th style="text-align: center;">Depo</th>
+                                            <th style="text-align: center;">Miktar</th>
+                                            <th style="text-align: center;">Birim</th>
+                                            <th style="text-align: center;">İŞLEM</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="itemsTableBody">
+                                        <tr>
+                                            <td colspan="6" class="empty-message">Lütfen önce çıkış deposu seçin</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
                             </div>
 
-                            <!-- Açıklama -->
-                            <div class="form-group full-width">
-                                <label class="form-label" for="comments">Açıklama</label>
-                                <textarea class="form-input" id="comments" name="comments" rows="3" placeholder="Opsiyonel açıklama..."></textarea>
+                            <div class="pagination">
+                                <button class="btn btn-secondary" id="prevBtn" onclick="changePage(-1)" disabled>← Önceki</button>
+                                <span id="pageInfo">Sayfa 1</span>
+                                <button class="btn btn-secondary" id="nextBtn" onclick="changePage(1)" disabled>Sonraki →</button>
                             </div>
                         </div>
-                    </form>
+                    </section>
                 </div>
-            </section>
 
-            <!-- Ürün Listesi -->
-            <section class="card" id="productListSection" style="display: none;">
-                <div class="card-header">
-                    <h3>Ürün Listesi</h3>
-                </div>
-                <div class="card-body">
-                    <div class="table-controls">
-                        <div class="search-box">
-                            <input type="text" id="productSearch" class="search-input" placeholder="Ürün kodu veya adı ile ara..." oninput="searchProducts()">
+                <!-- Added cart panel on the right side -->
+                <div class="main-content-right sepet-panel" id="sepetPanel" style="display: none;">
+                    <section class="card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                            <h3 style="margin: 0; color: #1e40af; font-size: 1.25rem; font-weight: 600;">🛒 Sepet</h3>
+                            <button class="btn btn-secondary" onclick="toggleSepet()" style="padding: 0.5rem 1rem; font-size: 0.875rem;">✕ Kapat</button>
                         </div>
-                    </div>
-
-                    <div style="overflow-x: auto;">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>Ürün Kodu</th>
-                                    <th>Ürün Adı</th>
-                                    <th>Depo</th>
-                                    <th>Birim</th>
-                                    <th>Miktar</th>
-                                    <th>İşlem</th>
-                                </tr>
-                            </thead>
-                            <tbody id="productTableBody">
-                                <tr>
-                                    <td colspan="6" style="text-align: center; padding: 40px; color: #6b7280;">
-                                        Önce çıkış deposunu seçiniz
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
+                        <div id="sepetList"></div>
+                        <div style="margin-top: 1.5rem; text-align: right; padding-top: 1.5rem; border-top: 1px solid #e5e7eb;">
+                            <button class="btn btn-primary" onclick="saveSevkiyat()">✓ Sevkiyat Oluştur</button>
+                        </div>
+                    </section>
                 </div>
-            </section>
-
-            <!-- Sepet -->
-            <section class="card cart-section" id="cartSection" style="display: none;">
-                <div class="card-header">
-                    <h3>Sepet</h3>
-                </div>
-                <div class="card-body">
-                    <div style="overflow-x: auto;">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>Ürün Kodu</th>
-                                    <th>Ürün Adı</th>
-                                    <th>Çıkış Depo</th>
-                                    <th>Hedef Depo</th>
-                                    <th>Birim</th>
-                                    <th class="text-right">Miktar</th>
-                                    <th>İşlem</th>
-                                </tr>
-                            </thead>
-                            <tbody id="cartTableBody">
-                                <tr>
-                                    <td colspan="7" class="empty-message">Sepet boş</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                    <!-- Butonlar Sepet Altında -->
-                    <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; padding-top: 24px; border-top: 2px solid #f3f4f6;">
-                        <button type="button" class="btn btn-secondary" onclick="window.location.href='Sevkiyat.php'">İptal</button>
-                        <button type="button" class="btn btn-primary" id="saveBtn" disabled onclick="saveSevkiyat()">Kaydet</button>
-                    </div>
-                </div>
-            </section>
+            </div>
         </div>
-    </main>
+    </div>
 
     <script>
-        // Single Select Functions
-        function toggleDropdown(id) {
-            const dropdown = document.getElementById(id + 'Dropdown');
-            const input = document.getElementById(id + 'Input');
-            const isActive = dropdown.classList.contains('show');
+        let fromWarehouseSelected = '';
+        let fromWarehouseName = '';
+        let toWarehouseSelected = '';
+        let toWarehouseName = '';
+        
+        let cart = {}; // ItemCode -> {ItemCode, ItemName, FromWarehouse, ToWarehouse, Quantity, UoMEntry, UoMCode, BaseQty}
+        let productList = [];
+        let currentPage = 0;
+        let hasMore = false;
+        let pageSize = 25;
+
+        // Dropdown toggle functions
+        function toggleFromWhsDropdown() {
+            const display = document.getElementById('fromWarehouseDisplay');
+            const dropdown = document.getElementById('fromWarehouseDropdown');
+            const isActive = display.classList.contains('active');
             
-            // Tüm dropdown'ları kapat
-            document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
-            document.querySelectorAll('.single-select-input').forEach(i => i.classList.remove('active'));
+            // Close other dropdowns
+            document.getElementById('toWarehouseDisplay').classList.remove('active');
+            document.getElementById('toWarehouseDropdown').classList.remove('show');
             
-            // Eğer disabled değilse aç/kapat
-            if (!input.classList.contains('disabled')) {
-                if (!isActive) {
-                    dropdown.classList.add('show');
-                    input.classList.add('active');
-                }
+            if (isActive) {
+                display.classList.remove('active');
+                dropdown.classList.remove('show');
+            } else {
+                display.classList.add('active');
+                dropdown.classList.add('show');
             }
         }
 
-        function selectWarehouse(id, value, text) {
-            const input = document.getElementById(id + 'Input');
-            const inputText = document.getElementById(id + 'InputText');
-            const hiddenInput = document.getElementById(id);
-            const dropdown = document.getElementById(id + 'Dropdown');
+        function toggleToWhsDropdown() {
+            const display = document.getElementById('toWarehouseDisplay');
+            const dropdown = document.getElementById('toWarehouseDropdown');
+            const isActive = display.classList.contains('active');
             
-            inputText.value = text;
-            hiddenInput.value = value;
-            dropdown.classList.remove('show');
-            input.classList.remove('active');
+            // Close other dropdowns
+            document.getElementById('fromWarehouseDisplay').classList.remove('active');
+            document.getElementById('fromWarehouseDropdown').classList.remove('show');
             
-            // Seçili option'ı işaretle
-            dropdown.querySelectorAll('.single-select-option').forEach(opt => {
-                opt.classList.remove('selected');
-                if (opt.dataset.value === value) {
-                    opt.classList.add('selected');
+            if (isActive) {
+                display.classList.remove('active');
+                dropdown.classList.remove('show');
+            } else {
+                display.classList.add('active');
+                dropdown.classList.add('show');
+            }
+        }
+
+        function selectFromWarehouse(code, name) {
+            fromWarehouseSelected = code;
+            fromWarehouseName = name;
+            document.getElementById('fromWarehouseInput').value = code + ' - ' + name;
+            document.getElementById('fromWarehouseDisplay').classList.remove('active');
+            document.getElementById('fromWarehouseDropdown').classList.remove('show');
+            
+            // Update hidden input
+            document.getElementById('fromWarehouseSelected').value = code;
+            
+            // Ürün listesini yenile
+            if (toWarehouseSelected) {
+                loadItems();
+            }
+        }
+
+        function selectToWarehouse(code, name) {
+            toWarehouseSelected = code;
+            toWarehouseName = name;
+            document.getElementById('toWarehouseInput').value = code + ' - ' + name;
+            document.getElementById('toWarehouseDisplay').classList.remove('active');
+            document.getElementById('toWarehouseDropdown').classList.remove('show');
+
+            // Update hidden input
+            document.getElementById('toWarehouseSelected').value = code;
+            
+            // Ürün listesindeki tüm miktar alanlarını sıfırla
+            productList.forEach(item => {
+                const qtyInput = document.getElementById('qty_' + item.ItemCode);
+                if (qtyInput) {
+                    qtyInput.value = '0';
                 }
             });
             
-            // Event trigger
-            if (id === 'fromWarehouse') {
-                handleFromWarehouseChange(value);
-            } else if (id === 'toWarehouse') {
-                updateSaveButton();
+            // Ürün listesini yenile
+            if (fromWarehouseSelected) {
+                loadItems();
             }
         }
 
-        // Dışarı tıklanınca dropdown'ları kapat
+        // Close dropdowns when clicking outside
         document.addEventListener('click', function(e) {
             if (!e.target.closest('.single-select-container')) {
-                document.querySelectorAll('.single-select-dropdown').forEach(d => d.classList.remove('show'));
-                document.querySelectorAll('.single-select-input').forEach(i => i.classList.remove('active'));
+                document.querySelectorAll('.single-select-input').forEach(el => el.classList.remove('active'));
+                document.querySelectorAll('.single-select-dropdown').forEach(el => el.classList.remove('show'));
             }
         });
 
-        const fromWarehouseInput = document.getElementById('fromWarehouse');
-        const toWarehouseInput = document.getElementById('toWarehouse');
-        const saveBtn = document.getElementById('saveBtn');
-        const form = document.getElementById('sevkiyatForm');
-
-        let productList = [];
-        let searchTimeout = null;
-        let cart = [];
-
-        // Çıkış depo seçildiğinde ürün listesini göster
-        function handleFromWarehouseChange(value) {
-            if (value) {
-                document.getElementById('productListSection').style.display = 'block';
-                loadProducts();
-            } else {
-                document.getElementById('productListSection').style.display = 'none';
-            }
-            updateSaveButton();
+        // Sayfa boyutunu güncelle
+        function updatePageSize() {
+            pageSize = parseInt(document.getElementById('entriesPerPage').value) || 25;
+            currentPage = 0;
+            loadItems();
         }
 
-        // Ürün listesini yükle
-        function loadProducts(search = '') {
-            const warehouseCode = fromWarehouseInput.value;
-            if (!warehouseCode) return;
-
-            const tbody = document.getElementById('productTableBody');
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px;">Yükleniyor...</td></tr>';
-
-            const params = new URLSearchParams({
-                ajax: 'items',
-                warehouseCode: warehouseCode,
-                top: 100,
-                skip: 0
-            });
-
-            if (search) {
-                params.append('search', search);
-            }
-
-            fetch(`?${params.toString()}`)
-                .then(res => res.json())
-                .then(data => {
-                    productList = data.data || [];
-                    renderProductTable();
-                })
-                .catch(err => {
-                    console.error('Hata:', err);
-                    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: #dc2626;">Yükleme hatası</td></tr>';
-                });
-        }
-
-        // Ürün arama
-        function searchProducts() {
-            const search = document.getElementById('productSearch').value;
-            clearTimeout(searchTimeout);
-            searchTimeout = setTimeout(() => {
-                loadProducts(search);
-            }, 300);
-        }
-
-        // Ürün tablosunu render et
-        function renderProductTable() {
-            const tbody = document.getElementById('productTableBody');
-
-            if (productList.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: #6b7280;">Ürün bulunamadı</td></tr>';
+        // Ürünleri yükle
+        function loadItems() {
+            if (!fromWarehouseSelected) {
+                const tbody = document.getElementById('itemsTableBody');
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-message">Lütfen önce çıkış deposu seçin</td></tr>';
                 return;
             }
 
-            tbody.innerHTML = productList.map((item, index) => {
+            const search = document.getElementById('tableSearch').value.trim();
+            const skip = currentPage * pageSize;
+
+            // Construct URL correctly
+            const url = `SevkiyatSO.php?ajax=items&warehouseCode=${encodeURIComponent(fromWarehouseSelected)}&search=${encodeURIComponent(search)}&top=${pageSize}&skip=${skip}`;
+
+            fetch(url)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Hata: ' + data.error);
+                        return;
+                    }
+
+                    productList = data.data || [];
+                    hasMore = (data.count || 0) >= pageSize;
+                    renderItems();
+                    updatePagination();
+                })
+                .catch(err => {
+                    console.error('Ürün listesi hatası:', err);
+                    alert('Ürün listesi yüklenirken hata oluştu');
+                });
+        }
+
+        // Ürünleri render et
+        function renderItems() {
+            const tbody = document.getElementById('itemsTableBody');
+            
+            if (productList.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-message">Ürün bulunamadı</td></tr>'; 
+                return;
+            }
+
+            tbody.innerHTML = productList.map(item => {
                 const itemCode = item.ItemCode || '';
                 const itemName = item.ItemName || '';
-                const whsCode = item.WhsCode || item.WarehouseCode || '';
+                const onHand = parseFloat(item.OnHand || 0);
+                const inventoryUOM = item.InventoryUOM || 'AD';
                 const uomList = item.UoMList || [];
-                const inventoryUOM = item.InventoryUOM || '';
-                const uomGroupEntry = item.UoMGroupEntry || -1;
-
-                // Birim seçimi
-                let uomSelectHTML = '';
-                if (uomGroupEntry == -1 || uomList.length === 0) {
-                    // Manuel birim veya liste yok
-                    uomSelectHTML = `<span>${inventoryUOM || 'AD'}</span>`;
-                } else {
-                    // Birim dropdown
-                    uomSelectHTML = `<select class="uom-select" id="uom_${itemCode}" onchange="updateUoM('${itemCode}', this.value)">
-                        ${uomList.map(uom => `<option value="${uom.UoMEntry}" data-code="${uom.UoMCode}" data-baseqty="${uom.BaseQty}">${uom.UoMCode}</option>`).join('')}
-                    </select>`;
+                
+                // Sepetteki miktar - composite key ile kontrol et
+                const uomEntry = '-1'; // Base unit
+                const cartKey = `${itemCode}|${fromWarehouseSelected}|${toWarehouseSelected}|${uomEntry}`;
+                const cartItem = cart[cartKey] || null;
+                let cartQty = 0;
+                // Eğer sepette bu ürün varsa ve aynı depo kombinasyonuna aitse göster
+                if (cartItem) {
+                    cartQty = parseFloat(cartItem.Quantity || 0);
                 }
+
 
                 return `
                     <tr>
-                        <td><strong>${itemCode}</strong></td>
-                        <td>${itemName}</td>
-                        <td>${whsCode}</td>
-                        <td>${uomSelectHTML}</td>
-                        <td>
+                        <td style="text-align: center;"><strong>${itemCode}</strong></td>
+                        <td style="text-align: center;">${itemName}</td>
+                        <td style="text-align: center;">${fromWarehouseName || fromWarehouseSelected || '-'}</td>
+                        <td style="text-align: center;">
                             <div class="quantity-controls">
                                 <button type="button" class="qty-btn" onclick="changeQuantity('${itemCode}', -1)">−</button>
                                 <input type="number" 
-                                       id="qty_${itemCode}"
-                                       value="0" 
+                                       id="qty_${itemCode}" 
+                                       class="qty-input" 
+                                       value="${cartQty === 0 ? '0' : (cartQty % 1 === 0 ? cartQty.toString() : cartQty.toFixed(2))}"
                                        min="0" 
                                        step="0.01"
-                                       class="qty-input"
-                                       onchange="updateQuantity('${itemCode}', this.value)"
-                                       oninput="updateQuantity('${itemCode}', this.value)">
+                                       onchange="updateQuantity('${itemCode}', this.value)">
                                 <button type="button" class="qty-btn" onclick="changeQuantity('${itemCode}', 1)">+</button>
                             </div>
                         </td>
-                        <td>
+                        <td style="text-align: center;">
+                            AD
+                        </td>
+                        <td style="text-align: center;">
                             <button class="btn btn-primary btn-small" onclick="addToCart('${itemCode}')">Ekle</button>
                         </td>
                     </tr>
@@ -1058,7 +1288,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }).join('');
         }
 
-        // Miktar değiştir
         function changeQuantity(itemCode, delta) {
             const input = document.getElementById('qty_' + itemCode);
             if (!input) return;
@@ -1066,21 +1295,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             let value = parseFloat(input.value) || 0;
             value += delta;
             if (value < 0) value = 0;
-            input.value = value;
-            updateQuantity(itemCode, value);
+            // Tam sayı ise tam sayı olarak göster, değilse virgüllü göster
+            input.value = value % 1 === 0 ? value.toString() : value.toFixed(2);
         }
 
-        // Miktar güncelle
-        function updateQuantity(itemCode, quantity) {
-            // Sadece validasyon için kullanılabilir
+        function updateQuantity(itemCode, value) {
+            const input = document.getElementById('qty_' + itemCode);
+            if (!input) return;
+            
+            let qty = parseFloat(value) || 0;
+            if (qty < 0) qty = 0;
+            // Tam sayı ise tam sayı olarak göster, değilse virgüllü göster
+            input.value = qty % 1 === 0 ? qty.toString() : qty.toFixed(2);
         }
 
-        // Birim güncelle
-        function updateUoM(itemCode, uomEntry) {
-            // Birim değiştiğinde yapılacak işlemler
-        }
-
-        // Sepete ekle
         function addToCart(itemCode) {
             const item = productList.find(p => p.ItemCode === itemCode);
             if (!item) return;
@@ -1089,226 +1317,274 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             const quantity = parseFloat(qtyInput.value) || 0;
             
             if (quantity <= 0) {
-                alert('Lütfen miktar giriniz');
+                alert('Lütfen geçerli bir miktar giriniz.');
                 return;
             }
 
-            // Birim bilgisi
-            let uomEntry = null;
-            let uomCode = item.InventoryUOM || 'AD';
-            let baseQty = 1;
-
-            const uomSelect = document.getElementById('uom_' + itemCode);
-            if (uomSelect) {
-                const selectedOption = uomSelect.options[uomSelect.selectedIndex];
-                uomEntry = selectedOption.value;
-                uomCode = selectedOption.dataset.code || uomCode;
-                baseQty = parseFloat(selectedOption.dataset.baseqty) || 1;
+            if (!fromWarehouseSelected || !toWarehouseSelected) {
+                alert('Lütfen hem çıkış hem de hedef depoyu seçin.');
+                return;
             }
 
-            const cartItem = {
+            // Birim bilgisi - sadece InventoryUOM kullanılacak
+            let uomEntry = '-1'; // Base unit
+            let uomCode = item.InventoryUOM || 'AD';
+            let baseQty = 1.0;
+
+            // Composite key oluştur: itemCode|fromWhs|toWhs|uomEntry
+            const cartKey = `${itemCode}|${fromWarehouseSelected}|${toWarehouseSelected}|${uomEntry}`;
+
+            // Sepete ekle
+            cart[cartKey] = {
                 ItemCode: itemCode,
                 ItemName: item.ItemName || '',
-                FromWarehouse: fromWarehouseInput.value,
-                ToWarehouse: toWarehouseInput.value,
+                FromWarehouse: fromWarehouseSelected,
+                ToWarehouse: toWarehouseSelected,
                 Quantity: quantity,
                 UoMEntry: uomEntry,
                 UoMCode: uomCode,
-                BaseQty: baseQty
+                BaseQty: baseQty,
+                _key: cartKey
             };
 
-            // Sepette var mı kontrol et
-            const existingIndex = cart.findIndex(c => c.ItemCode === itemCode && c.FromWarehouse === fromWarehouseInput.value);
-            
-            if (existingIndex >= 0) {
-                // Mevcut satırı güncelle
-                cart[existingIndex] = cartItem;
-            } else {
-                // Yeni satır ekle
-                cart.push(cartItem);
-            }
+            // Miktarı sıfırla ve ürün listesindeki değeri güncelle
+            qtyInput.value = '0.00';
 
-            // Miktarı sıfırla
-            qtyInput.value = 0;
-
-            updateCartTable();
-            updateSaveButton();
+            updateSepet();
         }
 
-        // Sepeti render et
-        function updateCartTable() {
-            const tbody = document.getElementById('cartTableBody');
+        function toggleSepet() {
+            const panel = document.getElementById('sepetPanel');
+            const container = document.getElementById('mainLayoutContainer');
+            const isOpen = panel.style.display !== 'none';
             
-            if (cart.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="empty-message">Sepet boş - Ürün seçiniz</td></tr>';
-                document.getElementById('cartSection').style.display = 'none';
+            if (isOpen) {
+                panel.style.display = 'none';
+                container.classList.remove('sepet-open');
+            } else {
+                panel.style.display = 'flex'; // Changed to flex to make it display correctly as a column
+                container.classList.add('sepet-open');
+                updateSepet(); // Update cart display when opening
+            }
+        }
+
+        function updateSepet() {
+            const list = document.getElementById('sepetList');
+            const badge = document.getElementById('sepetBadge');
+            const itemCount = Object.keys(cart).length;
+            
+            // Miktar formatı: 10.00 → 10, 10,50 → 10,5
+            function formatQuantity(qty) {
+                const num = parseFloat(qty);
+                if (isNaN(num)) return '0';
+                if (num % 1 === 0) {
+                    return num.toString();
+                }
+                // Use comma for decimal separator
+                return num.toString().replace('.', ',');
+            }
+            
+            // Badge güncelle
+            if (itemCount > 0) {
+                badge.textContent = itemCount;
+                badge.style.display = 'flex';
+            } else {
+                badge.style.display = 'none';
+            }
+            
+            // Sepet listesi güncelle
+            if (itemCount === 0) {
+                list.innerHTML = '<div style="text-align: center; padding: 2rem; color: #9ca3af;">Sepetiniz boş</div>';
                 return;
             }
-
-            document.getElementById('cartSection').style.display = 'block';
-            tbody.innerHTML = '';
-
-            cart.forEach((item, index) => {
-                const row = document.createElement('tr');
-                row.setAttribute('data-item-code', item.ItemCode);
-
-                row.innerHTML = `
-                    <td><strong>${item.ItemCode}</strong></td>
-                    <td>${item.ItemName}</td>
-                    <td>${item.FromWarehouse}</td>
-                    <td>${item.ToWarehouse}</td>
-                    <td>${item.UoMCode || 'AD'}</td>
-                    <td class="text-right">
-                        <div class="quantity-controls">
-                            <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, -1)">−</button>
-                            <input type="number" 
-                                   class="qty-input" 
-                                   value="${item.Quantity.toFixed(2)}"
-                                   min="0" 
-                                   step="0.01"
-                                   onchange="updateCartQuantity(${index}, this.value)">
-                            <button type="button" class="qty-btn" onclick="changeCartQuantity(${index}, 1)">+</button>
-                        </div>
-                    </td>
-                    <td style="text-align: center;">
-                        <button class="btn btn-danger btn-small" onclick="removeFromCart(${index})">Sil</button>
-                    </td>
-                `;
-                tbody.appendChild(row);
+            
+            // Ürünleri depo bazında grupla
+            const groupedByWarehouse = {};
+            Object.values(cart).forEach(item => {
+                const warehouseKey = `${item.FromWarehouse} → ${item.ToWarehouse}`;
+                if (!groupedByWarehouse[warehouseKey]) {
+                    groupedByWarehouse[warehouseKey] = [];
+                }
+                groupedByWarehouse[warehouseKey].push(item);
             });
-        }
-
-        // Sepette miktar değiştir
-        function changeCartQuantity(index, delta) {
-            if (index >= 0 && index < cart.length) {
-                let quantity = parseFloat(cart[index].Quantity || 0);
-                quantity += delta;
-                if (quantity < 0) quantity = 0;
-                cart[index].Quantity = quantity;
-                updateCartTable();
-                updateSaveButton();
-            }
-        }
-
-        // Sepette miktar güncelle
-        function updateCartQuantity(index, value) {
-            if (index >= 0 && index < cart.length) {
-                cart[index].Quantity = parseFloat(value) || 0;
-                updateCartTable();
-                updateSaveButton();
-            }
-        }
-
-        // Sepetten ürün sil
-        function removeFromCart(index) {
-            if (index >= 0 && index < cart.length) {
-                cart.splice(index, 1);
-                updateCartTable();
-                updateSaveButton();
-            }
-        }
-
-        // Form validasyonu - Kaydet butonunu aktif/pasif yap
-        function updateSaveButton() {
-            const fromWarehouse = fromWarehouseInput.value;
-            const toWarehouse = toWarehouseInput.value;
             
-            if (fromWarehouse && toWarehouse && cart.length > 0) {
-                saveBtn.disabled = false;
-            } else {
-                saveBtn.disabled = true;
+            // Her depo grubu için HTML oluştur
+            let html = '';
+            Object.keys(groupedByWarehouse).forEach(warehouseKey => {
+                const items = groupedByWarehouse[warehouseKey];
+                const [fromWhs, toWhs] = warehouseKey.split(' → ');
+                
+                // Depo başlığı
+                html += `
+                    <div style="margin-bottom: 1rem; padding-bottom: 0.75rem; border-bottom: 2px solid #e5e7eb;">
+                        <div style="font-weight: 600; color: #1e40af; font-size: 0.95rem; margin-bottom: 0.75rem;">
+                            ${warehouseKey}
+                        </div>
+                `;
+                
+                // Bu depoya ait ürünler
+                items.forEach(item => {
+                    const qty = parseFloat(item.Quantity) || 0;
+                    const baseQty = parseFloat(item.BaseQty || 1.0);
+                    const uomCode = item.UoMCode || 'AD';
+                    
+                    // Miktar + birim gösterimi
+                    let qtyDisplay = `${formatQuantity(qty)} ${uomCode}`;
+                    
+                    // Eğer çevrimli ise (BaseQty !== 1), AD karşılığını da göster
+                    let conversionInfo = '';
+                    if (baseQty !== 1 && baseQty > 0) {
+                        const adKarşılığı = qty * baseQty;
+                        qtyDisplay += ` <span style="font-size: 0.85rem; color: #6b7280; font-weight: normal;">(${formatQuantity(adKarşılığı)} AD)</span>`;
+                        conversionInfo = `<div style="font-size: 0.8rem; color: #3b82f6; margin-top: 4px;">Dönüşüm: ${formatQuantity(qty)}x${formatQuantity(baseQty)} = ${formatQuantity(adKarşılığı)} AD</div>`;
+                    }
+                    
+                    html += `
+                        <div class="sepet-item" style="margin-bottom: 0.75rem;">
+                            <div class="sepet-item-info">
+                                <div class="sepet-item-name">${item.ItemCode} - ${item.ItemName}</div>
+                                <div style="margin-bottom: 0.5rem; font-size: 0.9rem; color: #3b82f6; font-weight: 600;">${qtyDisplay}</div>
+                                ${conversionInfo}
+                            </div>
+                            <button type="button" class="remove-sepet-btn" onclick="removeFromCart('${item._key}')">Kaldır</button>
+                        </div>
+                    `;
+                });
+                
+                html += '</div>';
+            });
+            
+            list.innerHTML = html;
+        }
+
+        function removeFromCart(cartKey) {
+            if (cart[cartKey]) {
+                const item = cart[cartKey];
+                delete cart[cartKey];
+                // Reset the quantity input in the product list for this specific item
+                const input = document.getElementById('qty_' + item.ItemCode);
+                if (input) {
+                    // Sadece bu depo kombinasyonu için miktarı kontrol et
+                    const currentKey = `${item.ItemCode}|${fromWarehouseSelected}|${toWarehouseSelected}|${item.UoMEntry}`;
+                    if (cartKey === currentKey) {
+                        input.value = '0';
+                    }
+                }
+                updateSepet();
             }
         }
 
-        // Sevkiyat belgesi kaydet
+        function changePage(delta) {
+            currentPage += delta;
+            if (currentPage < 0) currentPage = 0;
+            loadItems();
+        }
+
+        function updatePagination() {
+            document.getElementById('pageInfo').textContent = `Sayfa ${currentPage + 1}`;
+            document.getElementById('prevBtn').disabled = currentPage === 0;
+            document.getElementById('nextBtn').disabled = !hasMore; // Assuming 'hasMore' is set correctly in loadItems
+        }
+
         function saveSevkiyat() {
-            if (cart.length === 0) {
-                alert('Lütfen sepete en az bir ürün ekleyiniz');
+            // Filter out items with zero quantity and convert cart object to array
+            const itemsToSave = Object.values(cart).filter(item => parseFloat(item.Quantity || 0) > 0);
+            
+            if (itemsToSave.length === 0) {
+                alert('Lütfen sepete en az bir ürün ekleyin!');
                 return;
             }
 
-            const fromWarehouse = fromWarehouseInput.value;
-            const toWarehouse = toWarehouseInput.value;
-            const docDate = document.getElementById('docDate').value;
-            const comments = document.getElementById('comments').value;
+            // Ürünleri depo bazında grupla
+            const groupedByWarehouse = {};
+            itemsToSave.forEach(item => {
+                const warehouseKey = `${item.FromWarehouse} → ${item.ToWarehouse}`;
+                if (!groupedByWarehouse[warehouseKey]) {
+                    groupedByWarehouse[warehouseKey] = {
+                        fromWarehouse: item.FromWarehouse,
+                        toWarehouse: item.ToWarehouse,
+                        items: []
+                    };
+                }
+                groupedByWarehouse[warehouseKey].items.push(item);
+            });
 
-            if (!fromWarehouse || !toWarehouse) {
-                alert('Lütfen depo bilgilerini seçiniz');
+            const warehouseGroups = Object.values(groupedByWarehouse);
+            
+            if (warehouseGroups.length === 0) {
+                alert('Lütfen sepete en az bir ürün ekleyin!');
                 return;
             }
 
-            // Debug: Cart ve form verilerini logla
-            console.log('Cart:', cart);
-            console.log('FromWarehouse:', fromWarehouse);
-            console.log('ToWarehouse:', toWarehouse);
-            console.log('DocDate:', docDate);
-
-            if (!confirm('Sevkiyat belgesi oluşturulsun mu?')) {
+            if (!confirm(`${warehouseGroups.length} farklı depo için sevkiyat oluşturulacak. Devam etmek istediğinize emin misiniz?`)) {
                 return;
             }
 
-            // Loading göster
-            saveBtn.disabled = true;
-            const originalText = saveBtn.innerText;
-            saveBtn.innerText = 'Kaydediliyor...';
+            // Disable save button to prevent multiple submissions
+            const saveButton = document.querySelector('#sepetPanel button.btn-primary');
+            saveButton.disabled = true;
+            saveButton.textContent = 'Kaydediliyor...';
 
-            const formData = new FormData();
-            formData.append('action', 'create');
-            formData.append('fromWarehouse', fromWarehouse);
-            formData.append('toWarehouse', toWarehouse);
-            formData.append('docDate', docDate);
-            formData.append('comments', comments);
-            formData.append('items', JSON.stringify(cart));
+            // Her depo grubu için sevkiyat oluştur
+            const promises = warehouseGroups.map(group => {
+                const formData = new FormData();
+                formData.append('action', 'create');
+                formData.append('fromWarehouse', group.fromWarehouse);
+                formData.append('toWarehouse', group.toWarehouse);
+                formData.append('docDate', document.getElementById('docDate').value);
+                formData.append('comments', document.getElementById('comments').value);
+                formData.append('items', JSON.stringify(group.items));
 
-            console.log('Sending request...');
-            console.log('Items JSON:', JSON.stringify(cart));
-
-            fetch('', {
-                method: 'POST',
-                body: formData
-            })
-            .then(res => {
-                console.log('Response status:', res.status);
-                return res.text().then(text => {
-                    console.log('Response text:', text);
-                    try {
-                        return JSON.parse(text);
-                    } catch (e) {
-                        console.error('JSON parse error:', e);
-                        return { success: false, message: 'Sunucu yanıtı parse edilemedi: ' + text.substring(0, 200) };
+                return fetch('SevkiyatSO.php', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(res => {
+                    if (!res.ok) {
+                        throw new Error(`HTTP error! status: ${res.status}`);
                     }
+                    return res.json();
                 });
-            })
-            .then(data => {
-                console.log('Response data:', data);
-                if (data.success) {
-                    alert(data.message);
+            });
+
+            // Tüm sevkiyatları bekle
+            Promise.all(promises)
+            .then(results => {
+                const successCount = results.filter(r => r.success).length;
+                const failCount = results.filter(r => !r.success).length;
+                
+                if (failCount === 0) {
+                    alert(`${successCount} sevkiyat başarıyla oluşturuldu!`);
                     window.location.href = 'Sevkiyat.php';
                 } else {
-                    const errorMsg = data.message || 'Bir hata oluştu';
-                    if (data.debug) {
-                        console.error('Debug info:', data.debug);
-                        alert(errorMsg + '\n\nDetaylar için konsolu kontrol edin.');
-                    } else {
-                        alert(errorMsg);
-                    }
-                    saveBtn.disabled = false;
-                    saveBtn.innerText = originalText;
+                    alert(`${successCount} sevkiyat başarılı, ${failCount} sevkiyat başarısız oldu.`);
+                    saveButton.disabled = false;
+                    saveButton.textContent = '✓ Sevkiyat Oluştur';
                 }
             })
             .catch(err => {
-                console.error('Fetch error:', err);
-                alert('Bir bağlantı hatası oluştu: ' + err.message);
-                saveBtn.disabled = false;
-                saveBtn.innerText = originalText;
+                console.error('Sevkiyat kaydetme hatası:', err);
+                alert('Sevkiyat kaydedilirken hata oluştu: ' + err.message);
+                saveButton.disabled = false;
+                saveButton.textContent = '✓ Sevkiyat Oluştur';
             });
         }
 
-        // Sayfa yüklendiğinde scroll pozisyonunu sıfırla
+        // Initial setup when the DOM is loaded
         document.addEventListener('DOMContentLoaded', function() {
-            window.scrollTo(0, 0);
+            // Set initial values for hidden inputs if they exist (though JS manages selected values)
+            document.getElementById('fromWarehouseSelected').value = fromWarehouseSelected;
+            document.getElementById('toWarehouseSelected').value = toWarehouseSelected;
+            
+            // Initial check for warehouse selection to enable/disable pagination and load items
+            if (fromWarehouseSelected && toWarehouseSelected) {
+                loadItems();
+            } else {
+                // If warehouses are not selected, show the prompt in the table
+                const tbody = document.getElementById('itemsTableBody');
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-message">Lütfen önce çıkış ve gideceği depo seçin</td></tr>';
+            }
         });
     </script>
 </body>
 </html>
-

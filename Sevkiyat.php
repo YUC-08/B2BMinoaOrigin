@@ -567,9 +567,6 @@ if (($transfersData['status'] ?? 0) == 200) {
                             <?php else: ?>
                             <?php foreach ($transfers as $transfer): 
                                 $transferStatus = $transfer['U_ASB2B_STATUS'] ?? '';
-                                $transferToWarehouse = $transfer['ToWarehouse'] ?? '';
-                                // Alan şube kontrolü: ToWarehouse kullanıcının depolarından biri mi?
-                                $canReceiveInList = in_array($transferToWarehouse, $userWarehouses) && ($transferStatus == '3');
                             ?>
                             <tr>
                                 <td><?= htmlspecialchars($transfer['DocEntry'] ?? '') ?></td>
@@ -586,9 +583,6 @@ if (($transfersData['status'] ?? 0) == 200) {
                                 <td>
                                     <div style="display: flex; gap: 8px; align-items: center;">
                                         <a href="SevkiyatDetay.php?DocEntry=<?= $transfer['DocEntry'] ?? '' ?>" class="btn btn-primary">Detay</a>
-                                        <?php if ($canReceiveInList): ?>
-                                        <a href="Sevkiyat-TeslimAl.php?docEntry=<?= $transfer['DocEntry'] ?? '' ?>" class="btn btn-primary">Teslim Al</a>
-                                        <?php endif; ?>
                                     </div>
                                 </td>
                             </tr>
@@ -688,7 +682,6 @@ if (($transfersData['status'] ?? 0) == 200) {
                                 <div style="display: flex; gap: 8px; align-items: center;">
                                     <a href="SevkiyatDetay.php?DocEntry=${item.DocEntry || ''}" class="btn btn-primary">Detay</a>
                                     ${(item.ToWarehouse && userWarehouses.includes(item.ToWarehouse) && item.U_ASB2B_STATUS === '3') 
-                                        ? `<a href="Sevkiyat-TeslimAl.php?docEntry=${item.DocEntry || ''}" class="btn btn-primary">Teslim Al</a>` 
                                         : ''}
                                 </div>
                             </td>

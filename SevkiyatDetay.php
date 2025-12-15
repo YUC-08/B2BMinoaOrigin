@@ -90,7 +90,6 @@ if (!$hasAccess) {
 
 // Statü bilgisi
 $status = $transfer['U_ASB2B_STATUS'] ?? '';
-$canReceive = $isReceiver && ($status == '3'); // Alan şube ve statü "Sevk edildi" ise teslim alabilir
 
 // Satırları çek - InventoryTransferRequestLines collection'ından
 $lines = [];
@@ -516,14 +515,6 @@ foreach ($lines as $line) {
             <!-- Butonlar -->
             <div class="action-buttons">
                 <button class="btn btn-secondary" onclick="window.location.href='Sevkiyat.php'">Geri Dön</button>
-                <?php 
-                // Tek taraflı sevkiyat: Sadece alan şube teslim alabilir
-                // Onayla/Reddet butonları yok
-                if ($canReceive): 
-                    // Alan şube ve statü "Sevk edildi" (3) - Teslim al butonu
-                ?>
-                <button class="btn btn-primary" onclick="window.location.href='Sevkiyat-TeslimAl.php?docEntry=<?= $docEntry ?>'">Teslim Al</button>
-                <?php endif; ?>
                 <button class="btn btn-primary" onclick="window.print()">Yazdır</button>
             </div>
         </div>

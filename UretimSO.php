@@ -144,7 +144,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             'ItemType' => 'itItems',
             'ItemsGroupCode' => intval($itemsGroupCode),
             'UoMGroupEntry' => $finalUoMGroupEntry,
-            'U_AS_OWNR' => $uAsOwnrForItem // Sektör bilgisi ekleniyor
+            'U_AS_OWNR' => $uAsOwnrForItem, // Sektör bilgisi ekleniyor 
+            'PurchaseItem' => 'tNO',
+            'SalesItem' => 'tYES',
+            'InventoryItem' => 'tNO',
+            
         ];
         
         $itemResult = $sap->post('Items', $itemPayload);
@@ -207,7 +211,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         
         $productTreePayload = [
             'TreeCode' => $itemCode,
-            'TreeType' => 'iProductionTree',
+            'TreeType' => 'iAssemblyTree',
             'ProductTreeLines' => $productTreeLines
         ];
         
@@ -348,12 +352,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
         
         $itemPayload = [
-            'Series' => 77, // Hammadde için sabit
+            'Series' => 77, // Hammadde için sabit 
             'ItemName' => $productName,
             'ItemType' => 'itItems',
             'ItemsGroupCode' => 104, // Hammadde için sabit
             'UoMGroupEntry' => intval($uomGroupEntry),
             'U_AS_OWNR' => $uAsOwnrForItem // U_AS_OWNR ekleniyor
+
+            
+            
         ];
         
         $itemResult = $sap->post('Items', $itemPayload);
@@ -566,6 +573,12 @@ body {
     width: 100%;
     min-height: 42px;
     box-sizing: border-box;
+    text-align: left;
+}
+
+.form-group input[type="text"]::placeholder,
+.form-group input[type="number"]::placeholder {
+    text-align: left;
 }
 
 .form-group input[type="text"]:hover,
@@ -647,6 +660,7 @@ body {
 .single-select-input {
     display: flex;
     align-items: center;
+    justify-content: flex-start;
     padding: 10px 14px;
     border: 2px solid #e5e7eb;
     border-radius: 8px;
@@ -677,11 +691,16 @@ body {
     color: #2c3e50;
     padding: 0 !important;
     margin: 0;
-    width: auto;
+    width: 100%;
     min-height: auto;
     box-sizing: border-box;
     height: auto;
-    text-align: center;
+    text-align: left;
+    align-self: stretch;
+}
+
+.single-select-input input[type="text"]::placeholder {
+    text-align: left;
 }
 
 .single-select-input input[type="hidden"] {
@@ -905,6 +924,50 @@ body {
     background: #dc2626;
 }
 
+/* Quantity Controls */
+.quantity-controls {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+}
+
+.qty-btn {
+    width: 32px;
+    height: 32px;
+    border: 2px solid #e5e7eb;
+    background: white;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #374151;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.qty-btn:hover {
+    border-color: #3b82f6;
+    color: #3b82f6;
+}
+
+.qty-input {
+    width: 100px;
+    padding: 6px 10px;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    text-align: center;
+    font-size: 0.9rem;
+    transition: border-color 0.2s;
+}
+
+.qty-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+}
 
 /* Table Styles */
 .table-container {
@@ -1116,7 +1179,7 @@ tbody td select:focus {
                     <div class="card-body">
                         <div class="form-grid">
                             <div class="form-group">
-                                <input type="text" id="urunNo" name="urunNo" placeholder="Ürün Numarası (ReadOnly)" readonly style="background: #f3f4f6; cursor: not-allowed;">
+                                <input type="text" id="urunNo" name="urunNo" placeholder="Ürün Numarası" readonly style="background: #f3f4f6; cursor: not-allowed;">
                             </div>
                             <div class="form-group">
                                 <input type="text" id="urunTanimi" name="urunTanimi" placeholder="Ürün Tanımı (Örn: Çorba)">
@@ -1443,11 +1506,25 @@ tbody td select:focus {
             }).join('');
 
             const newRow = document.createElement('tr');
+            const rowId = 'material_' + materialCounter;
             newRow.innerHTML = `
                 <td>${materialCounter}</td>
                 <td>${materialName}</td>
                 <td>
-                    <input type="number" name="miktar[]" placeholder="0" min="0" step="0.01" value="0">
+                    <div class="quantity-controls">
+                        <button type="button" class="qty-btn" onclick="changeMaterialQuantity('${rowId}', -1)">−</button>
+                        <input type="text" 
+                               id="${rowId}" 
+                               name="miktar[]" 
+                               class="qty-input"
+                               placeholder="0" 
+                               value="0"
+                               onchange="updateMaterialQuantity('${rowId}', this.value)"
+                               oninput="validateMaterialInput(this)"
+                               pattern="[0-9]+([,][0-9]{1,2})?"
+                               inputmode="decimal">
+                        <button type="button" class="qty-btn" onclick="changeMaterialQuantity('${rowId}', 1)">+</button>
+                    </div>
                 </td>
                 <td>
                     <select name="birim_display[]" class="form-select" disabled style="appearance: none; -webkit-appearance: none; -moz-appearance: none; background-image: none;">
@@ -1491,6 +1568,77 @@ tbody td select:focus {
             }
         }
 
+        function changeMaterialQuantity(rowId, delta) {
+            const input = document.getElementById(rowId);
+            if (!input) return;
+            
+            let value = parseFloat(input.value.replace(',', '.')) || 0;
+            value += delta;
+            if (value < 0) value = 0;
+            // Tam sayı olarak göster (1, 2, 3...)
+            let formattedValue = value % 1 === 0 ? value.toString() : value.toFixed(2);
+            // Noktayı virgüle çevir
+            input.value = formattedValue.replace('.', ',');
+        }
+
+        function validateMaterialInput(input) {
+            // Sadece sayı, virgül ve nokta karakterlerine izin ver
+            let value = input.value;
+            let cleanedValue = value.replace(/[^0-9,.]/g, '');
+            
+            // Nokta girilmişse virgüle çevir
+            cleanedValue = cleanedValue.replace('.', ',');
+            
+            // Birden fazla virgül varsa sadece ilkini tut
+            const commaIndex = cleanedValue.indexOf(',');
+            if (commaIndex !== -1) {
+                cleanedValue = cleanedValue.substring(0, commaIndex + 1) + cleanedValue.substring(commaIndex + 1).replace(/,/g, '');
+            }
+            
+            // Virgülden sonra maksimum 2 basamak
+            if (commaIndex !== -1) {
+                const parts = cleanedValue.split(',');
+                if (parts[1] && parts[1].length > 2) {
+                    cleanedValue = parts[0] + ',' + parts[1].substring(0, 2);
+                }
+            }
+            
+            // Temizlenmiş değeri input'a yaz
+            input.value = cleanedValue;
+        }
+
+        function updateMaterialQuantity(rowId, value) {
+            const input = document.getElementById(rowId);
+            if (!input) return;
+            
+            let cleanedValue = value.toString().replace(/[^0-9,.]/g, '');
+            
+            // Nokta girilmişse virgüle çevir
+            cleanedValue = cleanedValue.replace('.', ',');
+            
+            // Birden fazla virgül varsa sadece ilkini tut
+            const commaIndex = cleanedValue.indexOf(',');
+            if (commaIndex !== -1) {
+                cleanedValue = cleanedValue.substring(0, commaIndex + 1) + cleanedValue.substring(commaIndex + 1).replace(/,/g, '');
+            }
+            
+            // Virgülden sonra maksimum 2 basamak
+            if (commaIndex !== -1) {
+                const parts = cleanedValue.split(',');
+                if (parts[1] && parts[1].length > 2) {
+                    cleanedValue = parts[0] + ',' + parts[1].substring(0, 2);
+                }
+            }
+            
+            // Parse et ve negatif kontrolü
+            let qty = parseFloat(cleanedValue.replace(',', '.')) || 0;
+            if (qty < 0) qty = 0;
+            
+            // Değeri virgül ile göster
+            let formattedValue = qty % 1 === 0 ? qty.toString() : qty.toFixed(2).replace('.', ',');
+            input.value = formattedValue;
+        }
+
         function handleSubmit(event) {
             event.preventDefault();
             
@@ -1516,7 +1664,9 @@ tbody td select:focus {
                 const materialName = row.querySelector('td:nth-child(2)').textContent.trim();
                 const materialInfo = materialCodeMap[materialName] || {};
                 const materialCode = materialInfo.code || '';
-                const miktar = parseFloat(row.querySelector('input[name="miktar[]"]').value) || 0;
+                // Virgülü noktaya çevir ve parse et
+                const miktarValue = row.querySelector('input[name="miktar[]"]').value.replace(',', '.');
+                const miktar = parseFloat(miktarValue) || 0;
                 
                 if (materialName && materialCode) {
                     if (miktar <= 0) {

@@ -125,6 +125,7 @@ $branchCode = $requestData['U_ASB2B_BRAN'] ?? '-';
 $journalMemo = $requestData['JournalMemo'] ?? '-';
 $fromWarehouse = $requestData['FromWarehouse'] ?? '';
 $toWarehouse = $requestData['ToWarehouse'] ?? '';
+$transferType = $requestData['U_ASB2B_TYPE'] ?? '';
 $aliciSube = $requestData['U_ASWHST'] ?? '-'; // Alıcı Şube
 $gonderSube = $requestData['U_ASWHSF'] ?? ''; // Gönderen Şube adı
 $lines = $requestData['StockTransferLines'] ?? [];
@@ -143,12 +144,22 @@ if (!empty($toWarehouse)) {
     $toWarehouseName = $toWhsData['response']['WarehouseName'] ?? '';
 }
 
-// Gönderen Şube formatı: KT-00 / Beşiktaş Kitapevi Ana Depo
-$gonderSubeDisplay = $fromWarehouse;
-if (!empty($gonderSube)) {
-    $gonderSubeDisplay = $fromWarehouse . ' / ' . $gonderSube;
-} elseif (!empty($fromWarehouseName)) {
-    $gonderSubeDisplay = $fromWarehouse . ' / ' . $fromWarehouseName;
+// Gönderen Şube formatı: Sevkiyattan geliyorsa "SEVKIYAT - Depo Adı", değilse normal format
+if ($transferType === 'SEVKIYAT' && !empty($fromWarehouse)) {
+    // Sevkiyattan geliyorsa: "SEVKIYAT - Depo Adı" formatında göster
+    if (!empty($fromWarehouseName)) {
+        $gonderSubeDisplay = 'SEVKIYAT - ' . $fromWarehouseName;
+    } else {
+        $gonderSubeDisplay = 'SEVKIYAT - ' . $fromWarehouse;
+    }
+} else {
+    // Normal format: KT-00 / Beşiktaş Kitapevi Ana Depo
+    $gonderSubeDisplay = $fromWarehouse;
+    if (!empty($gonderSube)) {
+        $gonderSubeDisplay = $fromWarehouse . ' / ' . $gonderSube;
+    } elseif (!empty($fromWarehouseName)) {
+        $gonderSubeDisplay = $fromWarehouse . ' / ' . $fromWarehouseName;
+    }
 }
 
 // Alıcı şubenin ana deposunu ve sevkiyat deposunu bul
@@ -249,14 +260,24 @@ if ($status == '3' || $status == '4') {
     $docEntryInt = (int)$docEntry;
     
     // U_ASB2B_QutMaster ile filtrele (expand kullanmadan, satırları ayrı çekeceğiz)
+    // Sevkiyattan gelen kayıtlar için U_ASB2B_TYPE kontrolü yapılacak
     $deliveryFilter = "U_ASB2B_QutMaster eq {$docEntryInt}";
-    $deliveryQuery = "StockTransfers?\$filter=" . urlencode($deliveryFilter);
+    $deliveryQuery = "StockTransfers?\$select=DocEntry,U_ASB2B_TYPE&\$filter=" . urlencode($deliveryFilter);
     $deliveryData = $sap->get($deliveryQuery);
     $deliveryList = $deliveryData['response']['value'] ?? [];
     
     // Her StockTransfer için satırları ayrı çek (expand çalışmıyor)
     foreach ($deliveryList as $idx => $st) {
         $stDocEntry = $st['DocEntry'] ?? null;
+        $stType = $st['U_ASB2B_TYPE'] ?? '';
+        
+        // Sevkiyattan gelen kayıtlar için: Sadece teslim alma belgelerini say (U_ASB2B_TYPE='MAIN')
+        // Sevkiyat belgesinden oluşan StockTransfer'i (U_ASB2B_TYPE='SEVKIYAT') sayma
+        if ($transferType === 'SEVKIYAT' && $stType !== 'MAIN') {
+            // Sevkiyat belgesinden oluşan StockTransfer'i atla
+            continue;
+        }
+        
         $dtLines = [];
         if ($stDocEntry) {
             $stLinesQuery = "StockTransfers({$stDocEntry})/StockTransferLines";

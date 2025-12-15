@@ -109,7 +109,7 @@ if (!$errorMsg && $fromWarehouse && $toWarehouse) {
         $transferFilter .= " and DocDate le '{$endDateFormatted}'";
     }
     
-    $selectValue = "DocEntry,DocDate,DueDate,U_ASB2B_NumAtCard,U_ASB2B_STATUS,U_ASWHSF";
+    $selectValue = "DocEntry,DocDate,DueDate,U_ASB2B_NumAtCard,U_ASB2B_STATUS,U_ASWHSF,U_ASB2B_TYPE,FromWarehouse";
     $filterEncoded = urlencode($transferFilter);
     $orderByEncoded = urlencode("DocEntry desc");
     $transferQuery = "InventoryTransferRequests?\$select=" . urlencode($selectValue) . "&\$filter=" . $filterEncoded . "&\$orderby=" . $orderByEncoded . "&\$top=100";
@@ -850,14 +850,29 @@ if (!empty($rows)) {
         $docDate = formatDate($row['DocDate'] ?? '');
         $dueDate = formatDate($row['DueDate'] ?? '');
         $numAtCard = $row['U_ASB2B_NumAtCard'] ?? '-';
-        $aliciSube = $row['U_ASWHSF'] ?? '-'; 
+        $transferType = $row['U_ASB2B_TYPE'] ?? '';
+        $fromWhs = $row['FromWarehouse'] ?? '';
+        
+        // Gönderen bilgisi: Sevkiyattan geliyorsa "SEVKIYAT - Depo Adı" formatında göster
+        $gonderSube = $row['U_ASWHSF'] ?? '-';
+        if ($transferType === 'SEVKIYAT' && !empty($fromWhs)) {
+            // FromWarehouse adını çek
+            $fromWhsQuery = "Warehouses('{$fromWhs}')?\$select=WarehouseName";
+            $fromWhsData = $sap->get($fromWhsQuery);
+            $fromWhsName = $fromWhsData['response']['WarehouseName'] ?? '';
+            if (!empty($fromWhsName)) {
+                $gonderSube = 'SEVKIYAT - ' . $fromWhsName;
+            } else {
+                $gonderSube = 'SEVKIYAT - ' . $fromWhs;
+            }
+        }
 
         echo "<tr>
                 <td>{$docEntry}</td>
                 <td>{$docDate}</td>
                 <td>{$dueDate}</td>
                 <td>{$numAtCard}</td>
-                <td>{$aliciSube}</td>
+                <td>{$gonderSube}</td>
                 <td><span class='status-badge {$statusClass}'>{$statusText}</span></td>
                 <td>
                     <a href='AnaDepo-Detay.php?doc={$docEntry}'>
